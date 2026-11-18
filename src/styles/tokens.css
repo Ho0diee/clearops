@@ -2164,6 +2164,7 @@ html.is-schedule-locked #root {
 }
 
 .sched-page {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -2186,6 +2187,7 @@ html.is-schedule-locked #root {
   flex: 1;
   max-height: none;
   min-height: 0;
+  padding-bottom: 76px;
 }
 
 /* Calendar toolbar */
@@ -2447,22 +2449,32 @@ html.is-schedule-locked #root {
   color: #8A4B08;
 }
 
-/* Minimal Voice Orb Dock (no bottom card, no step-by-step box, no typing input) */
+/* Floating Voice Orb Overlay over Calendar (zero cutoff bar) */
 .voice-dock {
-  flex-shrink: 0;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-header);
-  padding: 8px 14px 10px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 14px;
+  z-index: 12;
+  pointer-events: none;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
 }
 
 .voice-controls-row {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 18px;
+  gap: 16px;
+  pointer-events: none;
+}
+
+.voice-controls-row > button {
+  pointer-events: auto;
 }
 
 .voice-orb-btn {
@@ -2496,12 +2508,15 @@ html.is-schedule-locked #root {
 }
 
 .voice-side-btn {
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   border: 1px solid var(--border-default);
-  background: var(--bg-surface);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: var(--text-secondary);
+  box-shadow: 0 3px 12px rgba(20, 20, 19, 0.14);
   display: inline-flex;
   align-items: center;
   justify-content: center;
