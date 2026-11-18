@@ -52,15 +52,17 @@ export type IdeaStatus = 'active' | 'waiting-on' | 'completed';
 
 export interface IdeaItem {
   id: string;
-  project: string; // e.g., 'OHCR', 'CBS', 'Personal'
-  priorityRank: number; // 1, 2, 3... within project
+  project: string; // Folder / Category name (e.g., 'OHCR', 'CBS', 'Personal')
+  priorityRank: number;
   title: string;
-  startingStep: string; // Concrete immediate action
+  startingStep: string;
+  notes?: string; // Freeform multi-line note body (Apple Notes style)
   isBottleneck: boolean;
   status: IdeaStatus;
   waitingReason?: string;
   estimatedMinutes?: number;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface CheckupBenchmark {

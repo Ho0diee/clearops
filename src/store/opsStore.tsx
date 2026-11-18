@@ -503,9 +503,9 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               }
               return {
                 ...b,
-                title: `Empty Zone — ${idea.project} #${idea.priorityRank}: ${idea.title}`,
+                title: `Empty Zone — ${idea.title || 'Untitled Idea'}`,
                 assignedIdeaId: idea.id,
-                startingStepHint: idea.startingStep,
+                startingStepHint: idea.startingStep || undefined,
               };
             }),
           };
@@ -530,7 +530,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               !b.assignedGoalId
           );
 
-          const blockTitle = `Empty Zone — ${idea.project} #${idea.priorityRank}: ${idea.title}`;
+          const blockTitle = `Empty Zone — ${idea.title || 'Untitled Idea'}`;
 
           if (openIdx !== -1) {
             const updated = ordered.map((b, idx) => {
@@ -798,6 +798,8 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       addIdea: ({ project, title, startingStep, isBottleneck = false, estimatedMinutes = 45 }) => {
         const id = makeId('idea');
         const cleanProject = project.trim() || 'Personal';
+        const cleanTitle = title.trim();
+        const cleanStep = startingStep.trim();
         setState((prev) => {
           const existingCount = prev.ideas.filter(
             (i) => i.project === cleanProject && i.status !== 'completed'
@@ -806,12 +808,14 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             id,
             project: cleanProject,
             priorityRank: existingCount + 1,
-            title: title.trim(),
-            startingStep: startingStep.trim() || 'Define concrete 15-minute opening action',
+            title: cleanTitle,
+            startingStep: cleanStep,
+            notes: cleanStep,
             isBottleneck,
             status: 'active',
             estimatedMinutes,
             createdAt: prev.selectedDate,
+            updatedAt: new Date().toISOString(),
           };
           const projects = prev.projects.includes(cleanProject)
             ? prev.projects
@@ -819,10 +823,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           return {
             ...prev,
             projects,
-            ideas: normalizeProjectRanks([...prev.ideas, nextIdea], cleanProject),
+            ideas: normalizeProjectRanks([nextIdea, ...prev.ideas], cleanProject),
           };
         });
-        showToast(`Added #${title.trim()} to ${cleanProject}`);
+        if (cleanTitle) {
+          showToast(`Added "${cleanTitle}" to ${cleanProject}`);
+        }
         return id;
       },
 

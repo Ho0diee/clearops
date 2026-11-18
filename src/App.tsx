@@ -88,7 +88,7 @@ const ClearOpsWorkspace: React.FC = () => {
   const navOptions: { value: RouteTab; label: string; count?: number }[] = [
     { value: 'schedule', label: 'Schedule' },
     { value: 'today', label: 'Today' },
-    { value: 'ideas', label: 'Ideas & Checkups', count: activeIdeasCount },
+    { value: 'ideas', label: 'Ideas', count: activeIdeasCount },
     { value: 'pacing', label: 'Pacing & ROI', count: activeGoalsCount },
     { value: 'config', label: 'Settings' },
   ];
