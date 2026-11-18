@@ -47,7 +47,7 @@ function responsibilityLabel(type?: IdeaResponsibilityType): string {
   if (type === 'paid') return 'Paid';
   if (type === 'cost') return 'Cost';
   if (type === 'time-saving') return 'Time-Saving';
-  return 'Responsibility';
+  return 'Responsibility: None';
 }
 
 function isOpenEmptyZone(b: CalendarBlock): boolean {
@@ -467,7 +467,7 @@ export const IdeasHubView: React.FC = () => {
                   updatedAt: new Date().toISOString(),
                 })
               }
-              title="Tap to cycle: Paid, Cost, or Time-Saving responsibility"
+              title="Tap to cycle: Paid, Cost, Time-Saving, or None"
             >
               {note.responsibilityType === 'paid' ? (
                 <DollarSign size={12} />
