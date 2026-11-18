@@ -302,22 +302,28 @@ SLIDE DECK: ${slideTitle}
 CONTENT:
 ${rawSlideText.slice(0, 160000)}`;
 
-  const modelsToTry = [
-    'gemini-4-hydrogen',
-    'gemini-4-argon',
-    'gemini-3.1-pro-preview',
-    'gemini-3-flash-preview',
+  const modelsToTry: Array<{ model: string; timeoutMs: number }> = [
+    { model: 'gemini-4-hydrogen', timeoutMs: 12_000 },
+    { model: 'gemini-3-flash-preview', timeoutMs: 12_000 },
+    { model: 'gemini-2.5-flash', timeoutMs: 20_000 },
+    { model: 'gemini-4-argon', timeoutMs: 12_000 },
+    { model: 'gemini-2.5-flash-lite', timeoutMs: 15_000 },
   ];
 
-  let responseText = '{}';
+  let parsed: {
+    summary?: string;
+    assignments?: Array<Omit<StandardizedExtractedAssignment, 'courseId'>>;
+  } | null = null;
   let lastError: unknown = null;
+  const attemptErrors: string[] = [];
 
-  for (const model of modelsToTry) {
+  for (const { model, timeoutMs } of modelsToTry) {
     try {
       const resp = await ai.models.generateContent({
         model,
         contents: prompt,
         config: {
+          abortSignal: AbortSignal.timeout(timeoutMs),
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -369,24 +375,34 @@ ${rawSlideText.slice(0, 160000)}`;
           },
         },
       });
-      responseText = resp.text || '{}';
+      const text = resp.text?.trim();
+      if (!text) {
+        throw new Error(`Empty response from ${model}`);
+      }
+      parsed = JSON.parse(text) as {
+        summary?: string;
+        assignments?: Array<Omit<StandardizedExtractedAssignment, 'courseId'>>;
+      };
       break;
     } catch (err) {
       lastError = err;
       const msg = err instanceof Error ? err.message : String(err);
-      if (/404|NOT_FOUND|no longer available/i.test(msg)) continue;
-      throw err;
+      attemptErrors.push(`${model}: ${msg.slice(0, 140)}`);
+      // Immediately fail on invalid API key; fall back to next model on high demand (503), rate limit (429), 404, timeout, etc.
+      if (/API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i.test(msg)) {
+        throw err;
+      }
+      continue;
     }
   }
 
-  if (!responseText || responseText === '{}') {
-    if (lastError) throw lastError;
+  if (!parsed) {
+    throw new Error(
+      `All Gemini models are temporarily busy or unavailable. Last error: ${
+        lastError instanceof Error ? lastError.message : attemptErrors.join(' | ')
+      }`
+    );
   }
-
-  const parsed = JSON.parse(responseText) as {
-    summary?: string;
-    assignments?: Array<Omit<StandardizedExtractedAssignment, 'courseId'>>;
-  };
 
   const assignments: StandardizedExtractedAssignment[] = (parsed.assignments || [])
     .filter((a) => /^\d{4}-\d{2}-\d{2}$/.test(a.dueDate || ''))
