@@ -10,12 +10,6 @@ interface ChatMsg {
 }
 
 const CHAT_KEY = 'clearops_schedule_chat_v1';
-const WELCOME: ChatMsg = {
-  id: 'welcome',
-  role: 'app',
-  text: 'Tell me what to add. Try "Lab sync tomorrow 2–3pm", "Empty zone 4–5:30pm", or "Remind me to call the cleaner at 5pm".',
-};
-const SUGGESTIONS = ['Empty zone 4pm to 5:30pm', 'Remind me to restock coffee at 6pm', 'Gym tomorrow at 7am'];
 
 function fmt(t: string): string {
   const [h, m] = t.split(':').map(Number);
@@ -39,11 +33,13 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
   const [messages, setMessages] = useState<ChatMsg[]>(() => {
     try {
       const raw = window.sessionStorage.getItem(CHAT_KEY);
-      if (raw) return JSON.parse(raw) as ChatMsg[];
+      if (raw) {
+        return (JSON.parse(raw) as ChatMsg[]).filter((m) => m.id !== 'welcome');
+      }
     } catch {
       /* ignore */
     }
-    return [WELCOME];
+    return [];
   });
   const [text, setText] = useState('');
   const [listening, setListening] = useState(false);
@@ -120,24 +116,14 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
     }
   };
 
-  const hasUserMsg = messages.some((m) => m.role === 'user');
-
   return (
     <div className="sched-chat">
-      <div className="sched-chat-log" ref={logRef} aria-live="polite">
-        {messages.map((m) => (
-          <div key={m.id} className={`chat-msg is-${m.role}`}>
-            {m.text}
-          </div>
-        ))}
-      </div>
-
-      {!hasUserMsg && (
-        <div className="chat-chips">
-          {SUGGESTIONS.map((s) => (
-            <button key={s} type="button" className="chat-chip" onClick={() => send(s)}>
-              {s}
-            </button>
+      {messages.length > 0 && (
+        <div className="sched-chat-log" ref={logRef} aria-live="polite">
+          {messages.map((m) => (
+            <div key={m.id} className={`chat-msg is-${m.role}`}>
+              {m.text}
+            </div>
           ))}
         </div>
       )}

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, ArrowRight, Bell, Check, ChevronLeft, ChevronRight, Sparkles, Trash2, X } from 'lucide-react';
+import { Activity, ArrowRight, Bell, Check, ChevronLeft, Sparkles, Trash2, X } from 'lucide-react';
 import { Badge, Button } from '../../components/ui';
 import { addDaysISO, formatShortDate, getWeekDatesISO, useOpsStore } from '../../store/opsStore';
 import type { CalendarBlock } from '../../types/schema';
@@ -198,19 +198,6 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
             </>
           )}
           <div className="gcal-toolbar-right">
-            <button type="button" className="gcal-icon-btn" aria-label="Previous" onClick={() => shiftDate(-1)}>
-              <ChevronLeft size={18} />
-            </button>
-            <button
-              type="button"
-              className="gcal-today-btn"
-              onClick={() => actions.setSelectedDate(TODAY_ANCHOR)}
-            >
-              Today
-            </button>
-            <button type="button" className="gcal-icon-btn" aria-label="Next" onClick={() => shiftDate(1)}>
-              <ChevronRight size={18} />
-            </button>
             <button
               type="button"
               className="gcal-icon-btn"
