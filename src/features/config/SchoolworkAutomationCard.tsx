@@ -125,7 +125,9 @@ export const SchoolworkAutomationCard: React.FC = () => {
     }
   };
 
-  const isFullyWired = Boolean(status?.hasGeminiKey && status?.hasGoogleRefreshToken);
+  const isFullyWired = Boolean(
+    status?.hasGeminiKey && (status?.hasGoogleRefreshToken || status?.lastRunAt)
+  );
 
   return (
     <Card>
