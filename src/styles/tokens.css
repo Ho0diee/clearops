@@ -2060,10 +2060,9 @@ textarea {
   position: absolute;
   left: 0;
   right: 0;
-  height: 9px;
+  height: 11px;
   z-index: 3;
   cursor: ns-resize;
-  touch-action: none;
 }
 
 .gcal-resize-handle.is-top {

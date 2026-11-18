@@ -32,7 +32,7 @@ const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const WHY_CATEGORIES: WhyCategory[] = ['Organization', 'School', 'Health', 'Family'];
 const SWIPE_MS = 260;
 const SNAP_BACK_MS = 210;
-const LONG_PRESS_MS = 175;
+const LONG_PRESS_MS = 380;
 const EASE_OUT_EXPO = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 function toMin(t: string): number {
@@ -1191,22 +1191,25 @@ export const CalendarGrid: React.FC<{
         targetBlock: block,
       };
 
-      if (e.pointerType !== 'mouse') {
-        holdTimerRef.current = window.setTimeout(() => {
-          holdTimerRef.current = null;
-          if (gestureRef.current?.originKind === 'block' && gestureRef.current.targetBlock) {
-            if (scrollRef.current) {
-              try {
-                scrollRef.current.setPointerCapture(e.pointerId);
-                gestureRef.current.captured = true;
-              } catch {
-                /* ignore */
-              }
+      // Require an intentional press-and-hold (380ms) before lifting to move an event
+      holdTimerRef.current = window.setTimeout(() => {
+        holdTimerRef.current = null;
+        if (
+          gestureRef.current?.originKind === 'block' &&
+          gestureRef.current.axis === 'none' &&
+          gestureRef.current.targetBlock
+        ) {
+          if (scrollRef.current) {
+            try {
+              scrollRef.current.setPointerCapture(e.pointerId);
+              gestureRef.current.captured = true;
+            } catch {
+              /* ignore */
             }
-            engageMoveBlock(block, lastPointerClientRef.current.x, lastPointerClientRef.current.y);
           }
-        }, LONG_PRESS_MS);
-      }
+          engageMoveBlock(block, lastPointerClientRef.current.x, lastPointerClientRef.current.y);
+        }
+      }, LONG_PRESS_MS);
     },
     [finalizePendingGlide, engageMoveBlock]
   );
@@ -1215,16 +1218,16 @@ export const CalendarGrid: React.FC<{
     (e: React.PointerEvent, block: CalendarBlock, edge: 'resize-start' | 'resize-end') => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       e.stopPropagation();
-      e.preventDefault();
       finalizePendingGlide();
       clearHoldTimer();
 
+      const pointerId = e.pointerId;
       lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
       const origStart = toMin(block.startTime);
       const origEnd = Math.max(origStart + 15, toMin(block.endTime));
 
       gestureRef.current = {
-        pointerId: e.pointerId,
+        pointerId,
         pointerType: e.pointerType,
         captured: false,
         startX: e.clientX,
@@ -1232,36 +1235,44 @@ export const CalendarGrid: React.FC<{
         lastX: e.clientX,
         lastTime: performance.now(),
         vx: 0,
-        axis: 'y',
+        axis: 'none',
         stageWidth: stageRef.current?.clientWidth || 320,
         originKind: 'resize',
         targetBlock: block,
         resizeEdge: edge,
       };
 
-      if (scrollRef.current) {
-        try {
-          scrollRef.current.setPointerCapture(e.pointerId);
-          gestureRef.current.captured = true;
-        } catch {
-          /* ignore */
+      // Require holding the event edge (380ms) before unlocking start/end time resize
+      holdTimerRef.current = window.setTimeout(() => {
+        holdTimerRef.current = null;
+        if (
+          gestureRef.current?.originKind === 'resize' &&
+          gestureRef.current.axis === 'none' &&
+          gestureRef.current.targetBlock
+        ) {
+          if (scrollRef.current) {
+            try {
+              scrollRef.current.setPointerCapture(pointerId);
+              gestureRef.current.captured = true;
+            } catch {
+              /* ignore */
+            }
+          }
+          try {
+            navigator.vibrate?.(10);
+          } catch {
+            /* ignore */
+          }
+          setCreateDraft(null);
+          setActiveDrag({
+            kind: edge,
+            block,
+            date: block.date,
+            startMins: origStart,
+            endMins: origEnd,
+          });
         }
-      }
-
-      try {
-        navigator.vibrate?.(10);
-      } catch {
-        /* ignore */
-      }
-
-      setCreateDraft(null);
-      setActiveDrag({
-        kind: edge,
-        block,
-        date: block.date,
-        startMins: origStart,
-        endMins: origEnd,
-      });
+      }, LONG_PRESS_MS);
     },
     [finalizePendingGlide]
   );
@@ -1273,9 +1284,10 @@ export const CalendarGrid: React.FC<{
       finalizePendingGlide();
       clearHoldTimer();
 
+      const pointerId = e.pointerId;
       lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
       gestureRef.current = {
-        pointerId: e.pointerId,
+        pointerId,
         pointerType: e.pointerType,
         captured: false,
         startX: e.clientX,
@@ -1289,41 +1301,43 @@ export const CalendarGrid: React.FC<{
         targetReminder: rem,
       };
 
-      if (e.pointerType !== 'mouse') {
-        holdTimerRef.current = window.setTimeout(() => {
-          holdTimerRef.current = null;
-          if (gestureRef.current?.originKind === 'reminder' && gestureRef.current.targetReminder) {
-            if (scrollRef.current) {
-              try {
-                scrollRef.current.setPointerCapture(e.pointerId);
-                gestureRef.current.captured = true;
-              } catch {
-                /* ignore */
-              }
+      holdTimerRef.current = window.setTimeout(() => {
+        holdTimerRef.current = null;
+        if (
+          gestureRef.current?.originKind === 'reminder' &&
+          gestureRef.current.axis === 'none' &&
+          gestureRef.current.targetReminder
+        ) {
+          if (scrollRef.current) {
+            try {
+              scrollRef.current.setPointerCapture(pointerId);
+              gestureRef.current.captured = true;
+            } catch {
+              /* ignore */
             }
-            engageMoveReminder(rem);
           }
-        }, LONG_PRESS_MS);
-      }
+          engageMoveReminder(rem);
+        }
+      }, LONG_PRESS_MS);
     },
     [finalizePendingGlide, engageMoveReminder]
   );
 
   const onScrollPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    // Ignore pointerdowns on the left time gutter
     const target = e.target as HTMLElement | null;
     if (target?.closest('.gcal-hours')) return;
 
     finalizePendingGlide();
     clearHoldTimer();
 
+    const pointerId = e.pointerId;
     const clientX = e.clientX;
     const clientY = e.clientY;
     lastPointerClientRef.current = { x: clientX, y: clientY };
 
     gestureRef.current = {
-      pointerId: e.pointerId,
+      pointerId,
       pointerType: e.pointerType,
       captured: false,
       startX: clientX,
@@ -1336,23 +1350,21 @@ export const CalendarGrid: React.FC<{
       originKind: 'empty',
     };
 
-    // On touch, holding on empty space for 190ms enters Google Calendar sweep-create drag mode
-    if (e.pointerType !== 'mouse') {
-      holdTimerRef.current = window.setTimeout(() => {
-        holdTimerRef.current = null;
-        if (gestureRef.current?.originKind === 'empty' && gestureRef.current.axis === 'none') {
-          if (scrollRef.current) {
-            try {
-              scrollRef.current.setPointerCapture(e.pointerId);
-              gestureRef.current.captured = true;
-            } catch {
-              /* ignore */
-            }
+    // Require holding the empty calendar background (380ms) to create/sweep a new event (never on quick tap!)
+    holdTimerRef.current = window.setTimeout(() => {
+      holdTimerRef.current = null;
+      if (gestureRef.current?.originKind === 'empty' && gestureRef.current.axis === 'none') {
+        if (scrollRef.current) {
+          try {
+            scrollRef.current.setPointerCapture(pointerId);
+            gestureRef.current.captured = true;
+          } catch {
+            /* ignore */
           }
-          engageSweepCreate(lastPointerClientRef.current.x, lastPointerClientRef.current.y);
         }
-      }, 190);
-    }
+        engageSweepCreate(lastPointerClientRef.current.x, lastPointerClientRef.current.y);
+      }
+    }, LONG_PRESS_MS);
   };
 
   const onScrollPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -1366,7 +1378,7 @@ export const CalendarGrid: React.FC<{
     const dy = y - g.startY;
     const dist = Math.hypot(dx, dy);
 
-    // 1. If already in an active drag/resize/sweep mode, update live grid coordinates!
+    // 1. Once hold has unlocked active drag/resize/sweep, update live grid coordinates!
     if (activeDragRef.current) {
       if (!g.captured && scrollRef.current) {
         try {
@@ -1380,51 +1392,7 @@ export const CalendarGrid: React.FC<{
       return;
     }
 
-    // 2. On desktop mouse, moving >= 5px immediately promotes block/reminder/empty-vertical into live drag!
-    if (g.pointerType === 'mouse' && dist >= 5) {
-      if (g.originKind === 'block' && g.targetBlock) {
-        if (scrollRef.current) {
-          try {
-            scrollRef.current.setPointerCapture(g.pointerId);
-            g.captured = true;
-          } catch {
-            /* ignore */
-          }
-        }
-        engageMoveBlock(g.targetBlock, g.startX, g.startY);
-        updateDragFromClientPoint(x, y);
-        return;
-      }
-      if (g.originKind === 'reminder' && g.targetReminder) {
-        if (scrollRef.current) {
-          try {
-            scrollRef.current.setPointerCapture(g.pointerId);
-            g.captured = true;
-          } catch {
-            /* ignore */
-          }
-        }
-        engageMoveReminder(g.targetReminder);
-        updateDragFromClientPoint(x, y);
-        return;
-      }
-      // On desktop empty space: vertical drag sweeps out an event; horizontal drag glides days/weeks!
-      if (g.originKind === 'empty' && g.axis === 'none' && Math.abs(dy) > Math.abs(dx) * 1.15) {
-        if (scrollRef.current) {
-          try {
-            scrollRef.current.setPointerCapture(g.pointerId);
-            g.captured = true;
-          } catch {
-            /* ignore */
-          }
-        }
-        engageSweepCreate(g.startX, g.startY);
-        updateDragFromClientPoint(x, y);
-        return;
-      }
-    }
-
-    // 3. Otherwise, if finger moved >= 7px before long-press fired, cancel long-press & run swipe/scroll!
+    // 2. If pointer moves >= 7px BEFORE the 380ms hold completes, cancel the hold & run scroll/swipe!
     if (g.axis === 'none') {
       if (dist < 7) return;
       clearHoldTimer();
@@ -1530,16 +1498,7 @@ export const CalendarGrid: React.FC<{
 
     if (scrollRef.current) scrollRef.current.style.overflowY = '';
 
-    // 2. Quick tap on empty calendar grid -> Google Calendar tap-to-add at that exact day & 30m slot!
-    const totalMove = Math.hypot(e.clientX - g.startX, e.clientY - g.startY);
-    if (!cancelled && g.originKind === 'empty' && g.axis === 'none' && totalMove < 7) {
-      const { date, rawMins } = resolveGridPoint(e.clientX, e.clientY);
-      const slotStart = Math.max(0, Math.min(23 * 60, Math.floor(rawMins / 30) * 30));
-      openNewEventSheet(date, slotStart, Math.min(24 * 60, slotStart + 60));
-      return;
-    }
-
-    // 3. Finalize horizontal day/week carousel swipe
+    // Finalize horizontal day/week carousel swipe (quick taps on empty space never create events by accident)
     if (g.axis !== 'x') return;
 
     suppressClickUntilRef.current = performance.now() + 320;
