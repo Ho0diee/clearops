@@ -732,7 +732,9 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }, 450);
   }, [state, performCloudSync]);
 
-  useSchoolworkExtractorBridge(state, setState, tombstonesRef, ohchsDelaysRef);
+  useSchoolworkExtractorBridge(state, setState, tombstonesRef, ohchsDelaysRef, () => {
+    void performCloudSync('pull');
+  });
 
   useEffect(() => {
     document.documentElement.dataset.accent = state.siteConfig.accentTheme || 'cobalt';
