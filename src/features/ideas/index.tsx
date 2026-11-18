@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   Calendar,
   CalendarPlus,
   Check,
@@ -15,6 +16,7 @@ import {
   Lightbulb,
   Lock,
   Receipt,
+  RotateCcw,
   Search,
   SquarePen,
   Tag,
@@ -26,7 +28,7 @@ import { countCoveredTasks, getBlockingBottleneck } from '../../store/ideaBlocki
 import { formatFriendlyTime } from '../../store/scheduleAi';
 import type { CalendarBlock, IdeaItem, IdeaResponsibilityType } from '../../types/schema';
 
-type SmartFolderId = '__BOTTLENECKS__' | string;
+type SmartFolderId = '__BOTTLENECKS__' | '__ARCHIVE__' | string;
 type MobileNotesPane = 'folders' | 'list' | 'note';
 
 const RESPONSIBILITY_CYCLE: (IdeaResponsibilityType | undefined)[] = [
@@ -121,6 +123,18 @@ export const IdeasHubView: React.FC = () => {
     [state.ideas]
   );
 
+  const archivedNotes = useMemo(
+    () =>
+      state.ideas
+        .filter((i) => i.status === 'completed')
+        .sort((a, b) => {
+          const ta = a.archivedAt || a.updatedAt || a.createdAt;
+          const tb = b.archivedAt || b.updatedAt || b.createdAt;
+          return tb.localeCompare(ta);
+        }),
+    [state.ideas]
+  );
+
   const bottleneckCount = useMemo(
     () => allNotes.filter((i) => i.isBottleneck).length,
     [allNotes]
@@ -128,7 +142,9 @@ export const IdeasHubView: React.FC = () => {
 
   const folderNotes = useMemo(() => {
     let base: IdeaItem[];
-    if (selectedFolder === '__BOTTLENECKS__') {
+    if (selectedFolder === '__ARCHIVE__') {
+      base = archivedNotes;
+    } else if (selectedFolder === '__BOTTLENECKS__') {
       base = allNotes
         .filter((i) => i.isBottleneck)
         .sort((a, b) =>
@@ -148,9 +164,11 @@ export const IdeasHubView: React.FC = () => {
       const hay = `${i.title} ${getNoteBody(i)} ${i.project}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [allNotes, selectedFolder, searchQuery]);
+  }, [allNotes, archivedNotes, selectedFolder, searchQuery]);
 
-  const canReorder = selectedFolder !== '__BOTTLENECKS__' && !searchQuery.trim();
+  const isArchiveFolder = selectedFolder === '__ARCHIVE__';
+  const canReorder =
+    selectedFolder !== '__BOTTLENECKS__' && !isArchiveFolder && !searchQuery.trim();
 
   // Which notes are covered by a higher-priority blocking bottleneck
   const blockedByMap = useMemo(() => {
@@ -163,13 +181,13 @@ export const IdeasHubView: React.FC = () => {
   }, [allNotes]);
 
   const activeNote = useMemo(
-    () => allNotes.find((n) => n.id === selectedNoteId) ?? folderNotes[0] ?? null,
-    [allNotes, folderNotes, selectedNoteId]
+    () => folderNotes.find((n) => n.id === selectedNoteId) ?? folderNotes[0] ?? null,
+    [folderNotes, selectedNoteId]
   );
 
   const openNoteRecord = useMemo(
-    () => (selectedNoteId ? allNotes.find((n) => n.id === selectedNoteId) ?? null : null),
-    [allNotes, selectedNoteId]
+    () => (selectedNoteId ? state.ideas.find((n) => n.id === selectedNoteId) ?? null : null),
+    [state.ideas, selectedNoteId]
   );
 
   // Open Empty Zones available on the calendar (today & upcoming)
@@ -184,13 +202,17 @@ export const IdeasHubView: React.FC = () => {
   );
 
   const folderDisplayName =
-    selectedFolder === '__BOTTLENECKS__' ? 'Bottlenecks' : selectedFolder;
+    selectedFolder === '__BOTTLENECKS__'
+      ? 'Bottlenecks'
+      : selectedFolder === '__ARCHIVE__'
+      ? 'Archive'
+      : selectedFolder;
 
   // Cleanup blank untitled note when navigating away (Apple Notes behavior)
   const cleanupBlankNoteIfEmpty = (noteId: string | null) => {
     if (!noteId) return;
     const item = state.ideas.find((i) => i.id === noteId);
-    if (item && !item.title.trim() && !getNoteBody(item).trim()) {
+    if (item && item.status !== 'completed' && !item.title.trim() && !getNoteBody(item).trim()) {
       actions.deleteIdea(item.id);
     }
   };
@@ -204,7 +226,9 @@ export const IdeasHubView: React.FC = () => {
     setDragState(null);
     setMobilePane('list');
     const firstInFolder =
-      folderId === '__BOTTLENECKS__'
+      folderId === '__ARCHIVE__'
+        ? archivedNotes[0]
+        : folderId === '__BOTTLENECKS__'
         ? allNotes.find((i) => i.isBottleneck)
         : allNotes.find((i) => i.project === folderId);
     setSelectedNoteId(firstInFolder?.id ?? null);
@@ -387,16 +411,26 @@ export const IdeasHubView: React.FC = () => {
     if (!note) {
       return (
         <div className="notes-empty-editor">
-          <Lightbulb size={28} strokeWidth={1.6} />
-          <span>Select a note or tap Compose to start writing</span>
-          <button type="button" className="notes-primary-pill" onClick={createNewNote}>
-            <SquarePen size={15} />
-            <span>New Note</span>
-          </button>
+          {isArchiveFolder ? (
+            <>
+              <Archive size={28} strokeWidth={1.6} />
+              <span>Select an archived idea to look back at what it was</span>
+            </>
+          ) : (
+            <>
+              <Lightbulb size={28} strokeWidth={1.6} />
+              <span>Select a note or tap Compose to start writing</span>
+              <button type="button" className="notes-primary-pill" onClick={createNewNote}>
+                <SquarePen size={15} />
+                <span>New Note</span>
+              </button>
+            </>
+          )}
         </div>
       );
     }
 
+    const isArchived = note.status === 'completed';
     const scheduledBlock = state.blocks.find(
       (b) => b.assignedIdeaId === note.id && !b.completed
     );
@@ -423,124 +457,170 @@ export const IdeasHubView: React.FC = () => {
           )}
 
           <div className="notes-editor-top-icons">
-            <button
-              type="button"
-              className="notes-icon-btn is-danger"
-              aria-label="Delete note"
-              title="Delete note"
-              onClick={() => {
-                const deletedId = note.id;
-                actions.deleteIdea(deletedId);
-                setZonePickerOpen(false);
-                if (isMobileEditor) {
-                  setMobilePane('list');
-                }
-                setSelectedNoteId(null);
-              }}
-            >
-              <Trash2 size={17} />
-            </button>
-            <button
-              type="button"
-              className="notes-icon-btn"
-              aria-label="New note"
-              title="New Note"
-              onClick={createNewNote}
-            >
-              <SquarePen size={18} />
-            </button>
+            {isArchived ? (
+              <button
+                type="button"
+                className="notes-archive-action-btn is-restore"
+                onClick={() => {
+                  actions.unarchiveIdea(note.id);
+                  setZonePickerOpen(false);
+                  if (isMobileEditor) {
+                    setMobilePane('list');
+                  }
+                  setSelectedNoteId(null);
+                }}
+                title={`Restore note back to ${note.project}`}
+              >
+                <RotateCcw size={14} />
+                <span>Restore</span>
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="notes-archive-action-btn"
+                  onClick={() => {
+                    actions.archiveIdea(note.id);
+                    setZonePickerOpen(false);
+                    if (isMobileEditor) {
+                      setMobilePane('list');
+                    }
+                    setSelectedNoteId(null);
+                  }}
+                  title="Finish & move to Archive"
+                >
+                  <Archive size={14} />
+                  <span>Archive</span>
+                </button>
+                <button
+                  type="button"
+                  className="notes-icon-btn"
+                  aria-label="New note"
+                  title="New Note"
+                  onClick={createNewNote}
+                >
+                  <SquarePen size={18} />
+                </button>
+              </>
+            )}
           </div>
         </div>
 
         {/* Pure Apple Notes Paper Canvas */}
         <div className="notes-paper">
-          {/* Lightweight Pill Strip: Responsibility (Paid/Cost/Time-Saving) · Idea/Bottleneck · Empty Zone */}
-          <div className="notes-chip-row">
-            <button
-              type="button"
-              className={`notes-resp-toggle ${
-                note.responsibilityType ? `is-${note.responsibilityType}` : ''
-              }`.trim()}
-              onClick={() =>
-                actions.updateIdea(note.id, {
-                  responsibilityType: nextResponsibilityType(note.responsibilityType),
-                  updatedAt: new Date().toISOString(),
-                })
-              }
-              title="Tap to cycle: Paid, Cost, Time-Saving, or None"
-            >
-              {note.responsibilityType === 'paid' ? (
-                <DollarSign size={12} />
-              ) : note.responsibilityType === 'cost' ? (
-                <Receipt size={12} />
-              ) : note.responsibilityType === 'time-saving' ? (
-                <Clock size={12} />
-              ) : (
-                <Tag size={12} />
-              )}
-              <span>{responsibilityLabel(note.responsibilityType)}</span>
-            </button>
-
-            <button
-              type="button"
-              className={`notes-tag-toggle ${note.isBottleneck ? 'is-bottleneck' : ''}`.trim()}
-              onClick={() => actions.toggleIdeaBottleneck(note.id)}
-              title="Tap to switch between Idea and Bottleneck"
-            >
-              {note.isBottleneck ? (
-                <>
-                  <AlertTriangle size={12} />
-                  <span>Bottleneck</span>
-                </>
-              ) : (
-                <>
-                  <Lightbulb size={12} />
-                  <span>Idea</span>
-                </>
-              )}
-            </button>
-
-            <button
-              type="button"
-              className={`notes-schedule-btn ${scheduledBlock ? 'is-scheduled' : ''}`.trim()}
-              onClick={() => setZonePickerOpen((prev) => !prev)}
-              title="Add to an Empty Zone on your calendar"
-            >
-              {scheduledBlock ? <Check size={12} /> : <CalendarPlus size={12} />}
-              <span>
-                {scheduledBlock
-                  ? `${
-                      scheduledBlock.date === todayIso
-                        ? 'Today'
-                        : formatShortDate(scheduledBlock.date)
-                    } · ${formatFriendlyTime(scheduledBlock.startTime)}`
-                  : 'Empty Zone'}
+          {isArchived ? (
+            <div className="notes-chip-row">
+              <span className="notes-archived-origin-pill">
+                <Folder size={12} />
+                <span>{note.project}</span>
               </span>
-            </button>
-
-            {note.isBottleneck && (
+              {note.responsibilityType && (
+                <span className={`notes-mini-badge is-${note.responsibilityType}`}>
+                  {responsibilityLabel(note.responsibilityType)}
+                </span>
+              )}
+              <span
+                className={`notes-mini-badge ${
+                  note.isBottleneck ? 'is-bottleneck' : 'is-archived-kind'
+                }`.trim()}
+              >
+                {note.isBottleneck ? 'Bottleneck' : 'Idea'}
+              </span>
+              {note.archivedAt && (
+                <span className="notes-archived-date">
+                  Archived {formatShortDate(note.archivedAt.slice(0, 10))}
+                </span>
+              )}
+            </div>
+          ) : (
+            /* Lightweight Pill Strip: Responsibility (Paid/Cost/Time-Saving) · Idea/Bottleneck · Empty Zone */
+            <div className="notes-chip-row">
               <button
                 type="button"
-                className={`notes-cover-toggle ${note.blocksBelow ? 'is-on' : ''}`.trim()}
+                className={`notes-resp-toggle ${
+                  note.responsibilityType ? `is-${note.responsibilityType}` : ''
+                }`.trim()}
                 onClick={() =>
                   actions.updateIdea(note.id, {
-                    blocksBelow: !note.blocksBelow,
+                    responsibilityType: nextResponsibilityType(note.responsibilityType),
                     updatedAt: new Date().toISOString(),
                   })
                 }
-                title="Make this bottleneck cover (block) every lower-priority task in this folder"
+                title="Tap to cycle: Paid, Cost, Time-Saving, or None"
               >
-                <Layers size={12} />
+                {note.responsibilityType === 'paid' ? (
+                  <DollarSign size={12} />
+                ) : note.responsibilityType === 'cost' ? (
+                  <Receipt size={12} />
+                ) : note.responsibilityType === 'time-saving' ? (
+                  <Clock size={12} />
+                ) : (
+                  <Tag size={12} />
+                )}
+                <span>{responsibilityLabel(note.responsibilityType)}</span>
+              </button>
+
+              <button
+                type="button"
+                className={`notes-tag-toggle ${note.isBottleneck ? 'is-bottleneck' : ''}`.trim()}
+                onClick={() => actions.toggleIdeaBottleneck(note.id)}
+                title="Tap to switch between Idea and Bottleneck"
+              >
+                {note.isBottleneck ? (
+                  <>
+                    <AlertTriangle size={12} />
+                    <span>Bottleneck</span>
+                  </>
+                ) : (
+                  <>
+                    <Lightbulb size={12} />
+                    <span>Idea</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                className={`notes-schedule-btn ${scheduledBlock ? 'is-scheduled' : ''}`.trim()}
+                onClick={() => setZonePickerOpen((prev) => !prev)}
+                title="Add to an Empty Zone on your calendar"
+              >
+                {scheduledBlock ? <Check size={12} /> : <CalendarPlus size={12} />}
                 <span>
-                  {note.blocksBelow
-                    ? `Covers ${countCoveredTasks(note, allNotes)} below`
-                    : 'Cover tasks below'}
+                  {scheduledBlock
+                    ? `${
+                        scheduledBlock.date === todayIso
+                          ? 'Today'
+                          : formatShortDate(scheduledBlock.date)
+                      } · ${formatFriendlyTime(scheduledBlock.startTime)}`
+                    : 'Empty Zone'}
                 </span>
               </button>
-            )}
-          </div>
 
-          {blockedByMap.get(note.id) && (
+              {note.isBottleneck && (
+                <button
+                  type="button"
+                  className={`notes-cover-toggle ${note.blocksBelow ? 'is-on' : ''}`.trim()}
+                  onClick={() =>
+                    actions.updateIdea(note.id, {
+                      blocksBelow: !note.blocksBelow,
+                      updatedAt: new Date().toISOString(),
+                    })
+                  }
+                  title="Make this bottleneck cover (block) every lower-priority task in this folder"
+                >
+                  <Layers size={12} />
+                  <span>
+                    {note.blocksBelow
+                      ? `Covers ${countCoveredTasks(note, allNotes)} below`
+                      : 'Cover tasks below'}
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {!isArchived && blockedByMap.get(note.id) && (
             <button
               type="button"
               className="notes-blocked-strip"
@@ -805,6 +885,24 @@ export const IdeasHubView: React.FC = () => {
             );
           })}
         </div>
+
+        <div className="notes-section-label">Completed</div>
+        <div className="notes-group-card">
+          <button
+            type="button"
+            className={`notes-folder-row ${
+              selectedFolder === '__ARCHIVE__' ? 'is-selected' : ''
+            }`.trim()}
+            onClick={() => openFolder('__ARCHIVE__')}
+          >
+            <span className="notes-folder-icon is-muted">
+              <Archive size={16} />
+            </span>
+            <span className="notes-folder-name">Archive</span>
+            <span className="notes-folder-count">{archivedNotes.length}</span>
+            <ChevronRight size={16} className="notes-chevron" />
+          </button>
+        </div>
       </aside>
 
       {/* PANE 2: Notes List inside Selected Folder */}
@@ -835,7 +933,7 @@ export const IdeasHubView: React.FC = () => {
                 {reordering ? 'Done' : 'Prioritize'}
               </button>
             )}
-            {!reordering && (
+            {!reordering && !isArchiveFolder && (
               <button
                 type="button"
                 className="notes-icon-btn"
@@ -861,7 +959,7 @@ export const IdeasHubView: React.FC = () => {
             <input
               type="search"
               className="notes-search-input"
-              placeholder="Search"
+              placeholder={isArchiveFolder ? 'Search archive' : 'Search'}
               aria-label="Search notes"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -884,9 +982,11 @@ export const IdeasHubView: React.FC = () => {
             <span>
               {searchQuery
                 ? 'No matching notes'
+                : isArchiveFolder
+                ? 'No archived ideas yet. Tap Archive inside any finished note to keep it here.'
                 : `No notes in ${folderDisplayName} yet.`}
             </span>
-            {!searchQuery && (
+            {!searchQuery && !isArchiveFolder && (
               <button type="button" className="notes-primary-pill" onClick={createNewNote}>
                 <SquarePen size={14} />
                 <span>New Note</span>
@@ -902,8 +1002,8 @@ export const IdeasHubView: React.FC = () => {
               const scheduled = state.blocks.find(
                 (b) => b.assignedIdeaId === item.id && !b.completed
               );
-              const blocker = blockedByMap.get(item.id);
-              const covering = item.isBottleneck && item.blocksBelow;
+              const blocker = isArchiveFolder ? undefined : blockedByMap.get(item.id);
+              const covering = !isArchiveFolder && item.isBottleneck && item.blocksBelow;
               const isDragged = dragState?.id === item.id;
               const shift = rowShiftFor(idx, item.id);
 
@@ -941,7 +1041,7 @@ export const IdeasHubView: React.FC = () => {
                     )}
                   </div>
                   <div className="notes-item-sub">
-                    {selectedFolder === '__BOTTLENECKS__' ? (
+                    {selectedFolder === '__BOTTLENECKS__' || isArchiveFolder ? (
                       <span className="notes-item-folder-prefix">{item.project} · </span>
                     ) : null}
                     <span>{getPreviewSnippet(item)}</span>

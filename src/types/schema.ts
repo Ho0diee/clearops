@@ -68,6 +68,7 @@ export interface IdeaItem {
   estimatedMinutes?: number;
   createdAt: string;
   updatedAt?: string;
+  archivedAt?: string;
 }
 
 export interface CheckupBenchmark {
@@ -247,6 +248,8 @@ export interface OpsActions {
     estimatedMinutes?: number;
   }) => string;
   updateIdea: (ideaId: string, patch: Partial<Omit<IdeaItem, 'id'>>) => void;
+  archiveIdea: (ideaId: string) => void;
+  unarchiveIdea: (ideaId: string) => void;
   deleteIdea: (ideaId: string) => void;
   moveIdeaRank: (ideaId: string, direction: 'up' | 'down') => void;
   setIdeaRank: (ideaId: string, newRank: number) => void;

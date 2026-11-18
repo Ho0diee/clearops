@@ -937,6 +937,80 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }));
       },
 
+      archiveIdea: (ideaId) => {
+        let archivedTitle = '';
+        setState((prev) => {
+          const target = prev.ideas.find((i) => i.id === ideaId);
+          if (!target || target.status === 'completed') return prev;
+          archivedTitle = target.title.trim() || 'Untitled Note';
+          const nowIso = new Date().toISOString();
+          const updatedIdeas = prev.ideas.map((i) =>
+            i.id === ideaId
+              ? {
+                  ...i,
+                  status: 'completed' as const,
+                  archivedAt: nowIso,
+                  updatedAt: nowIso,
+                }
+              : i
+          );
+          const cleanedBlocks = prev.blocks.map((b) =>
+            b.assignedIdeaId === ideaId && !b.completed
+              ? {
+                  ...b,
+                  title: 'Empty Zone — Open Focus Slot',
+                  assignedIdeaId: undefined,
+                  startingStepHint: undefined,
+                }
+              : b
+          );
+          return {
+            ...prev,
+            blocks: cleanedBlocks,
+            ideas: normalizeProjectRanks(updatedIdeas, target.project),
+          };
+        });
+        if (archivedTitle) {
+          showToast(`Archived "${archivedTitle}"`);
+        }
+      },
+
+      unarchiveIdea: (ideaId) => {
+        let restoredProject = '';
+        setState((prev) => {
+          const target = prev.ideas.find((i) => i.id === ideaId);
+          if (!target || target.status !== 'completed') return prev;
+          const folder = target.project.trim() || prev.projects[0] || 'Personal';
+          restoredProject = folder;
+          const existingActiveCount = prev.ideas.filter(
+            (i) => i.project === folder && i.status !== 'completed'
+          ).length;
+          const projects = prev.projects.includes(folder)
+            ? prev.projects
+            : [...prev.projects, folder];
+          const updatedIdeas = prev.ideas.map((i) =>
+            i.id === ideaId
+              ? {
+                  ...i,
+                  project: folder,
+                  status: 'active' as const,
+                  priorityRank: existingActiveCount + 1,
+                  archivedAt: undefined,
+                  updatedAt: new Date().toISOString(),
+                }
+              : i
+          );
+          return {
+            ...prev,
+            projects,
+            ideas: normalizeProjectRanks(updatedIdeas, folder),
+          };
+        });
+        if (restoredProject) {
+          showToast(`Restored to ${restoredProject}`);
+        }
+      },
+
       deleteIdea: (ideaId) => {
         setState((prev) => {
           const target = prev.ideas.find((i) => i.id === ideaId);
