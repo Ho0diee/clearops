@@ -156,8 +156,8 @@ export const ReflectionDrawer: React.FC = () => {
 
   const handleDownloadExport = () => {
     const markdown = exportMarkdown || actions.generateGeminiWeeklyExport();
-    downloadMarkdownFile(`clearops-gemini-brief-${state.selectedDate}.md`, markdown);
-    actions.showToast(`Downloaded clearops-gemini-brief-${state.selectedDate}.md`);
+    downloadMarkdownFile(`intuition-gemini-brief-${state.selectedDate}.md`, markdown);
+    actions.showToast(`Downloaded intuition-gemini-brief-${state.selectedDate}.md`);
   };
 
   const handleCompleteReflection = () => {

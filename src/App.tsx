@@ -2,12 +2,10 @@ import React, { useEffect } from 'react';
 import {
   Activity,
   Calendar,
-  Globe,
   Lightbulb,
   Settings,
   Sun,
   ShieldCheck,
-  SlidersHorizontal,
   Sparkles,
 } from 'lucide-react';
 import { Badge, Button, SegmentedControl } from './components/ui';
@@ -105,17 +103,7 @@ const ClearOpsWorkspace: React.FC = () => {
             onClick={() => actions.setActiveTab('schedule')}
           >
             <span className="ops-brand-mark" aria-hidden="true" />
-            <span>{state.siteConfig.workspaceName || 'ClearOps'}</span>
-          </button>
-
-          <button
-            type="button"
-            className="ops-domain-pill"
-            onClick={() => actions.setActiveTab('config')}
-            title={`Configure ${state.siteConfig.targetDomain}`}
-          >
-            <Globe size={12} />
-            <span>{state.siteConfig.domainLabel || 'airbnb710.com'}</span>
+            <span>{state.siteConfig.workspaceName || 'Intuition'}</span>
           </button>
 
           <div className="ops-desktop-nav">

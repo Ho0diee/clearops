@@ -121,7 +121,7 @@ export const SiteConfigView: React.FC = () => {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = 'airbnb710-clearops-config.json';
+      anchor.download = 'intuition-config.json';
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
@@ -130,7 +130,7 @@ export const SiteConfigView: React.FC = () => {
       // Ignore download errors in headless environments
     }
 
-    actions.showToast('Exported airbnb710-clearops-config.json & copied to clipboard');
+    actions.showToast('Exported intuition-config.json & copied to clipboard');
   };
 
   const handleImportSubmit = () => {
@@ -247,7 +247,7 @@ export const SiteConfigView: React.FC = () => {
                   type="text"
                   className="ui-input"
                   value={state.siteConfig.workspaceName}
-                  placeholder="Airbnb 710 Operations"
+                  placeholder="Intuition"
                   onChange={(e) =>
                     actions.updateSiteConfig({ workspaceName: e.target.value })
                   }

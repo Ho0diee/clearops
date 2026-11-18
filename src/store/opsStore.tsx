@@ -247,12 +247,18 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const parsed = JSON.parse(raw) as Partial<OpsState>;
         if (parsed && Array.isArray(parsed.blocks) && Array.isArray(parsed.ideas)) {
           const mergedProjects = parsed.projects ?? INITIAL_OPS_STATE.projects;
+          const savedName = parsed.siteConfig?.workspaceName;
+          const migratedName =
+            !savedName || savedName === 'ClearOps' || savedName === 'Airbnb 710 Operations'
+              ? 'Intuition'
+              : savedName;
           return {
             ...INITIAL_OPS_STATE,
             ...parsed,
             siteConfig: {
               ...DEFAULT_SITE_CONFIG,
               ...(parsed.siteConfig ?? {}),
+              workspaceName: migratedName,
             },
             ideas: normalizeAllProjectsRanks(parsed.ideas, mergedProjects),
             toastMessage: null,
@@ -289,10 +295,8 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   useEffect(() => {
     document.documentElement.dataset.accent = state.siteConfig.accentTheme || 'cobalt';
-    const ws = state.siteConfig.workspaceName || 'ClearOps';
-    const dom = state.siteConfig.domainLabel || '';
-    document.title = dom ? `${ws} — ${dom}` : `${ws} — Personal & Profitable Operations`;
-  }, [state.siteConfig.accentTheme, state.siteConfig.workspaceName, state.siteConfig.domainLabel]);
+    document.title = state.siteConfig.workspaceName || 'Intuition';
+  }, [state.siteConfig.accentTheme, state.siteConfig.workspaceName]);
 
   useEffect(() => {
     if (!state.toastMessage) return;
@@ -1224,7 +1228,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const activeBottlenecks = state.ideas.filter((i) => i.isBottleneck);
 
         const lines: string[] = [
-          '# ClearOps Weekly Operations & Self-Reflection Brief (for Gemini)',
+          '# Intuition Weekly Operations & Self-Reflection Brief (for Gemini)',
           `Generated: ${state.selectedDate} | Protected Streak: ${state.streak.currentDays} days (Best: ${state.streak.bestDays}d)`,
           '',
           '## 1. Core Why Anchors',

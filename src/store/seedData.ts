@@ -5,7 +5,7 @@ export const TODAY_ISO = '2026-11-17';
 export const DEFAULT_SITE_CONFIG: SiteConfig = {
   targetDomain: 'https://airbnb710.com',
   domainLabel: 'airbnb710.com',
-  workspaceName: 'ClearOps',
+  workspaceName: 'Intuition',
   accentTheme: 'cobalt',
   activeTemplate: 'personal-cbs-ohcr',
   hostingProvider: 'Vercel',
@@ -571,7 +571,7 @@ export const AIRBNB710_STR_PRESET: Pick<
   siteConfig: {
     targetDomain: 'https://airbnb710.com',
     domainLabel: 'airbnb710.com',
-    workspaceName: 'Airbnb 710 Operations',
+    workspaceName: 'Intuition',
     accentTheme: 'cobalt',
     activeTemplate: 'airbnb710-str',
     hostingProvider: 'Vercel',
