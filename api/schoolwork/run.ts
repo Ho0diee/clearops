@@ -82,7 +82,7 @@ export async function POST(request: Request): Promise<Response> {
       }
       if (body.slidesByCourse && typeof body.slidesByCourse === 'object') {
         const sbc = body.slidesByCourse as Partial<Record<SchoolCourseId, string>>;
-        for (const k of ['eco', 'lit', 'precalc'] as SchoolCourseId[]) {
+        for (const k of ['eco', 'lit', 'precalc', 'physics'] as SchoolCourseId[]) {
           if (typeof sbc[k] === 'string') {
             cfg.slidesByCourse[k] = sbc[k]!.trim();
           }
@@ -96,6 +96,7 @@ export async function POST(request: Request): Promise<Response> {
       const courseId = ((body.courseId as SchoolCourseId) || 'eco') as SchoolCourseId;
       const rawSlideText = String(body.rawSlideText || '');
       const slideTitle = String(body.slideTitle || 'School Slide');
+      const sourceUrl = typeof body.sourceUrl === 'string' ? body.sourceUrl.trim() : undefined;
       if (!rawSlideText.trim()) {
         return Response.json(
           { ok: false, error: 'rawSlideText is required' },
@@ -106,6 +107,7 @@ export async function POST(request: Request): Promise<Response> {
         manualCourseId: courseId,
         manualRawSlideText: rawSlideText,
         manualSlideTitle: slideTitle,
+        manualSourceUrl: sourceUrl,
         manualAudiobookCsv:
           typeof body.audiobookSheetCsv === 'string' ? body.audiobookSheetCsv : undefined,
         forceExtract: true,

@@ -11,7 +11,7 @@ import {
   type ApesAudiobookTrack,
 } from './audiobookCatalog.js';
 
-export type SchoolCourseId = 'eco' | 'lit' | 'precalc';
+export type SchoolCourseId = 'eco' | 'lit' | 'precalc' | 'physics';
 
 export type SchoolTaskCategory = 'module' | 'homework' | 'lab' | 'test' | 'quiz' | 'project';
 
@@ -33,6 +33,8 @@ export interface StandardizedExtractedAssignment {
   fallbackMinutes: number;
   startingStep: string;
   contextDetails: string;
+  /** Exact Google Classroom / Google Slide URL where this assignment was pulled from */
+  sourceUrl?: string;
 }
 
 export interface CourseScheduleSpec {
@@ -42,7 +44,7 @@ export interface CourseScheduleSpec {
   teacher: string;
   projectFolder: string;
   color: EventColorId;
-  periodKeys: string[]; // e.g., ['p5'] for Eco, ['p7', 'p7a'] for Lit, ['p1'] for Pre-Calc
+  periodKeys: string[]; // e.g., ['p5'] for Eco, ['p7', 'p7a'] for Lit, ['p1'] for Pre-Calc, ['p2'] for Physics
 }
 
 export const SCHOOL_COURSES: Record<SchoolCourseId, CourseScheduleSpec> = {
@@ -73,10 +75,19 @@ export const SCHOOL_COURSES: Record<SchoolCourseId, CourseScheduleSpec> = {
     color: 'cobalt',
     periodKeys: ['p1'],
   },
+  physics: {
+    id: 'physics',
+    shortName: 'Physics',
+    fullName: 'Physics Honors',
+    teacher: 'Mr. Otterson',
+    projectFolder: 'Physics Honors',
+    color: 'teal',
+    periodKeys: ['p2'],
+  },
 };
 
 const AUTO_DUE_SECTION_HEADER = '--- Homework & Deadlines ---';
-const META_TAG_REGEX = /\[Meta:\s*course=(eco|lit|precalc)\s*\|\s*due=(\d{4}-\d{2}-\d{2})\s*\|\s*timing=(before-class|in-class|end-of-day)\s*\|\s*slug=([a-z0-9-]+)\]/i;
+const META_TAG_REGEX = /\[Meta:\s*course=(eco|lit|precalc|physics)\s*\|\s*due=(\d{4}-\d{2}-\d{2})\s*\|\s*timing=(before-class|in-class|end-of-day)\s*\|\s*slug=([a-z0-9-]+)\]/i;
 
 export function toMins(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number);
@@ -440,7 +451,7 @@ export function reconcileSchoolworkLifecycle(params: {
 
     const anyUnfinished = dueItems.some((entry) => !entry.block.completed);
     const bulletLines = dueItems.map((entry) => {
-      const cleanTitle = entry.block.title.replace(/^\[(Eco|Lit|Pre-Calc)\]\s*/i, '');
+      const cleanTitle = entry.block.title.replace(/^\[(Eco|Lit|Pre-Calc|Physics)\]\s*/i, '');
       return entry.block.completed
         ? `• ✓ DONE: ${cleanTitle}`
         : `• DUE TODAY: ${cleanTitle}`;
@@ -484,8 +495,116 @@ export function reconcileSchoolworkLifecycle(params: {
 }
 
 /**
+ * Scans forward day-by-day from `startDate` through `dueDate` to find the soonest
+ * non-overlapping homework slot across all existing blocks (classes, user events, and
+ * previously scheduled homework from any course).
+ */
+export function findSoonestNonOverlappingHomeworkSlot(params: {
+  startDate: string;
+  dueDate: string;
+  courseId: SchoolCourseId;
+  dueTiming: SchoolDueTiming;
+  durationMins: number;
+  existingBlocks: CalendarBlock[];
+  todayIso: string;
+  nowMinutesOfDay: number;
+  delaysByDate?: Record<string, { mode: OhchsDelayMode }>;
+}): { date: string; startTime: string; endTime: string } {
+  const {
+    startDate,
+    dueDate,
+    courseId,
+    dueTiming,
+    durationMins,
+    existingBlocks,
+    todayIso,
+    nowMinutesOfDay,
+    delaysByDate = {},
+  } = params;
+
+  const effectiveStart = startDate <= dueDate ? startDate : dueDate;
+  const roundedNowPlus10 = Math.ceil((nowMinutesOfDay + 10) / 5) * 5;
+
+  const tryPass = (eveningCutoffMins: number) => {
+    for (let offset = 0; offset <= 21; offset++) {
+      const candidateDate = addDays(effectiveStart, offset);
+      if (candidateDate > dueDate) break;
+
+      const delayMode = delaysByDate[candidateDate]?.mode ?? 'regular';
+      let maxEndMins = eveningCutoffMins;
+
+      if (candidateDate === dueDate && dueTiming !== 'end-of-day') {
+        const dueClass = hasCourseClassOnDate(candidateDate, courseId, delayMode);
+        if (dueClass) {
+          maxEndMins = Math.min(maxEndMins, toMins(dueClass.startTime) - 10);
+        }
+      }
+
+      const minStartMins =
+        candidateDate === todayIso ? roundedNowPlus10 : undefined;
+
+      const slot = findAvailableHomeworkSlotOnDate({
+        isoDate: candidateDate,
+        durationMins,
+        existingBlocks,
+        delayMode,
+        minStartMins,
+        maxEndMins,
+      });
+
+      if (slot) {
+        return { date: candidateDate, ...slot };
+      }
+    }
+    return null;
+  };
+
+  // Pass 1: normal evening cap (9:30 PM)
+  const normal = tryPass(21 * 60 + 30);
+  if (normal) return normal;
+
+  // Pass 2: stretched evening cap (10:45 PM) still strictly non-overlapping
+  const stretched = tryPass(22 * 60 + 45);
+  if (stretched) return stretched;
+
+  // Pass 3: if days up to dueDate are completely full, try morning-before-class or next open day without overlapping
+  for (let offset = 0; offset <= 7; offset++) {
+    const candidateDate = addDays(dueDate, offset);
+    const delayMode = delaysByDate[candidateDate]?.mode ?? 'regular';
+    const slot = findAvailableHomeworkSlotOnDate({
+      isoDate: candidateDate,
+      durationMins,
+      existingBlocks,
+      delayMode,
+      minStartMins: candidateDate === todayIso ? roundedNowPlus10 : undefined,
+      maxEndMins: 22 * 60 + 45,
+    });
+    if (slot) {
+      return { date: candidateDate, ...slot };
+    }
+  }
+
+  // Absolute last resort: append after the latest block on effectiveStart
+  const delayMode = delaysByDate[effectiveStart]?.mode ?? 'regular';
+  const dayEnds = existingBlocks
+    .filter((b) => b.date === effectiveStart && !/senior privileges/i.test(b.title))
+    .map((b) => toMins(b.endTime));
+  const fallbackStart = Math.max(
+    getEarliestHomeArrivalMinutes(effectiveStart, delayMode),
+    effectiveStart === todayIso ? roundedNowPlus10 : 0,
+    ...(dayEnds.length ? dayEnds : [0])
+  );
+  return {
+    date: effectiveStart,
+    startTime: fromMins(fallbackStart),
+    endTime: fromMins(fallbackStart + durationMins),
+  };
+}
+
+/**
  * Merges newly extracted standardized assignments from Gemini into existing blocks & ideas,
  * applying the exact Module Audiobook (+20% buffer) rule, 1-hour Lab on Assigned Date rule,
+ * 1-hour soonest-available non-overlapping Math/Lit/Physics homework rule,
  * Class Entry 6pm Night-Before Alarm rule, and 2-Hour Missed-Window Rollover rule.
  */
 export function applyExtractedAssignmentsToSchedule(params: {
@@ -522,7 +641,12 @@ export function applyExtractedAssignmentsToSchedule(params: {
   let addedCount = 0;
   let updatedCount = 0;
 
-  for (const item of assignments) {
+  // Schedule earliest-due assignments first so urgent items claim the soonest open slots cleanly
+  const sortedAssignments = [...assignments].sort((a, b) =>
+    (a.dueDate || '').localeCompare(b.dueDate || '')
+  );
+
+  for (const item of sortedAssignments) {
     const course = SCHOOL_COURSES[item.courseId];
     if (!course || !item.dueDate) continue;
 
@@ -533,7 +657,7 @@ export function applyExtractedAssignmentsToSchedule(params: {
     const ideaId = `sch-idea-${item.courseId}-${item.slug}`;
 
     // 1. Compute Exact Duration & Breakdown per Standardized Rules:
-    let durationMinutes = Math.max(20, Math.min(180, item.fallbackMinutes || 45));
+    let durationMinutes = Math.max(20, Math.min(180, item.fallbackMinutes || 60));
     let durationOriginNote = '';
 
     if (item.category === 'lab') {
@@ -551,26 +675,52 @@ export function applyExtractedAssignmentsToSchedule(params: {
         durationMinutes = audioCalc.bufferedMinutes;
         durationOriginNote = audioCalc.breakdownLabel;
       }
+    } else if (
+      item.courseId === 'precalc' ||
+      item.courseId === 'lit' ||
+      item.courseId === 'physics'
+    ) {
+      // Standardized Classroom HW Rule: ~1 hour (60 min) soonest available non-overlapping block
+      durationMinutes = 60;
+      durationOriginNote =
+        item.courseId === 'precalc'
+          ? 'Math Homework Block: 60m soonest available non-overlapping slot'
+          : item.courseId === 'lit'
+          ? 'Lit Assignment Block: 60m non-overlapping slot before class deadline'
+          : 'Physics Assignment Block: 60m soonest available non-overlapping slot';
     }
 
-    // 2. Compute Target Date per Standardized Rules:
-    // - For Labs: the day it was assigned (`assignedDate` or closest prior class date)
-    // - For Modules / Homework: closest day before `dueDate` that we had Environmental/target class!
-    let targetDate: string;
-    if (item.category === 'lab') {
-      targetDate =
+    // 2. Compute Earliest Eligible Start Date per Standardized Rules:
+    // - Math (precalc), Lit, Physics: soonest available open slot starting today (or assignedDate if future)
+    // - Eco Labs: assignedDate (or closest prior Eco class date)
+    // - Eco Modules/HW: closest prior Eco class date before dueDate (clamped >= today if still upcoming)
+    let searchStartDate: string;
+    if (
+      item.courseId === 'precalc' ||
+      item.courseId === 'lit' ||
+      item.courseId === 'physics'
+    ) {
+      const assignedIso =
+        item.assignedDate && /^\d{4}-\d{2}-\d{2}$/.test(item.assignedDate)
+          ? item.assignedDate
+          : todayIso;
+      searchStartDate = assignedIso > todayIso ? assignedIso : todayIso;
+    } else if (item.category === 'lab') {
+      searchStartDate =
         item.assignedDate && /^\d{4}-\d{2}-\d{2}$/.test(item.assignedDate)
           ? item.assignedDate
           : findClosestPriorCourseClassDate(item.dueDate, item.courseId);
     } else {
-      targetDate = findClosestPriorCourseClassDate(item.dueDate, item.courseId);
+      searchStartDate = findClosestPriorCourseClassDate(item.dueDate, item.courseId);
     }
 
     const metaFooter = `[Meta: course=${item.courseId} | due=${item.dueDate} | timing=${item.dueTiming} | slug=${item.slug}]`;
+    const sourceLine = item.sourceUrl ? `Source: ${item.sourceUrl}` : '';
     const richNotes = [
       `Due ${item.dueDate} (${item.dueTiming.replace('-', ' ')}) · ${course.teacher}`,
       durationOriginNote,
       item.contextDetails,
+      sourceLine,
       metaFooter,
     ]
       .filter(Boolean)
@@ -593,30 +743,34 @@ export function applyExtractedAssignmentsToSchedule(params: {
         updatedCount++;
       }
     } else {
-      const delayMode = delaysByDate[targetDate]?.mode ?? 'regular';
-      const slot =
-        findAvailableHomeworkSlotOnDate({
-          isoDate: targetDate,
-          durationMins: durationMinutes,
-          existingBlocks: workingBlocks,
-          delayMode,
-        }) ?? {
-          startTime: fromMins(getEarliestHomeArrivalMinutes(targetDate, delayMode)),
-          endTime: fromMins(
-            getEarliestHomeArrivalMinutes(targetDate, delayMode) + durationMinutes
-          ),
-        };
+      const placed = findSoonestNonOverlappingHomeworkSlot({
+        startDate: searchStartDate,
+        dueDate: item.dueDate,
+        courseId: item.courseId,
+        dueTiming: item.dueTiming,
+        durationMins: durationMinutes,
+        existingBlocks: workingBlocks,
+        todayIso,
+        nowMinutesOfDay,
+        delaysByDate,
+      });
+
+      const promptAtStart =
+        item.courseId === 'precalc' ||
+        item.courseId === 'lit' ||
+        item.courseId === 'physics';
 
       workingBlocks.push({
         id: blockId,
-        date: targetDate,
-        startTime: slot.startTime,
-        endTime: slot.endTime,
+        date: placed.date,
+        startTime: placed.startTime,
+        endTime: placed.endTime,
         title: blockTitle,
         kind: 'goal-session',
         completed: false,
         whyCategory: 'School',
         customColor: course.color,
+        ...(promptAtStart ? { alertOffsetMinutes: 0 } : {}),
         assignedIdeaId: ideaId,
         startingStepHint: item.startingStep,
         notes: richNotes,

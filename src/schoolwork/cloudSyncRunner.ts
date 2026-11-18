@@ -49,6 +49,7 @@ const DEFAULT_CONFIG: SchoolworkAutomationConfig = {
     eco: DEFAULT_ECO_SLIDE_ID,
     lit: '',
     precalc: '',
+    physics: '',
   },
   lastHashByCourse: {},
 };
@@ -266,39 +267,65 @@ export async function extractAssignmentsWithGeminiHydrogen(params: {
   courseId: SchoolCourseId;
   slideTitle: string;
   rawSlideText: string;
+  sourceUrl?: string;
   todayIso: string;
   geminiApiKey: string;
 }): Promise<{ summary: string; assignments: StandardizedExtractedAssignment[] }> {
-  const { courseId, slideTitle, rawSlideText, todayIso, geminiApiKey } = params;
+  const { courseId, slideTitle, rawSlideText, sourceUrl, todayIso, geminiApiKey } = params;
   const course = SCHOOL_COURSES[courseId];
   const ai = new GoogleGenAI({ apiKey: geminiApiKey });
+
+  const courseSpecificRules =
+    courseId === 'precalc'
+      ? `MATH (AP PRE-CALCULUS — MS. GROVER) RULES:
+- Every assignment specifies the exact homework part/problems/pages to complete. Capture the EXACT problems, section, or worksheet part in "startingStep" and "contextDetails".
+- Set fallbackMinutes = 60 (1 hour).
+- Default dueTiming = "before-class" (due before Period 1 Pre-Calc on the due date) unless explicitly stated as end-of-day (11:59 PM).
+- Skip any Classroom item explicitly marked "Turned in" or "Graded" or missing a current/upcoming assignment task.`
+      : courseId === 'lit'
+      ? `LIT (AP LITERATURE — MR. LAUBY) RULES:
+- Mr. Lauby normally specifies when something is due IN CLASS (set dueTiming = "in-class").
+- If he does NOT specify in-class or 11:59 PM, treat it as due FOR THE LIT CLASS ON THE DUE DATE (set dueTiming = "before-class").
+- Capture reading chapters/pages, essay/writing prompt, and whether it is due in class inside "startingStep" and "contextDetails".
+- Set fallbackMinutes = 60 (1 hour).
+- Skip any Classroom item explicitly marked "Turned in" or "Graded".`
+      : courseId === 'physics'
+      ? `PHYSICS (PHYSICS HONORS — MR. OTTERSON) RULES:
+- Physics Honors meets ONLY on GREEN days (Period 2).
+- Capture the exact problem set, lab, worksheet, or reading details in "startingStep" and "contextDetails".
+- Set fallbackMinutes = 60 (1 hour).
+- Default dueTiming = "before-class" unless explicitly stated as in-class or 11:59 PM end-of-day.
+- Skip any Classroom item explicitly marked "Turned in" or "Graded".`
+      : `ECO (AP ENVIRONMENTAL SCIENCE — MS. FOX) RULES:
+- When textbook/audiobook Modules are assigned (e.g. "Modules 15 & 16", "Mod 20", "Modules 22-23"), set category = "module" and populate "moduleNumbers" with EVERY integer module number assigned. Do NOT guess minutes for Eco modules — our Audiobook Sheet engine computes the exact length + 20% buffer!
+- When a Lab or Lab Report is assigned, set category = "lab" and set "assignedDate" (YYYY-MM-DD) to the exact class date introduced plus "dueDate".`;
 
   const prompt = `You are the automated Academic Extractor for Oxford Hills Comprehensive High School (OHCHS).
 Target Course: ${course.fullName} (${course.shortName}) — Teacher: ${course.teacher}
 Today's Date (America/New_York): ${todayIso}
+${sourceUrl ? `Source Page URL: ${sourceUrl}` : ''}
 
 OHCHS 2026-2027 GREEN / GOLD ROTATION CALENDAR:
+- AP Pre-Calculus (Pre-Calc / Math) meets ONLY on GREEN days (Period 1).
+- Physics Honors (Physics) meets ONLY on GREEN days (Period 2).
 - AP Environmental Science (Eco) meets ONLY on GOLD days (Period 5).
 - AP Literature (Lit) meets ONLY on GOLD days (Period 7).
-- AP Pre-Calculus (Pre-Calc) meets ONLY on GREEN days (Period 1).
 ${buildOhchsRotationPrompt(todayIso, 42)}
+
+COURSE-SPECIFIC RULES:
+${courseSpecificRules}
 
 STRICT EXTRACTION RULES:
 1. Extract ONLY current or upcoming assignments, modules, labs, quizzes, projects, or exams whose dueDate is >= ${addDays(
     todayIso,
     -1
-  )}. Ignore old completed units from weeks ago.
-2. When textbook/audiobook Modules are assigned (e.g. "Modules 15 & 16", "Mod 20", "Modules 22-23"):
-   - Set category = "module"
-   - Populate "moduleNumbers" with EVERY integer module number assigned (e.g. [15, 16] or [22, 23]). Do NOT guess minutes for Eco modules — our Audiobook Sheet engine computes the exact length + 20% buffer from "moduleNumbers"!
-3. When a Lab or Lab Report is assigned:
-   - Set category = "lab"
-   - Set "assignedDate" (YYYY-MM-DD) to the exact class date the lab was introduced/assigned on the slide, and "dueDate" (YYYY-MM-DD) to when the lab is due!
-4. Resolve shorthand dates ("Fri 11/20", "next Gold day", "Tuesday after break") into exact YYYY-MM-DD dates using the OHCHS calendar above.
-5. Set "dueTiming" to "before-class" (checked at start of class), "in-class" (quiz/test/in-class activity), or "end-of-day" (explicitly 11:59 PM).
-6. Write a crisp 15-minute "startingStep" and put helpful details (Google Classroom check, guided notes packet, rubric notes) into "contextDetails".
+  )}. Ignore old completed units from weeks ago and skip items marked "Turned in" or "Graded".
+2. If an assignment on Google Classroom has NO explicit due date written on it, infer the next class meeting date for ${course.shortName} AFTER its posted date (only if posted within the last 7 days); ignore undated reference materials / syllabi / generic links.
+3. Resolve shorthand dates ("Fri 11/20", "Due Tomorrow", "Due Nov 20", "next Gold day", "Tuesday after break") into exact YYYY-MM-DD dates using the OHCHS calendar above (current school year is 2026-2027).
+4. Set "dueTiming" to "before-class" (due at/before start of class), "in-class" (explicitly due/done in class, quiz, or test), or "end-of-day" (explicitly 11:59 PM).
+5. Write a crisp actionable "startingStep" and put helpful details (exact homework problems, pages, rubric notes, or Classroom instructions) into "contextDetails".
 
-SLIDE DECK: ${slideTitle}
+SOURCE: ${slideTitle}
 CONTENT:
 ${rawSlideText.slice(0, 160000)}`;
 
@@ -433,9 +460,10 @@ ${rawSlideText.slice(0, 160000)}`;
           : null,
       dueDate: a.dueDate,
       dueTiming: a.dueTiming || 'before-class',
-      fallbackMinutes: Number(a.fallbackMinutes) || 45,
+      fallbackMinutes: Number(a.fallbackMinutes) || 60,
       startingStep: a.startingStep?.trim() || `Start ${course.shortName} assignment`,
       contextDetails: a.contextDetails?.trim() || '',
+      sourceUrl: sourceUrl?.trim() || undefined,
     }));
 
   return {
@@ -498,6 +526,7 @@ export async function runAutomatedSchoolworkPipeline(options?: {
   manualCourseId?: SchoolCourseId;
   manualRawSlideText?: string;
   manualSlideTitle?: string;
+  manualSourceUrl?: string;
   manualAudiobookCsv?: string;
   forceExtract?: boolean;
 }): Promise<{
@@ -523,6 +552,7 @@ export async function runAutomatedSchoolworkPipeline(options?: {
       courseId: options.manualCourseId,
       slideTitle: options.manualSlideTitle || 'Manual Test Slide',
       rawSlideText: options.manualRawSlideText,
+      sourceUrl: options.manualSourceUrl,
       todayIso,
       geminiApiKey: creds.geminiApiKey,
     });
@@ -540,7 +570,7 @@ export async function runAutomatedSchoolworkPipeline(options?: {
       refreshToken: creds.googleRefreshToken,
     });
 
-    for (const courseId of ['eco', 'lit', 'precalc'] as SchoolCourseId[]) {
+    for (const courseId of ['eco', 'lit', 'precalc', 'physics'] as SchoolCourseId[]) {
       const presId = cfg.slidesByCourse[courseId]?.trim();
       if (!presId) continue;
 

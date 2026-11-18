@@ -7,7 +7,7 @@ import {
 } from '../schoolwork/standardizedEngine';
 
 interface BookmarkletHashPayload {
-  courseId?: 'eco' | 'lit' | 'precalc';
+  courseId?: 'eco' | 'lit' | 'precalc' | 'physics';
   slideTitle?: string;
   slideUrl?: string;
   rawText?: string;
@@ -59,6 +59,8 @@ export function useSchoolworkExtractorBridge(
             ? 'Lit'
             : parsed.courseId === 'precalc'
             ? 'Pre-Calc'
+            : parsed.courseId === 'physics'
+            ? 'Physics'
             : 'Eco';
 
         setState((prev) => ({

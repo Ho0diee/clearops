@@ -1,19 +1,20 @@
 {
   "manifest_version": 3,
-  "name": "Intuition — 1-Click Eco & Sheet Sync",
-  "version": "1.0.0",
-  "description": "Click once to pull Ms. Fox's Eco Google Slide + live APES Audiobook Sheet durations and schedule directly into Intuition (airbnb710.com).",
-  "permissions": ["activeTab", "scripting", "storage", "notifications"],
+  "name": "Intuition — Eco, Math, Lit & Physics Auto-Sync",
+  "version": "1.2.0",
+  "description": "Automatically syncs Eco Slide + Audiobook Sheet and Google Classroom (Lit, Math/Pre-Calc, Physics) every 6 hours (or on 1-click) into Intuition (airbnb710.com).",
+  "permissions": ["activeTab", "scripting", "storage", "notifications", "alarms", "tabs"],
   "host_permissions": [
     "https://docs.google.com/*",
     "https://*.googleusercontent.com/*",
+    "https://classroom.google.com/*",
     "https://airbnb710.com/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Click to Sync Eco Slide + Audiobook Sheet → Intuition",
+    "default_title": "Sync Eco, Lit, Math & Physics → Intuition",
     "default_icon": {
       "48": "icon48.png",
       "128": "icon128.png"
