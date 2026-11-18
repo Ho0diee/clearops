@@ -3,6 +3,7 @@ import {
   mergeUniversalPayload,
   type UniversalSyncPayload,
 } from '../src/store/universalMerge.js';
+import { enqueueUpcomingBlockAlerts } from './_lib/pushServer.js';
 
 function buildCorsHeaders(request: Request): Record<string, string> {
   const origin = request.headers.get('origin') || '';
@@ -90,6 +91,14 @@ async function handleUpsert(request: Request): Promise<Response> {
         ...(current.etag ? { ifMatch: current.etag } : {}),
       });
 
+      if (pathname === 'intuition/universal-workspace-v1.json' && Array.isArray(merged.userBlocks)) {
+        try {
+          await enqueueUpcomingBlockAlerts(merged.userBlocks, 7);
+        } catch {
+          /* non-fatal */
+        }
+      }
+
       return Response.json(
         {
           ok: true,
@@ -110,6 +119,13 @@ async function handleUpsert(request: Request): Promise<Response> {
           allowOverwrite: true,
           contentType: 'application/json',
         });
+        if (pathname === 'intuition/universal-workspace-v1.json' && Array.isArray(remerged.userBlocks)) {
+          try {
+            await enqueueUpcomingBlockAlerts(remerged.userBlocks, 7);
+          } catch {
+            /* non-fatal */
+          }
+        }
         return Response.json(
           {
             ok: true,

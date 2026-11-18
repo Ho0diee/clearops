@@ -4949,3 +4949,67 @@ html.is-schedule-locked #root {
     border: none;
   }
 }
+
+/* ==========================================================================
+   Background Phone Push Notifications & Home Screen App Preview
+   ========================================================================== */
+
+.push-app-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+.push-app-icon-img {
+  width: 48px;
+  height: 48px;
+  border-radius: 11.5px;
+  flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(20, 20, 19, 0.18);
+  display: block;
+}
+
+.push-ios-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #FFFBF0;
+  border: 1px solid #F0DBA8;
+}
+
+.push-ios-guide-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #7A4F0B;
+}
+
+.push-ios-steps {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.gcal-push-hint {
+  margin-top: 2px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #FFFBF0;
+  border: 1px solid #F0DBA8;
+  color: #7A4F0B;
+  font-size: 11.5px;
+  line-height: 1.35;
+}

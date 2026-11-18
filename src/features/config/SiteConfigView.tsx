@@ -28,6 +28,7 @@ import {
 } from '../../components/ui';
 import { useOpsStore } from '../../store/opsStore';
 import { WhyAnchorsCard } from './WhyAnchorsCard';
+import { PushNotificationsCard } from './PushNotificationsCard';
 import { SchoolworkAutomationCard } from './SchoolworkAutomationCard';
 import { AIRBNB710_STR_PRESET, INITIAL_OPS_STATE } from '../../store/seedData';
 import type { AccentThemeId } from '../../types/schema';
@@ -188,6 +189,7 @@ export const SiteConfigView: React.FC = () => {
       <div className="ops-split-hub">
         {/* LEFT / PRIMARY COLUMN */}
         <div className="ops-stack-md">
+          <PushNotificationsCard />
           <WhyAnchorsCard />
           {/* CARD 1: Website & Workspace Profile */}
           <Card>

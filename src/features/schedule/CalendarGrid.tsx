@@ -28,6 +28,12 @@ import {
   formatAlertBadgeCompact,
   formatAlertOffsetShort,
 } from '../../store/eventColors';
+import {
+  enableBackgroundPush,
+  isIosDevice,
+  isStandalonePwa,
+  supportsWebPush,
+} from '../../store/pushClient';
 import type {
   CalendarBlock,
   EventColorId,
@@ -112,7 +118,12 @@ function eventClass(b: CalendarBlock): string {
 }
 
 function requestNotificationPermissionIfNeeded(): void {
-  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+  if (typeof window === 'undefined') return;
+  if (supportsWebPush() && Notification.permission === 'default') {
+    void enableBackgroundPush();
+    return;
+  }
+  if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => undefined);
   }
 }
@@ -370,6 +381,11 @@ const EventEnrichmentFields: React.FC<{
               }}
             />
             <span className="gcal-sheet-meta">min before (0 = at start)</span>
+          </div>
+        )}
+        {hasAlert && isIosDevice() && !isStandalonePwa() && (
+          <div className="gcal-push-hint">
+            Tip: Add Intuition to Home Screen via Safari Share to get alerts when the app is closed.
           </div>
         )}
       </div>

@@ -174,6 +174,8 @@ export const AlertMonitor: React.FC = () => {
             new Notification(item.block.title, {
               body: bodyParts.join('\n'),
               tag: item.signature,
+              icon: '/icon-192.png',
+              badge: '/badge-72.png',
             });
           } catch {
             /* ignore */
@@ -214,6 +216,50 @@ export const AlertMonitor: React.FC = () => {
       })
     );
   }, [state.blocks]);
+
+  // Open event editor automatically when user taps a background push notification
+  useEffect(() => {
+    const openBlockById = (blockId: string, date?: string) => {
+      if (!blockId) return;
+      if (date) {
+        actions.setSelectedDate(date);
+      }
+      actions.setActiveTab('schedule');
+      window.setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('intuition:open-block', { detail: { blockId } })
+        );
+      }, 60);
+    };
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const openBlock = params.get('openBlock');
+      const date = params.get('date') || undefined;
+      if (openBlock) {
+        openBlockById(openBlock, date);
+        params.delete('openBlock');
+        params.delete('date');
+        const nextQuery = params.toString();
+        const cleanUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash}`;
+        window.history.replaceState({}, '', cleanUrl);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const onSwMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; blockId?: string; date?: string } | null;
+      if (data?.type === 'INTUITION_OPEN_BLOCK' && data.blockId) {
+        openBlockById(data.blockId, data.date);
+      }
+    };
+
+    navigator.serviceWorker?.addEventListener?.('message', onSwMessage);
+    return () => {
+      navigator.serviceWorker?.removeEventListener?.('message', onSwMessage);
+    };
+  }, [actions]);
 
   if (activeAlerts.length === 0) return null;
 
