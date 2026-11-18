@@ -4,7 +4,6 @@ import {
   Calendar,
   CalendarPlus,
   Check,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Folder,
@@ -330,26 +329,8 @@ export const IdeasHubView: React.FC = () => {
 
         {/* Pure Apple Notes Paper Canvas */}
         <div className="notes-paper">
-          {/* Lightweight Pill Strip: Folder · Idea/Bottleneck · Empty Zone */}
+          {/* Lightweight Pill Strip: Idea/Bottleneck · Empty Zone */}
           <div className="notes-chip-row">
-            <label className="notes-chip-folder" title="Move note to folder">
-              <Folder size={12} />
-              <span className="notes-chip-folder-label">{note.project}</span>
-              <ChevronDown size={12} className="notes-chip-caret" />
-              <select
-                className="notes-folder-select-overlay"
-                aria-label="Note folder"
-                value={note.project}
-                onChange={(e) => actions.updateIdea(note.id, { project: e.target.value })}
-              >
-                {state.projects.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </label>
-
             <button
               type="button"
               className={`notes-tag-toggle ${note.isBottleneck ? 'is-bottleneck' : ''}`.trim()}

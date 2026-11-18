@@ -138,6 +138,7 @@
 *::before,
 *::after {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
 html,
@@ -3578,10 +3579,21 @@ html.is-schedule-locked #root {
 }
 
 /* Distraction-Free Title & Multi-line Note Body */
+.notes-paper,
+.notes-title-input,
+.notes-body-textarea {
+  -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+}
+
 .notes-title-input {
   width: 100%;
   border: none;
+  border-radius: 0;
   background: transparent;
+  background-color: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: none;
   resize: none;
   overflow: hidden;
   font-size: 22px;
@@ -3597,8 +3609,12 @@ html.is-schedule-locked #root {
   color: #C5C2B8;
 }
 
-.notes-title-input:focus {
+.notes-title-input:focus,
+.notes-title-input:active {
   outline: none;
+  background: transparent;
+  background-color: transparent;
+  box-shadow: none;
 }
 
 .notes-body-textarea {
@@ -3606,7 +3622,12 @@ html.is-schedule-locked #root {
   width: 100%;
   min-height: 46dvh;
   border: none;
+  border-radius: 0;
   background: transparent;
+  background-color: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: none;
   resize: none;
   font-size: 16px;
   line-height: 1.65;
@@ -3618,8 +3639,12 @@ html.is-schedule-locked #root {
   color: #B5B2A8;
 }
 
-.notes-body-textarea:focus {
+.notes-body-textarea:focus,
+.notes-body-textarea:active {
   outline: none;
+  background: transparent;
+  background-color: transparent;
+  box-shadow: none;
 }
 
 /* Desktop 3-Pane Split (>= 900px) */
