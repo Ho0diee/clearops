@@ -98,7 +98,7 @@ export function parseNaturalLanguageInput(
 
   let targetDate = baseDate;
   if (/\btomorrow\b/i.test(trimmed)) {
-    targetDate = addDaysISO(baseDate, 1);
+    targetDate = addDaysISO(TODAY_ISO, 1);
   } else if (/\btoday\b/i.test(trimmed)) {
     targetDate = TODAY_ISO;
   }

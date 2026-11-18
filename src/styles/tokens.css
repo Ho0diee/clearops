@@ -2034,3 +2034,313 @@ textarea {
     display: none !important;
   }
 }
+
+/* ==========================================================================
+   Schedule Page = Calendar + Chat (no scroll-past content)
+   ========================================================================== */
+
+.ops-settings-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ops-settings-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+
+.sched-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 60px - 48px);
+  min-height: 520px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+
+.sched-page .gcal {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+}
+
+.sched-page .gcal-scroll {
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+}
+
+/* Calendar toolbar */
+.gcal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 6px 14px;
+  min-height: 40px;
+}
+
+.gcal-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.gcal-title-day {
+  font-size: var(--text-md);
+}
+
+.gcal-toolbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.gcal-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  border: none;
+  background: transparent;
+  color: var(--accent-primary);
+  font-weight: 600;
+  font-size: var(--text-md);
+  padding: 6px 6px 6px 0;
+  margin-left: -4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.gcal-icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.gcal-icon-btn:hover {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}
+
+.gcal-today-btn {
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: var(--text-xs);
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.gcal-col {
+  cursor: default;
+}
+
+.gcal-anim-day .gcal-col,
+.gcal-anim-week .gcal-col {
+  cursor: pointer;
+}
+
+/* Week ⇄ Day zoom */
+.gcal-anim-day {
+  animation: calZoomIn 280ms var(--ease-calm);
+}
+
+.gcal-anim-week {
+  animation: calZoomOut 280ms var(--ease-calm);
+}
+
+@keyframes calZoomIn {
+  from { transform: scale(0.55); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes calZoomOut {
+  from { transform: scale(1.18); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* Flash for events just added from chat */
+.gcal-ev.is-flash {
+  z-index: 4;
+  animation: evFlash 0.9s ease-in-out 3;
+}
+
+@keyframes evFlash {
+  0%, 100% { box-shadow: 0 0 0 1px var(--bg-surface); }
+  50% { box-shadow: 0 0 0 2px var(--bg-surface), 0 0 0 5px var(--accent-primary); }
+}
+
+/* Bottom chat log + composer */
+.sched-chat {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-header);
+  padding: 8px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sched-chat-log {
+  max-height: 104px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: none;
+}
+
+.sched-chat-log::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-msg {
+  max-width: 86%;
+  padding: 7px 12px;
+  border-radius: 16px;
+  font-size: 13.5px;
+  line-height: 1.35;
+  word-wrap: break-word;
+}
+
+.chat-msg.is-user {
+  align-self: flex-end;
+  background: var(--accent-primary);
+  color: var(--text-inverse);
+  border-bottom-right-radius: 5px;
+}
+
+.chat-msg.is-app {
+  align-self: flex-start;
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border-bottom-left-radius: 5px;
+}
+
+.chat-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.chat-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-chip {
+  flex-shrink: 0;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border-radius: var(--radius-pill);
+  padding: 5px 11px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sched-chat-composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  padding: 4px 4px 4px 14px;
+}
+
+.sched-chat-composer:focus-within {
+  border-color: var(--accent-primary);
+  box-shadow: var(--focus-ring);
+}
+
+.sched-chat-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-size: 15px;
+  color: var(--text-primary);
+  padding: 6px 0;
+  font-family: inherit;
+}
+
+.sched-chat-input:focus {
+  outline: none;
+}
+
+/* Today page rows */
+.today-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.today-page {
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+@media (max-width: 768px) {
+  /* Schedule fills exactly the space between header and bottom tab bar */
+  .ops-main.is-schedule {
+    padding: 0;
+  }
+
+  .sched-page {
+    height: calc(100dvh - 52px - 74px - env(safe-area-inset-bottom, 0px));
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+  }
+
+  .sched-page .gcal-scroll {
+    max-height: none;
+  }
+
+  .sched-chat-input {
+    font-size: 16px; /* prevents iOS zoom-on-focus */
+  }
+
+  .ops-settings-btn {
+    width: 30px;
+    height: 30px;
+  }
+
+  /* Toasts sit under the header so they never cover the chat composer */
+  .ui-toast {
+    top: calc(60px + env(safe-area-inset-top, 0px));
+    bottom: auto;
+  }
+}

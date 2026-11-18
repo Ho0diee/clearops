@@ -4,6 +4,8 @@ import {
   Calendar,
   Globe,
   Lightbulb,
+  Settings,
+  Sun,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -11,7 +13,8 @@ import {
 import { Badge, Button, SegmentedControl } from './components/ui';
 import { OpsStoreProvider, useOpsStore } from './store/opsStore';
 import type { RouteTab } from './types/schema';
-import { LiveCalendarInput, ScheduleView } from './features/schedule';
+import { ScheduleView } from './features/schedule';
+import { TodayView } from './features/today';
 import { IdeasHubView } from './features/ideas';
 import { PacingRoiView } from './features/pacing';
 import { ReflectionDrawer } from './features/reflection';
@@ -25,9 +28,10 @@ const ClearOpsWorkspace: React.FC = () => {
 
   const navOptions: { value: RouteTab; label: string; count?: number }[] = [
     { value: 'schedule', label: 'Schedule' },
+    { value: 'today', label: 'Today' },
     { value: 'ideas', label: 'Ideas & Checkups', count: activeIdeasCount },
     { value: 'pacing', label: 'Pacing & ROI', count: activeGoalsCount },
-    { value: 'config', label: 'Site Config' },
+    { value: 'config', label: 'Settings' },
   ];
 
   return (
@@ -63,9 +67,6 @@ const ClearOpsWorkspace: React.FC = () => {
           </div>
         </div>
 
-        <div className="ops-topbar-center">
-          <LiveCalendarInput />
-        </div>
 
         <div className="ops-topbar-right">
           <Badge
@@ -77,6 +78,16 @@ const ClearOpsWorkspace: React.FC = () => {
           >
             {state.streak.currentDays}d Streak
           </Badge>
+
+          <button
+            type="button"
+            className="ops-settings-btn"
+            aria-label="Settings"
+            title="Settings & Whys"
+            onClick={() => actions.setActiveTab('config')}
+          >
+            <Settings size={17} />
+          </button>
 
           <div className="ops-desktop-reflect-btn">
             <Button
@@ -90,13 +101,9 @@ const ClearOpsWorkspace: React.FC = () => {
         </div>
       </header>
 
-      {/* Mobile Touch-Friendly Command Pill (visible <= 768px) */}
-      <div className="ops-mobile-command-bar">
-        <LiveCalendarInput />
-      </div>
-
-      <main className="ops-main">
+      <main className={`ops-main ${state.activeTab === 'schedule' ? 'is-schedule' : ''}`.trim()}>
         {state.activeTab === 'schedule' && <ScheduleView />}
+        {state.activeTab === 'today' && <TodayView />}
         {state.activeTab === 'ideas' && <IdeasHubView />}
         {state.activeTab === 'pacing' && <PacingRoiView />}
         {state.activeTab === 'config' && <SiteConfigView />}
@@ -149,15 +156,15 @@ const ClearOpsWorkspace: React.FC = () => {
         <button
           type="button"
           className={`ops-bottom-nav-item ${
-            state.activeTab === 'config' && !state.isReflectionOpen ? 'is-active' : ''
+            state.activeTab === 'today' && !state.isReflectionOpen ? 'is-active' : ''
           }`.trim()}
           onClick={() => {
             actions.setReflectionOpen(false);
-            actions.setActiveTab('config');
+            actions.setActiveTab('today');
           }}
         >
-          <SlidersHorizontal size={19} />
-          <span>Config</span>
+          <Sun size={19} />
+          <span>Today</span>
         </button>
 
         <button
@@ -172,7 +179,7 @@ const ClearOpsWorkspace: React.FC = () => {
 
       <ReflectionDrawer />
 
-      {state.toastMessage && (
+      {state.toastMessage && state.activeTab !== 'schedule' && (
         <div className="ui-toast" role="status" aria-live="polite">
           {state.toastMessage}
         </div>

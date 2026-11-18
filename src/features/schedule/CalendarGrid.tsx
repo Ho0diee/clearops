@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, ArrowRight, Check, Sparkles, Trash2, X } from 'lucide-react';
+import { Activity, ArrowRight, Bell, Check, ChevronLeft, ChevronRight, Sparkles, Trash2, X } from 'lucide-react';
 import { Badge, Button } from '../../components/ui';
 import { addDaysISO, formatShortDate, getWeekDatesISO, useOpsStore } from '../../store/opsStore';
 import type { CalendarBlock } from '../../types/schema';
@@ -82,7 +82,7 @@ function layoutColumn(blocks: CalendarBlock[]): Positioned[] {
   return out;
 }
 
-export const CalendarGrid: React.FC = () => {
+export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highlightId }) => {
   const { state, actions } = useOpsStore();
   const isWeek = state.scheduleViewMode === 'week';
   const weekDates = useMemo(() => getWeekDatesISO(state.selectedDate), [state.selectedDate]);
@@ -135,6 +135,20 @@ export const CalendarGrid: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.selectedDate, state.scheduleViewMode]);
 
+  // Zoom from the tapped day's column (week → day) like pinching into Google Calendar
+  const dayIdx = Math.max(0, weekDates.indexOf(state.selectedDate));
+  const zoomOrigin = `${((dayIdx + 0.5) / 7) * 100}% 0`;
+
+  // Scroll a newly added (chat) event into view
+  useEffect(() => {
+    if (!highlightId || !scrollRef.current) return;
+    const b = state.blocks.find((x) => x.id === highlightId);
+    if (!b) return;
+    const y = ((toMin(b.startTime) - startHour * 60) / 60) * hourHeight - 40;
+    scrollRef.current.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightId]);
+
   const openBlock = openBlockId ? state.blocks.find((b) => b.id === openBlockId) ?? null : null;
 
   const activeIdeas = useMemo(
@@ -171,7 +185,43 @@ export const CalendarGrid: React.FC = () => {
     <div className="gcal">
       {/* Month label + week strip / week header */}
       <div className="gcal-head">
-        <div className="gcal-month">{monthLabel}</div>
+        <div className="gcal-toolbar">
+          {isWeek ? (
+            <span className="gcal-title">{monthLabel}</span>
+          ) : (
+            <>
+              <button type="button" className="gcal-back" onClick={() => actions.setScheduleViewMode('week')}>
+                <ChevronLeft size={18} />
+                <span>Week</span>
+              </button>
+              <span className="gcal-title gcal-title-day">{formatShortDate(state.selectedDate)}</span>
+            </>
+          )}
+          <div className="gcal-toolbar-right">
+            <button type="button" className="gcal-icon-btn" aria-label="Previous" onClick={() => shiftDate(-1)}>
+              <ChevronLeft size={18} />
+            </button>
+            <button
+              type="button"
+              className="gcal-today-btn"
+              onClick={() => actions.setSelectedDate(TODAY_ANCHOR)}
+            >
+              Today
+            </button>
+            <button type="button" className="gcal-icon-btn" aria-label="Next" onClick={() => shiftDate(1)}>
+              <ChevronRight size={18} />
+            </button>
+            <button
+              type="button"
+              className="gcal-icon-btn"
+              aria-label="Daily briefing"
+              title="Daily briefing"
+              onClick={() => actions.setActiveTab('today')}
+            >
+              <Bell size={17} />
+            </button>
+          </div>
+        </div>
         <div className="gcal-strip">
           <div className="gcal-gutter" />
           {weekDates.map((iso, idx) => {
@@ -185,12 +235,8 @@ export const CalendarGrid: React.FC = () => {
                 type="button"
                 className={`gcal-strip-day ${dimmed ? 'is-dim' : ''}`.trim()}
                 onClick={() => {
-                  if (isWeek || isSelected) {
-                    actions.setSelectedDate(iso);
-                    actions.setScheduleViewMode('day');
-                  } else {
-                    actions.setSelectedDate(iso);
-                  }
+                  actions.setSelectedDate(iso);
+                  actions.setScheduleViewMode('day');
                 }}
                 aria-label={`Open ${formatShortDate(iso)}`}
               >
@@ -216,7 +262,11 @@ export const CalendarGrid: React.FC = () => {
         onTouchStart={onTouchStart}
         onTouchEnd={onTouchEnd}
       >
-        <div className="gcal-body" style={{ height: gridHeight }}>
+        <div
+          key={state.scheduleViewMode}
+          className={`gcal-body gcal-anim-${state.scheduleViewMode}`}
+          style={{ height: gridHeight, transformOrigin: zoomOrigin }}
+        >
           <div className="gcal-gutter gcal-hours">
             {hours.map((h, i) => (
               <div key={h} className="gcal-hour-label" style={{ top: i * hourHeight }}>
@@ -234,7 +284,16 @@ export const CalendarGrid: React.FC = () => {
               const laid = layoutColumn(visibleBlocks.filter((b) => b.date === iso));
               const showNow = iso === TODAY_ANCHOR && nowMin >= startHour * 60 && nowMin <= endHour * 60;
               return (
-                <div key={iso} className={`gcal-col ${iso === TODAY_ANCHOR && isWeek ? 'is-today' : ''}`.trim()}>
+                <div
+                  key={iso}
+                  className={`gcal-col ${iso === TODAY_ANCHOR && isWeek ? 'is-today' : ''}`.trim()}
+                  onClick={(e) => {
+                    if (isWeek && e.target === e.currentTarget) {
+                      actions.setSelectedDate(iso);
+                      actions.setScheduleViewMode('day');
+                    }
+                  }}
+                >
                   {laid.map(({ block, col, cols }) => {
                     const s = toMin(block.startTime);
                     const e = Math.max(s + 15, toMin(block.endTime));
@@ -248,7 +307,7 @@ export const CalendarGrid: React.FC = () => {
                         type="button"
                         className={`gcal-ev ${eventClass(block)} ${block.completed ? 'is-done' : ''} ${
                           isWeek ? 'is-compact' : ''
-                        }`.trim()}
+                        } ${block.id === highlightId ? 'is-flash' : ''}`.trim()}
                         style={{
                           top,
                           height,

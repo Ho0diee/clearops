@@ -1,4 +1,4 @@
-export type RouteTab = 'schedule' | 'ideas' | 'pacing' | 'config';
+export type RouteTab = 'schedule' | 'today' | 'ideas' | 'pacing' | 'config';
 
 export type AccentThemeId = 'cobalt' | 'obsidian' | 'sage' | 'coral' | 'amber';
 

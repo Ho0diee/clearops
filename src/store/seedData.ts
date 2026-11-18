@@ -23,7 +23,7 @@ export const INITIAL_OPS_STATE: OpsState = {
   activeTab: 'schedule',
   isReflectionOpen: false,
   selectedDate: TODAY_ISO,
-  scheduleViewMode: 'day',
+  scheduleViewMode: 'week',
   siteConfig: DEFAULT_SITE_CONFIG,
   whyStatements: {
     School: 'Master core technical foundations cleanly so long-term capability compounds.',
