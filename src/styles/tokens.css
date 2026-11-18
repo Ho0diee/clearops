@@ -4783,3 +4783,169 @@ html.is-schedule-locked #root {
   white-space: nowrap;
   flex-shrink: 0;
 }
+
+
+/* ==========================================================================
+   Distinct Archive Room Palette (Cool Slate-Indigo Vault vs Warm Cream Notes)
+   ========================================================================== */
+
+.ops-shell,
+.ops-topbar {
+  transition: background-color 180ms var(--ease-calm), border-color 180ms var(--ease-calm);
+}
+
+.ops-shell:has(.notes-shell.is-archive-room) {
+  background: #E2EAF6;
+}
+
+.ops-shell:has(.notes-shell.is-archive-room) .ops-topbar {
+  background: #ECF2FA;
+  border-bottom-color: #C7D5E8;
+}
+
+/* Subtle doorway cue on the Archive entry card inside active Folders */
+.notes-group-card.is-archive-door-card {
+  background: #F3F7FD;
+  border-color: #CFDCEB;
+}
+
+.notes-folder-icon.is-archive-door {
+  color: #254E8A;
+}
+
+.notes-shell.is-archive-room {
+  --notes-accent: #254E8A;
+  --notes-accent-hover: #1B3B6B;
+  --notes-accent-soft: #D8E4F7;
+  --notes-row-selected: #D2E0F5;
+}
+
+.notes-archive-room-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3.5px 10px;
+  border-radius: 999px;
+  background: #D2E0F5;
+  border: 1px solid #B2C7E6;
+  color: #1C3F73;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.notes-shell.is-archive-room .notes-large-title,
+.notes-shell.is-archive-room .notes-folder-heading {
+  color: #14233C;
+}
+
+.notes-shell.is-archive-room .notes-section-label {
+  color: #485F80;
+}
+
+.notes-shell.is-archive-room .notes-group-card {
+  background: #F7FAFE;
+  border-color: #C5D4E8;
+  box-shadow: 0 1px 3px rgba(20, 35, 60, 0.05);
+}
+
+.notes-shell.is-archive-room .notes-item-slot {
+  background: #F7FAFE;
+}
+
+.notes-shell.is-archive-room .notes-folder-row-wrap + .notes-folder-row-wrap::before,
+.notes-shell.is-archive-room .notes-group-card > .notes-folder-row + .notes-folder-row::before,
+.notes-shell.is-archive-room .notes-item-slot + .notes-item-slot .notes-item-row::before {
+  background: #DAE4F2;
+}
+
+.notes-shell.is-archive-room .notes-folder-count {
+  color: #526A8C;
+}
+
+.notes-shell.is-archive-room .notes-chevron {
+  color: #8BA0BD;
+}
+
+.notes-shell.is-archive-room .notes-search-pill {
+  background: #D3E0F1;
+  color: #485F80;
+}
+
+.notes-shell.is-archive-room .notes-search-input::placeholder {
+  color: #566E90;
+}
+
+.notes-shell.is-archive-room .notes-archive-mode-pill {
+  background: #D2E0F5;
+  border-color: #B2C7E6;
+  color: #1C3F73;
+}
+
+.notes-shell.is-archive-room .notes-filter-chip {
+  background: #F3F7FD;
+  border-color: #C4D3E8;
+  color: #395070;
+}
+
+.notes-shell.is-archive-room .notes-filter-chip.is-active {
+  background: #254E8A;
+  border-color: #254E8A;
+  color: #FFFFFF;
+}
+
+.notes-shell.is-archive-room .notes-paper {
+  background: #F7FAFE;
+  border-color: #C5D4E8;
+}
+
+.notes-shell.is-archive-room .notes-archived-banner {
+  background: #E3ECF8;
+  border-color: #BFD1EB;
+  color: #1C3F73;
+}
+
+.notes-shell.is-archive-room .notes-folder-row:active,
+.notes-shell.is-archive-room .notes-item-row:active {
+  background: #DCE7F7;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .notes-shell.is-archive-room .notes-folder-row:hover,
+  .notes-shell.is-archive-room .notes-item-row:hover {
+    background: #EDF3FC;
+  }
+
+  .notes-shell.is-archive-room .notes-text-btn:hover,
+  .notes-shell.is-archive-room .notes-icon-btn:hover {
+    background: rgba(37, 78, 138, 0.1);
+  }
+}
+
+@media (min-width: 900px) {
+  .notes-shell.is-archive-room {
+    border-color: #C4D3E7;
+    background: #E6EEF9;
+  }
+
+  .notes-shell.is-archive-room .notes-folders-pane {
+    background: #DCE6F4;
+    border-right-color: #C4D3E7;
+  }
+
+  .notes-shell.is-archive-room .notes-list-pane {
+    background: #E6EEF9;
+    border-right-color: #C4D3E7;
+  }
+
+  .notes-shell.is-archive-room .notes-detail-desktop {
+    background: #F5F8FE;
+  }
+
+  .notes-shell.is-archive-room .notes-detail-desktop .notes-paper {
+    background: transparent;
+    border: none;
+  }
+}

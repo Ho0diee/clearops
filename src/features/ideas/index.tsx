@@ -1002,7 +1002,11 @@ export const IdeasHubView: React.FC = () => {
   };
 
   return (
-    <div className={`notes-shell is-pane-${mobilePane}`.trim()}>
+    <div
+      className={`notes-shell is-pane-${mobilePane} ${
+        inArchiveMode ? 'is-archive-room' : ''
+      }`.trim()}
+    >
       {/* PANE 1: Folders (Active Folders OR identical Archive Folder Layout) */}
       <aside className="notes-folders-pane" aria-label={inArchiveMode ? 'Archive folders' : 'Folders'}>
         {inArchiveMode ? (
@@ -1016,6 +1020,10 @@ export const IdeasHubView: React.FC = () => {
                 <ChevronLeft size={19} />
                 <span>Folders</span>
               </button>
+              <span className="notes-archive-room-chip">
+                <Archive size={12} />
+                <span>Archive Room</span>
+              </span>
             </div>
 
             <div className="notes-pane-topbar">
@@ -1055,7 +1063,7 @@ export const IdeasHubView: React.FC = () => {
                       className="notes-folder-row"
                       onClick={() => openFolder(proj, true)}
                     >
-                      <span className="notes-folder-icon is-muted">
+                      <span className="notes-folder-icon">
                         <Folder size={17} />
                       </span>
                       <span className="notes-folder-name">{proj}</span>
@@ -1188,13 +1196,13 @@ export const IdeasHubView: React.FC = () => {
             </div>
 
             <div className="notes-section-label">Archive</div>
-            <div className="notes-group-card">
+            <div className="notes-group-card is-archive-door-card">
               <button
                 type="button"
                 className="notes-folder-row"
                 onClick={enterArchiveMode}
               >
-                <span className="notes-folder-icon is-muted">
+                <span className="notes-folder-icon is-archive-door">
                   <Archive size={16} />
                 </span>
                 <span className="notes-folder-name">Archive</span>
