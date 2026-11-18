@@ -215,6 +215,7 @@ export interface OpsActions {
 
   // Subagent 1: Schedule Engine
   addCalendarBlock: (block: Omit<CalendarBlock, 'id'>) => string;
+  updateCalendarBlock: (blockId: string, patch: Partial<Omit<CalendarBlock, 'id'>>) => void;
   toggleBlockCompleted: (blockId: string) => void;
   deleteCalendarBlock: (blockId: string) => void;
   updateWhyStatement: (category: WhyCategory, statement: string) => void;
@@ -225,7 +226,8 @@ export interface OpsActions {
   submitLiveCommand: (rawText: string) => ParsedLiveInput | null;
   parseVoiceDraft: (rawText: string) => VoiceScheduleDraft | null;
   commitVoiceDraft: (draft: VoiceScheduleDraft) => ParsedLiveInput | null;
-  addReminder: (reminder: Omit<ReminderItem, 'id'>) => void;
+  addReminder: (reminder: Omit<ReminderItem, 'id'>) => string;
+  updateReminder: (reminderId: string, patch: Partial<Omit<ReminderItem, 'id'>>) => void;
   toggleReminder: (reminderId: string) => void;
   deleteReminder: (reminderId: string) => void;
 

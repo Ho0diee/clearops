@@ -2007,7 +2007,7 @@ textarea {
   background: var(--cal-now);
 }
 
-/* Event detail bottom sheet */
+/* Event detail & Google Calendar tap/drag creation bottom sheet */
 .gcal-sheet-scrim {
   position: fixed;
   inset: 0;
@@ -2017,6 +2017,152 @@ textarea {
   align-items: flex-end;
   justify-content: center;
   animation: fadeIn var(--duration-fast) var(--ease-calm);
+}
+
+.gcal-sheet-scrim.is-light {
+  background: rgba(20, 20, 19, 0.18);
+}
+
+.gcal-scroll.is-dragging-grid {
+  touch-action: none;
+  cursor: grabbing;
+}
+
+.gcal-ev.is-drag-origin,
+.gcal-rem.is-drag-origin {
+  opacity: 0.25 !important;
+  pointer-events: none;
+}
+
+.gcal-ev.is-dragging-live {
+  z-index: 9;
+  pointer-events: none;
+  transform: scale(1.015);
+  box-shadow: 0 10px 24px rgba(20, 20, 19, 0.26), 0 0 0 2px #FFFFFF, 0 0 0 4px var(--accent-primary);
+  transition: none;
+}
+
+.gcal-rem.is-dragging-live {
+  z-index: 9;
+  pointer-events: none;
+  transform: scale(1.02);
+  box-shadow: 0 8px 20px rgba(20, 20, 19, 0.22), 0 0 0 2px var(--accent-primary);
+}
+
+.gcal-create-preview {
+  z-index: 7;
+  pointer-events: none;
+  border: 2px solid #FFFFFF;
+  box-shadow: 0 6px 18px rgba(20, 20, 19, 0.18), 0 0 0 2px var(--accent-primary);
+}
+
+.gcal-resize-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 9px;
+  z-index: 3;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.gcal-resize-handle.is-top {
+  top: 0;
+}
+
+.gcal-resize-handle.is-bottom {
+  bottom: 0;
+}
+
+.gcal-resize-handle::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  opacity: 0;
+  transition: opacity 140ms var(--ease-calm);
+}
+
+.gcal-resize-handle.is-top::after {
+  top: 2px;
+}
+
+.gcal-resize-handle.is-bottom::after {
+  bottom: 2px;
+}
+
+.gcal-ev:hover .gcal-resize-handle::after,
+.gcal-ev:focus-visible .gcal-resize-handle::after,
+.gcal-ev:active .gcal-resize-handle::after {
+  opacity: 1;
+}
+
+.gcal-create-title-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-bottom: 1.5px solid var(--border-default);
+  background: transparent;
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 4px 0 6px;
+  border-radius: 0;
+}
+
+.gcal-create-title-input:focus {
+  outline: none;
+  border-bottom-color: var(--accent-primary);
+}
+
+.gcal-type-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.gcal-pill-chip {
+  border: 1px solid var(--border-default);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border-radius: var(--radius-pill);
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 140ms var(--ease-calm), color 140ms var(--ease-calm), border-color 140ms var(--ease-calm);
+}
+
+.gcal-pill-chip.is-active {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: #FFFFFF;
+}
+
+.gcal-pill-chip.is-why-school.is-active { background: var(--cal-school); border-color: var(--cal-school); }
+.gcal-pill-chip.is-why-health.is-active { background: var(--cal-health); border-color: var(--cal-health); }
+.gcal-pill-chip.is-why-family.is-active { background: var(--cal-family); border-color: var(--cal-family); }
+.gcal-pill-chip.is-why-organization.is-active { background: var(--cal-organization); border-color: var(--cal-organization); }
+
+.gcal-inline-time-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.gcal-compact-field {
+  width: auto !important;
+  flex: 1 1 auto;
+  min-width: 92px;
+  padding: 7px 9px !important;
+  font-size: 16px !important;
 }
 
 .gcal-sheet {

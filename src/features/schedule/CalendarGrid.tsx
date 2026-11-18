@@ -1,18 +1,55 @@
-import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Activity, ArrowRight, Bell, Check, ChevronLeft, Sparkles, Trash2, X } from 'lucide-react';
+import React, {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  Activity,
+  ArrowRight,
+  Bell,
+  Check,
+  ChevronLeft,
+  Sparkles,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { Badge, Button } from '../../components/ui';
 import { addDaysISO, formatShortDate, getWeekDatesISO, useOpsStore } from '../../store/opsStore';
-import type { CalendarBlock, ReminderItem, VoiceScheduleDraft } from '../../types/schema';
+import { inferWhyFromTitle } from '../../store/scheduleAi';
+import type {
+  CalendarBlock,
+  ReminderItem,
+  VoiceScheduleDraft,
+  WhyCategory,
+} from '../../types/schema';
 
 const TODAY_ANCHOR = '2026-11-17';
 const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+const WHY_CATEGORIES: WhyCategory[] = ['Organization', 'School', 'Health', 'Family'];
 const SWIPE_MS = 260;
 const SNAP_BACK_MS = 210;
+const LONG_PRESS_MS = 175;
 const EASE_OUT_EXPO = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 function toMin(t: string): number {
   const [h, m] = t.split(':').map(Number);
   return h * 60 + (m || 0);
+}
+
+function fromMin(total: number): string {
+  const clamped = Math.max(0, Math.min(24 * 60, Math.round(total)));
+  if (clamped === 24 * 60) return '24:00';
+  const h = Math.floor(clamped / 60);
+  const m = clamped % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function snapMin(raw: number, step = 15): number {
+  return Math.round(raw / step) * step;
 }
 
 function fmtHourLabel(h: number): string {
@@ -24,8 +61,12 @@ function fmtHourLabel(h: number): string {
 function fmtTime(t: string): string {
   const [hRaw, m] = t.split(':').map(Number);
   const h = hRaw % 24;
-  const s = h % 12 === 0 ? 12 : h % 12;
+  const s = h % 12 === 0 ? 12 : norm12(h);
   return `${s}:${String(m || 0).padStart(2, '0')}${h < 12 ? 'am' : 'pm'}`;
+}
+
+function norm12(h: number): number {
+  return h % 12 === 0 ? 12 : h % 12;
 }
 
 function dayNumber(iso: string): number {
@@ -91,6 +132,47 @@ function layoutColumn(blocks: CalendarBlock[]): Positioned[] {
   return out;
 }
 
+type ActiveGridDrag =
+  | {
+      kind: 'move-block';
+      block: CalendarBlock;
+      grabOffsetMins: number;
+      durationMins: number;
+      date: string;
+      startMins: number;
+      endMins: number;
+    }
+  | {
+      kind: 'resize-start' | 'resize-end';
+      block: CalendarBlock;
+      date: string;
+      startMins: number;
+      endMins: number;
+    }
+  | {
+      kind: 'move-reminder';
+      reminder: ReminderItem;
+      date: string;
+      timeMins: number;
+    }
+  | {
+      kind: 'sweep-create';
+      date: string;
+      anchorMins: number;
+      startMins: number;
+      endMins: number;
+    };
+
+interface CreateSheetDraft {
+  mode: 'event' | 'empty-zone' | 'reminder';
+  title: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  whyCategory: WhyCategory;
+  manualWhy: boolean;
+}
+
 interface CalendarPaneProps {
   columns: string[];
   isWeek: boolean;
@@ -103,6 +185,16 @@ interface CalendarPaneProps {
   highlightId?: string | null;
   liveDraft?: VoiceScheduleDraft | null;
   fallbackDraftIso?: string;
+  activeDrag?: ActiveGridDrag | null;
+  createPreview?: CreateSheetDraft | null;
+  interactive?: boolean;
+  onBlockPointerDown?: (e: React.PointerEvent, block: CalendarBlock) => void;
+  onResizePointerDown?: (
+    e: React.PointerEvent,
+    block: CalendarBlock,
+    edge: 'resize-start' | 'resize-end'
+  ) => void;
+  onReminderPointerDown?: (e: React.PointerEvent, rem: ReminderItem) => void;
   onOpenBlock: (id: string) => void;
   onOpenReminder: (id: string) => void;
 }
@@ -120,9 +212,22 @@ const CalendarPane = memo<CalendarPaneProps>(
     highlightId,
     liveDraft,
     fallbackDraftIso,
+    activeDrag,
+    createPreview,
+    interactive = false,
+    onBlockPointerDown,
+    onResizePointerDown,
+    onReminderPointerDown,
     onOpenBlock,
     onOpenReminder,
   }) => {
+    const draggedBlockId =
+      activeDrag && (activeDrag.kind === 'move-block' || activeDrag.kind === 'resize-start' || activeDrag.kind === 'resize-end')
+        ? activeDrag.block.id
+        : null;
+    const draggedRemId =
+      activeDrag && activeDrag.kind === 'move-reminder' ? activeDrag.reminder.id : null;
+
     return (
       <>
         {columns.map((iso) => {
@@ -132,19 +237,53 @@ const CalendarPane = memo<CalendarPaneProps>(
           const targetDraftIso = liveDraft ? liveDraft.date ?? fallbackDraftIso : null;
           const draftOnThisDay = liveDraft && targetDraftIso === iso ? liveDraft : null;
 
+          const activeBlockPreviewOnDay =
+            interactive &&
+            activeDrag &&
+            (activeDrag.kind === 'move-block' ||
+              activeDrag.kind === 'resize-start' ||
+              activeDrag.kind === 'resize-end') &&
+            activeDrag.date === iso
+              ? activeDrag
+              : null;
+
+          const activeRemPreviewOnDay =
+            interactive &&
+            activeDrag &&
+            activeDrag.kind === 'move-reminder' &&
+            activeDrag.date === iso
+              ? activeDrag
+              : null;
+
+          const sweepPreviewOnDay =
+            interactive &&
+            activeDrag &&
+            activeDrag.kind === 'sweep-create' &&
+            activeDrag.date === iso
+              ? activeDrag
+              : null;
+
+          const sheetCreateOnDay =
+            interactive && !sweepPreviewOnDay && createPreview && createPreview.date === iso
+              ? createPreview
+              : null;
+
           return (
             <div
               key={iso}
+              data-iso={iso}
               className={`gcal-col ${iso === TODAY_ANCHOR && isWeek ? 'is-today' : ''}`.trim()}
             >
               {laid.map(({ block, col, cols }) => {
+                const isBeingDragged = interactive && draggedBlockId === block.id;
                 const s = toMin(block.startTime);
                 const e = Math.max(s + 15, toMin(block.endTime));
                 const top = ((s - startHour * 60) / 60) * hourHeight;
                 const height = Math.max(isWeek ? 18 : 22, ((e - s) / 60) * hourHeight - 2);
                 const roomy = !isWeek && height >= 40;
+                const showHandles = interactive && !isBeingDragged && (!isWeek || height >= 28);
                 const clampLines = isWeek ? Math.max(1, Math.floor((height - 6) / 12.5)) : undefined;
-                    const isSlotDraftTarget =
+                const isSlotDraftTarget =
                   draftOnThisDay?.mode === 'fill-slot' && draftOnThisDay.targetBlockId === block.id;
                 const displayTitle = isSlotDraftTarget
                   ? draftOnThisDay.title
@@ -155,23 +294,47 @@ const CalendarPane = memo<CalendarPaneProps>(
                   : block.title;
 
                 return (
-                  <button
+                  <div
                     key={block.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     className={`gcal-ev ${eventClass(block)} ${block.completed ? 'is-done' : ''} ${
                       isWeek ? 'is-compact' : ''
                     } ${block.id === highlightId ? 'is-flash' : ''} ${
                       isSlotDraftTarget ? 'is-voice-slot-target' : ''
-                    }`.trim()}
+                    } ${isBeingDragged ? 'is-drag-origin' : ''}`.trim()}
                     style={{
                       top,
                       height,
                       left: `calc(${(col / cols) * 100}% + 1px)`,
                       width: `calc(${100 / cols}% - ${isWeek ? 2 : 4}px)`,
                     }}
-                    onClick={() => onOpenBlock(block.id)}
+                    onPointerDown={
+                      interactive && onBlockPointerDown
+                        ? (ev) => onBlockPointerDown(ev, block)
+                        : undefined
+                    }
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      onOpenBlock(block.id);
+                    }}
+                    onKeyDown={(ev) => {
+                      if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault();
+                        onOpenBlock(block.id);
+                      }
+                    }}
                     title={`${block.title} (${block.startTime}–${block.endTime})`}
                   >
+                    {showHandles && onResizePointerDown && (
+                      <span
+                        className="gcal-resize-handle is-top"
+                        aria-label="Adjust start time"
+                        onPointerDown={(ev) => onResizePointerDown(ev, block, 'resize-start')}
+                        onClick={(ev) => ev.stopPropagation()}
+                      />
+                    )}
+
                     <span
                       className="gcal-ev-title"
                       style={clampLines ? { WebkitLineClamp: clampLines } : undefined}
@@ -192,9 +355,90 @@ const CalendarPane = memo<CalendarPaneProps>(
                     {roomy && !isWeek && block.startingStepHint && height >= 64 && (
                       <span className="gcal-ev-sub">{block.startingStepHint}</span>
                     )}
-                  </button>
+
+                    {showHandles && onResizePointerDown && (
+                      <span
+                        className="gcal-resize-handle is-bottom"
+                        aria-label="Adjust end time"
+                        onPointerDown={(ev) => onResizePointerDown(ev, block, 'resize-end')}
+                        onClick={(ev) => ev.stopPropagation()}
+                      />
+                    )}
+                  </div>
                 );
               })}
+
+              {/* Live Moving / Resizing Block Preview */}
+              {activeBlockPreviewOnDay && (() => {
+                const s = activeBlockPreviewOnDay.startMins;
+                const e = Math.max(s + 15, activeBlockPreviewOnDay.endMins);
+                const top = ((s - startHour * 60) / 60) * hourHeight;
+                const height = Math.max(isWeek ? 20 : 24, ((e - s) / 60) * hourHeight - 2);
+                const blk = activeBlockPreviewOnDay.block;
+                return (
+                  <div
+                    className={`gcal-ev ${eventClass(blk)} ${
+                      isWeek ? 'is-compact' : ''
+                    } is-dragging-live`.trim()}
+                    style={{
+                      top,
+                      height,
+                      left: '2px',
+                      width: 'calc(100% - 4px)',
+                    }}
+                  >
+                    <span className="gcal-ev-title">
+                      {isWeek ? shortTitle(blk) : blk.title}
+                    </span>
+                    <span className="gcal-ev-time">
+                      {fmtTime(fromMin(s))} – {fmtTime(fromMin(e))}
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {/* Live Sweep-Create or Tapped-Slot New Event Preview (Google Calendar style) */}
+              {(sweepPreviewOnDay || sheetCreateOnDay) && (() => {
+                const s = sweepPreviewOnDay
+                  ? sweepPreviewOnDay.startMins
+                  : toMin(sheetCreateOnDay!.startTime);
+                const e = sweepPreviewOnDay
+                  ? Math.max(s + 15, sweepPreviewOnDay.endMins)
+                  : sheetCreateOnDay!.mode === 'reminder'
+                  ? s + 30
+                  : Math.max(s + 15, toMin(sheetCreateOnDay!.endTime));
+                const top = ((s - startHour * 60) / 60) * hourHeight;
+                const height = Math.max(isWeek ? 22 : 26, ((e - s) / 60) * hourHeight - 2);
+                const previewTitle =
+                  sheetCreateOnDay?.title.trim() || 'New event';
+                const previewClass =
+                  sheetCreateOnDay?.mode === 'empty-zone'
+                    ? 'gcal-ev-zone'
+                    : sheetCreateOnDay?.mode === 'reminder'
+                    ? 'gcal-ev-organization'
+                    : `gcal-ev-${(sheetCreateOnDay?.whyCategory || 'Organization').toLowerCase()}`;
+
+                return (
+                  <div
+                    className={`gcal-ev ${previewClass} gcal-create-preview ${
+                      isWeek ? 'is-compact' : ''
+                    }`.trim()}
+                    style={{
+                      top,
+                      height,
+                      left: '2px',
+                      width: 'calc(100% - 4px)',
+                    }}
+                  >
+                    <span className="gcal-ev-title">{previewTitle}</span>
+                    <span className="gcal-ev-time">
+                      {sheetCreateOnDay?.mode === 'reminder'
+                        ? fmtTime(fromMin(s))
+                        : `${fmtTime(fromMin(s))} – ${fmtTime(fromMin(e))}`}
+                    </span>
+                  </div>
+                );
+              })()}
 
               {/* Live Progressive Voice Event / Empty-Zone Draft Block */}
               {draftOnThisDay &&
@@ -204,10 +448,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                   const hasEnd = Boolean(draftOnThisDay.endTime);
                   const e = hasEnd ? Math.max(s + 20, toMin(draftOnThisDay.endTime!)) : s + 60;
                   const top = ((s - startHour * 60) / 60) * hourHeight;
-                  const height = Math.max(
-                    isWeek ? 26 : 48,
-                    ((e - s) / 60) * hourHeight - 2
-                  );
+                  const height = Math.max(isWeek ? 26 : 48, ((e - s) / 60) * hourHeight - 2);
                   const toneClass =
                     draftOnThisDay.mode === 'empty-zone'
                       ? 'gcal-ev-zone'
@@ -224,9 +465,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                         width: 'calc(100% - 4px)',
                       }}
                     >
-                      <span className="gcal-ev-title">
-                        {draftOnThisDay.title || '?'}
-                      </span>
+                      <span className="gcal-ev-title">{draftOnThisDay.title || '?'}</span>
                       <span className="gcal-ev-time">
                         {!draftOnThisDay.date ? 'Day ? · ' : ''}
                         {hasEnd
@@ -240,6 +479,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                 })()}
 
               {dayReminders.map((rem, idx) => {
+                const isRemDragged = interactive && draggedRemId === rem.id;
                 const m = toMin(rem.time);
                 const sameTimeIdx = dayReminders
                   .slice(0, idx)
@@ -252,9 +492,19 @@ const CalendarPane = memo<CalendarPaneProps>(
                     type="button"
                     className={`gcal-rem ${rem.completed ? 'is-done' : ''} ${
                       isWeek ? 'is-compact' : ''
-                    } ${rem.id === highlightId ? 'is-flash' : ''}`.trim()}
+                    } ${rem.id === highlightId ? 'is-flash' : ''} ${
+                      isRemDragged ? 'is-drag-origin' : ''
+                    }`.trim()}
                     style={{ top }}
-                    onClick={() => onOpenReminder(rem.id)}
+                    onPointerDown={
+                      interactive && onReminderPointerDown
+                        ? (ev) => onReminderPointerDown(ev, rem)
+                        : undefined
+                    }
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      onOpenReminder(rem.id);
+                    }}
                     title={`Reminder: ${rem.title} (${fmtTime(rem.time)})`}
                   >
                     {rem.completed ? <Check size={10} strokeWidth={3} /> : <Bell size={10} />}
@@ -263,6 +513,25 @@ const CalendarPane = memo<CalendarPaneProps>(
                   </button>
                 );
               })}
+
+              {/* Live Moving Reminder Preview */}
+              {activeRemPreviewOnDay && (
+                <div
+                  className={`gcal-rem ${isWeek ? 'is-compact' : ''} is-dragging-live`.trim()}
+                  style={{
+                    top:
+                      ((activeRemPreviewOnDay.timeMins - startHour * 60) / 60) * hourHeight,
+                  }}
+                >
+                  <Bell size={10} />
+                  <span className="gcal-rem-title">
+                    {activeRemPreviewOnDay.reminder.title}
+                  </span>
+                  <span className="gcal-rem-time">
+                    {fmtTime(fromMin(activeRemPreviewOnDay.timeMins))}
+                  </span>
+                </div>
+              )}
 
               {/* Live Progressive Voice Reminder Draft Pin */}
               {draftOnThisDay &&
@@ -277,9 +546,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                     }}
                   >
                     <Bell size={10} />
-                    <span className="gcal-rem-title">
-                      {draftOnThisDay.title || '?'}
-                    </span>
+                    <span className="gcal-rem-title">{draftOnThisDay.title || '?'}</span>
                     {!isWeek && (
                       <span className="gcal-rem-time">{fmtTime(draftOnThisDay.startTime)}</span>
                     )}
@@ -312,6 +579,10 @@ export const CalendarGrid: React.FC<{
 
   const [openBlockId, setOpenBlockId] = useState<string | null>(null);
   const [openReminderId, setOpenReminderId] = useState<string | null>(null);
+  const [localFlashId, setLocalFlashId] = useState<string | null>(null);
+  const [createDraft, setCreateDraft] = useState<CreateSheetDraft | null>(null);
+  const [activeDrag, setActiveDrag] = useState<ActiveGridDrag | null>(null);
+
   const [pendingHeaderIso, setPendingHeaderIso] = useState<string | null>(null);
   const [overrideSide, setOverrideSide] = useState<{ dir: 1 | -1; iso: string } | null>(null);
   const [nowMin, setNowMin] = useState(() => {
@@ -325,15 +596,25 @@ export const CalendarGrid: React.FC<{
   const prevPaneRef = useRef<HTMLDivElement | null>(null);
   const centerPaneRef = useRef<HTMLDivElement | null>(null);
   const nextPaneRef = useRef<HTMLDivElement | null>(null);
+  const createInputRef = useRef<HTMLInputElement | null>(null);
 
   const prevModeRef = useRef(state.scheduleViewMode);
   const suppressClickUntilRef = useRef(0);
   const wheelCooldownRef = useRef(0);
   const animTimerRef = useRef<number | null>(null);
   const animTargetIsoRef = useRef<string | null>(null);
+  const holdTimerRef = useRef<number | null>(null);
+  const autoScrollRafRef = useRef<number | null>(null);
 
-  const pointerRef = useRef<{
+  const activeDragRef = useRef<ActiveGridDrag | null>(null);
+  activeDragRef.current = activeDrag;
+
+  const lastPointerClientRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  // Unified gesture tracker for swipe-navigation, empty-slot tap/sweep-create, and block/reminder move/resize
+  const gestureRef = useRef<{
     pointerId: number;
+    pointerType: string;
     captured: boolean;
     startX: number;
     startY: number;
@@ -342,6 +623,10 @@ export const CalendarGrid: React.FC<{
     vx: number;
     axis: 'none' | 'x' | 'y';
     stageWidth: number;
+    originKind: 'empty' | 'block' | 'reminder' | 'resize';
+    targetBlock?: CalendarBlock;
+    targetReminder?: ReminderItem;
+    resizeEdge?: 'resize-start' | 'resize-end';
   } | null>(null);
 
   useEffect(() => {
@@ -353,12 +638,25 @@ export const CalendarGrid: React.FC<{
   }, []);
 
   useEffect(() => {
+    if (!localFlashId) return;
+    const t = window.setTimeout(() => setLocalFlashId(null), 2600);
+    return () => window.clearTimeout(t);
+  }, [localFlashId]);
+
+  useEffect(() => {
     return () => {
-      if (animTimerRef.current !== null) {
-        window.clearTimeout(animTimerRef.current);
-      }
+      if (animTimerRef.current !== null) window.clearTimeout(animTimerRef.current);
+      if (holdTimerRef.current !== null) window.clearTimeout(holdTimerRef.current);
+      if (autoScrollRafRef.current !== null) window.cancelAnimationFrame(autoScrollRafRef.current);
     };
   }, []);
+
+  const clearHoldTimer = () => {
+    if (holdTimerRef.current !== null) {
+      window.clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+  };
 
   // Anchor dates for the 3-pane GPU carousel [prev, current, next]
   const currAnchor = state.selectedDate;
@@ -380,7 +678,11 @@ export const CalendarGrid: React.FC<{
     [isWeek, nextAnchor]
   );
 
-  // Header reflects the destination date immediately during glide so strip & title feel instantaneous
+  const currColumnsRef = useRef(currColumns);
+  currColumnsRef.current = currColumns;
+  const hourHeightRef = useRef(hourHeight);
+  hourHeightRef.current = hourHeight;
+
   const headerIso = pendingHeaderIso ?? currAnchor;
   const headerWeekDates = useMemo(() => getWeekDatesISO(headerIso), [headerIso]);
 
@@ -407,6 +709,118 @@ export const CalendarGrid: React.FC<{
   );
   const gridHeight = (endHour - startHour) * hourHeight;
 
+  /** Maps viewport `(clientX, clientY)` to exact `(date, rawMinutes)` on the active calendar pane. */
+  const resolveGridPoint = useCallback((clientX: number, clientY: number) => {
+    const stageEl = stageRef.current;
+    const cols = currColumnsRef.current;
+    const hh = hourHeightRef.current;
+    if (!stageEl || cols.length === 0) {
+      return { date: cols[0] || TODAY_ANCHOR, rawMins: 9 * 60 };
+    }
+    const rect = stageEl.getBoundingClientRect();
+    const relX = clientX - rect.left;
+    const relY = clientY - rect.top;
+    const colIdx = Math.max(
+      0,
+      Math.min(cols.length - 1, Math.floor((relX / Math.max(1, rect.width)) * cols.length))
+    );
+    const rawMins = Math.max(0, Math.min(24 * 60, (relY / hh) * 60));
+    return { date: cols[colIdx], rawMins };
+  }, []);
+
+  /** Updates `activeDrag` state from current pointer coordinates. */
+  const updateDragFromClientPoint = useCallback(
+    (clientX: number, clientY: number) => {
+      const cur = activeDragRef.current;
+      if (!cur) return;
+      const { date, rawMins } = resolveGridPoint(clientX, clientY);
+
+      if (cur.kind === 'move-block') {
+        const nextStart = Math.max(
+          0,
+          Math.min(24 * 60 - cur.durationMins, snapMin(rawMins - cur.grabOffsetMins, 15))
+        );
+        const nextEnd = nextStart + cur.durationMins;
+        if (nextStart !== cur.startMins || date !== cur.date) {
+          setActiveDrag({ ...cur, date, startMins: nextStart, endMins: nextEnd });
+        }
+      } else if (cur.kind === 'resize-start') {
+        const nextStart = Math.max(0, Math.min(cur.endMins - 15, snapMin(rawMins, 15)));
+        if (nextStart !== cur.startMins) {
+          setActiveDrag({ ...cur, startMins: nextStart });
+        }
+      } else if (cur.kind === 'resize-end') {
+        const nextEnd = Math.max(cur.startMins + 15, Math.min(24 * 60, snapMin(rawMins, 15)));
+        if (nextEnd !== cur.endMins) {
+          setActiveDrag({ ...cur, endMins: nextEnd });
+        }
+      } else if (cur.kind === 'move-reminder') {
+        const nextMins = Math.max(0, Math.min(23 * 60 + 45, snapMin(rawMins, 15)));
+        if (nextMins !== cur.timeMins || date !== cur.date) {
+          setActiveDrag({ ...cur, date, timeMins: nextMins });
+        }
+      } else if (cur.kind === 'sweep-create') {
+        const snapped = snapMin(rawMins, 15);
+        const lo = Math.max(0, Math.min(cur.anchorMins, snapped));
+        const hi = Math.min(24 * 60, Math.max(cur.anchorMins + 30, snapped));
+        if (lo !== cur.startMins || hi !== cur.endMins) {
+          setActiveDrag({ ...cur, startMins: lo, endMins: hi });
+        }
+      }
+    },
+    [resolveGridPoint]
+  );
+
+  // Prevent browser native touch scrolling & run smooth edge auto-scroll whenever an item drag/resize/sweep is active
+  useEffect(() => {
+    if (!activeDrag) {
+      if (scrollRef.current) scrollRef.current.style.overflowY = '';
+      return;
+    }
+
+    if (scrollRef.current) scrollRef.current.style.overflowY = 'hidden';
+
+    const stopNativeScroll = (ev: TouchEvent) => {
+      ev.preventDefault();
+    };
+    document.addEventListener('touchmove', stopNativeScroll, { passive: false });
+
+    const tickEdgeScroll = () => {
+      const scroller = scrollRef.current;
+      if (scroller && activeDragRef.current) {
+        const r = scroller.getBoundingClientRect();
+        const py = lastPointerClientRef.current.y;
+        let delta = 0;
+        if (py < r.top + 46) {
+          delta = -Math.ceil(((r.top + 46 - py) / 46) * 8);
+        } else if (py > r.bottom - 68) {
+          delta = Math.ceil(((py - (r.bottom - 68)) / 68) * 8);
+        }
+        if (delta !== 0) {
+          const prevTop = scroller.scrollTop;
+          scroller.scrollTop = Math.max(0, prevTop + delta);
+          if (scroller.scrollTop !== prevTop) {
+            updateDragFromClientPoint(
+              lastPointerClientRef.current.x,
+              lastPointerClientRef.current.y
+            );
+          }
+        }
+      }
+      autoScrollRafRef.current = window.requestAnimationFrame(tickEdgeScroll);
+    };
+    autoScrollRafRef.current = window.requestAnimationFrame(tickEdgeScroll);
+
+    return () => {
+      document.removeEventListener('touchmove', stopNativeScroll);
+      if (autoScrollRafRef.current !== null) {
+        window.cancelAnimationFrame(autoScrollRafRef.current);
+        autoScrollRafRef.current = null;
+      }
+      if (scrollRef.current) scrollRef.current.style.overflowY = '';
+    };
+  }, [Boolean(activeDrag), updateDragFromClientPoint]);
+
   const resetTrackStylesInstant = useCallback(() => {
     if (trackRef.current) {
       trackRef.current.style.transition = 'none';
@@ -426,7 +840,6 @@ export const CalendarGrid: React.FC<{
     }
   }, []);
 
-  // Synchronously recenter the 3-pane track BEFORE paint whenever selectedDate or viewMode commits
   useLayoutEffect(() => {
     resetTrackStylesInstant();
   }, [state.selectedDate, state.scheduleViewMode, resetTrackStylesInstant]);
@@ -465,7 +878,6 @@ export const CalendarGrid: React.FC<{
         return;
       }
 
-      // Force style flush so transitions always animate smoothly from current position
       void track.offsetWidth;
 
       const destPct = dir === 1 ? '-66.666667%' : '0%';
@@ -495,7 +907,6 @@ export const CalendarGrid: React.FC<{
     [actions]
   );
 
-  // Trigger deferred glide when tapping a non-adjacent day in the strip (once overrideSide renders)
   useEffect(() => {
     if (!overrideSide) return;
     executeGlide(overrideSide.dir, overrideSide.iso);
@@ -520,11 +931,11 @@ export const CalendarGrid: React.FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.scheduleViewMode]);
 
-  // Horizontal zoom origin from tapped day column (strictly inside .gcal-stage so times are never covered)
   const dayIdx = Math.max(0, headerWeekDates.indexOf(headerIso));
   const zoomOrigin = `${((dayIdx + 0.5) / 7) * 100}% 0`;
 
-  // Scroll a newly added event or reminder into view
+  const effectiveHighlightId = highlightId || localFlashId;
+
   useEffect(() => {
     if (!highlightId || !scrollRef.current) return;
     const b = state.blocks.find((x) => x.id === highlightId);
@@ -536,7 +947,6 @@ export const CalendarGrid: React.FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightId]);
 
-  // Automatically pop to the spoken day & scroll to the spoken start time as voice info arrives
   useEffect(() => {
     if (!liveDraft?.date) return;
     if (state.scheduleViewMode === 'week') {
@@ -606,50 +1016,424 @@ export const CalendarGrid: React.FC<{
   );
 
   const handleOpenBlock = useCallback((id: string) => {
-    if (performance.now() < suppressClickUntilRef.current) return;
+    if (performance.now() < suppressClickUntilRef.current || activeDragRef.current) return;
+    setCreateDraft(null);
     setOpenBlockId(id);
   }, []);
 
   const handleOpenReminder = useCallback((id: string) => {
-    if (performance.now() < suppressClickUntilRef.current) return;
+    if (performance.now() < suppressClickUntilRef.current || activeDragRef.current) return;
+    setCreateDraft(null);
     setOpenReminderId(id);
   }, []);
 
-  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    finalizePendingGlide();
-    const now = performance.now();
-    const stageWidth = stageRef.current?.clientWidth || 320;
-    pointerRef.current = {
-      pointerId: e.pointerId,
-      captured: false,
-      startX: e.clientX,
-      startY: e.clientY,
-      lastX: e.clientX,
-      lastTime: now,
-      vx: 0,
-      axis: 'none',
-      stageWidth,
-    };
+  const openNewEventSheet = useCallback((date: string, startMins: number, endMins: number) => {
+    const clampedStart = Math.max(0, Math.min(23 * 60 + 30, startMins));
+    const clampedEnd = Math.max(clampedStart + 15, Math.min(24 * 60, endMins));
+    setOpenBlockId(null);
+    setOpenReminderId(null);
+    setCreateDraft({
+      mode: 'event',
+      title: '',
+      date,
+      startTime: fromMin(clampedStart),
+      endTime: fromMin(clampedEnd),
+      whyCategory: 'Organization',
+      manualWhy: false,
+    });
+    window.setTimeout(() => createInputRef.current?.focus(), 40);
+  }, []);
+
+  const commitNewEventDraft = () => {
+    if (!createDraft) return;
+    const rawTitle = createDraft.title.trim();
+
+    if (createDraft.mode === 'reminder') {
+      const remId = actions.addReminder({
+        date: createDraft.date,
+        time: createDraft.startTime,
+        title: rawTitle || 'Reminder',
+        completed: false,
+      });
+      setLocalFlashId(remId);
+      setCreateDraft(null);
+      return;
+    }
+
+    if (createDraft.mode === 'empty-zone') {
+      const zoneTitle = rawTitle
+        ? /^empty zone/i.test(rawTitle)
+          ? rawTitle
+          : `Empty Zone — ${rawTitle}`
+        : 'Empty Zone — Open Focus Slot';
+      const id = actions.addCalendarBlock({
+        date: createDraft.date,
+        startTime: createDraft.startTime,
+        endTime:
+          toMin(createDraft.endTime) > toMin(createDraft.startTime)
+            ? createDraft.endTime
+            : fromMin(toMin(createDraft.startTime) + 60),
+        title: zoneTitle,
+        kind: 'empty-zone',
+        completed: false,
+      });
+      setLocalFlashId(id);
+      setCreateDraft(null);
+      return;
+    }
+
+    const finalTitle = rawTitle || 'New Event';
+    const whyCat = createDraft.manualWhy
+      ? createDraft.whyCategory
+      : inferWhyFromTitle(finalTitle);
+    const id = actions.addCalendarBlock({
+      date: createDraft.date,
+      startTime: createDraft.startTime,
+      endTime:
+        toMin(createDraft.endTime) > toMin(createDraft.startTime)
+          ? createDraft.endTime
+          : fromMin(toMin(createDraft.startTime) + 60),
+      title: finalTitle,
+      kind: 'baseline',
+      completed: false,
+      whyCategory: whyCat,
+    });
+    setLocalFlashId(id);
+    setCreateDraft(null);
   };
 
-  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const p = pointerRef.current;
-    if (!p || e.pointerId !== p.pointerId) return;
+  /** Start moving an existing event block (long-press on touch, drag >=5px on mouse). */
+  const engageMoveBlock = useCallback(
+    (block: CalendarBlock, clientX: number, clientY: number) => {
+      const { rawMins } = resolveGridPoint(clientX, clientY);
+      const origStart = toMin(block.startTime);
+      const origEnd = Math.max(origStart + 15, toMin(block.endTime));
+      const duration = origEnd - origStart;
+      const grabOffset = Math.max(0, Math.min(duration, rawMins - origStart));
+      try {
+        navigator.vibrate?.(12);
+      } catch {
+        /* ignore */
+      }
+      setCreateDraft(null);
+      setActiveDrag({
+        kind: 'move-block',
+        block,
+        grabOffsetMins: grabOffset,
+        durationMins: duration,
+        date: block.date,
+        startMins: origStart,
+        endMins: origEnd,
+      });
+    },
+    [resolveGridPoint]
+  );
+
+  const engageMoveReminder = useCallback((rem: ReminderItem) => {
+    try {
+      navigator.vibrate?.(12);
+    } catch {
+      /* ignore */
+    }
+    setCreateDraft(null);
+    setActiveDrag({
+      kind: 'move-reminder',
+      reminder: rem,
+      date: rem.date,
+      timeMins: toMin(rem.time),
+    });
+  }, []);
+
+  const engageSweepCreate = useCallback(
+    (clientX: number, clientY: number) => {
+      const { date, rawMins } = resolveGridPoint(clientX, clientY);
+      const anchor = Math.max(0, Math.min(23 * 60 + 30, Math.floor(rawMins / 30) * 30));
+      try {
+        navigator.vibrate?.(10);
+      } catch {
+        /* ignore */
+      }
+      setCreateDraft(null);
+      setActiveDrag({
+        kind: 'sweep-create',
+        date,
+        anchorMins: anchor,
+        startMins: anchor,
+        endMins: Math.min(24 * 60, anchor + 60),
+      });
+    },
+    [resolveGridPoint]
+  );
+
+  const handleBlockPointerDown = useCallback(
+    (e: React.PointerEvent, block: CalendarBlock) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.stopPropagation();
+      finalizePendingGlide();
+      clearHoldTimer();
+
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+      lastPointerClientRef.current = { x: clientX, y: clientY };
+
+      gestureRef.current = {
+        pointerId: e.pointerId,
+        pointerType: e.pointerType,
+        captured: false,
+        startX: clientX,
+        startY: clientY,
+        lastX: clientX,
+        lastTime: performance.now(),
+        vx: 0,
+        axis: 'none',
+        stageWidth: stageRef.current?.clientWidth || 320,
+        originKind: 'block',
+        targetBlock: block,
+      };
+
+      if (e.pointerType !== 'mouse') {
+        holdTimerRef.current = window.setTimeout(() => {
+          holdTimerRef.current = null;
+          if (gestureRef.current?.originKind === 'block' && gestureRef.current.targetBlock) {
+            if (scrollRef.current) {
+              try {
+                scrollRef.current.setPointerCapture(e.pointerId);
+                gestureRef.current.captured = true;
+              } catch {
+                /* ignore */
+              }
+            }
+            engageMoveBlock(block, lastPointerClientRef.current.x, lastPointerClientRef.current.y);
+          }
+        }, LONG_PRESS_MS);
+      }
+    },
+    [finalizePendingGlide, engageMoveBlock]
+  );
+
+  const handleResizePointerDown = useCallback(
+    (e: React.PointerEvent, block: CalendarBlock, edge: 'resize-start' | 'resize-end') => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+      finalizePendingGlide();
+      clearHoldTimer();
+
+      lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
+      const origStart = toMin(block.startTime);
+      const origEnd = Math.max(origStart + 15, toMin(block.endTime));
+
+      gestureRef.current = {
+        pointerId: e.pointerId,
+        pointerType: e.pointerType,
+        captured: false,
+        startX: e.clientX,
+        startY: e.clientY,
+        lastX: e.clientX,
+        lastTime: performance.now(),
+        vx: 0,
+        axis: 'y',
+        stageWidth: stageRef.current?.clientWidth || 320,
+        originKind: 'resize',
+        targetBlock: block,
+        resizeEdge: edge,
+      };
+
+      if (scrollRef.current) {
+        try {
+          scrollRef.current.setPointerCapture(e.pointerId);
+          gestureRef.current.captured = true;
+        } catch {
+          /* ignore */
+        }
+      }
+
+      try {
+        navigator.vibrate?.(10);
+      } catch {
+        /* ignore */
+      }
+
+      setCreateDraft(null);
+      setActiveDrag({
+        kind: edge,
+        block,
+        date: block.date,
+        startMins: origStart,
+        endMins: origEnd,
+      });
+    },
+    [finalizePendingGlide]
+  );
+
+  const handleReminderPointerDown = useCallback(
+    (e: React.PointerEvent, rem: ReminderItem) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.stopPropagation();
+      finalizePendingGlide();
+      clearHoldTimer();
+
+      lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
+      gestureRef.current = {
+        pointerId: e.pointerId,
+        pointerType: e.pointerType,
+        captured: false,
+        startX: e.clientX,
+        startY: e.clientY,
+        lastX: e.clientX,
+        lastTime: performance.now(),
+        vx: 0,
+        axis: 'none',
+        stageWidth: stageRef.current?.clientWidth || 320,
+        originKind: 'reminder',
+        targetReminder: rem,
+      };
+
+      if (e.pointerType !== 'mouse') {
+        holdTimerRef.current = window.setTimeout(() => {
+          holdTimerRef.current = null;
+          if (gestureRef.current?.originKind === 'reminder' && gestureRef.current.targetReminder) {
+            if (scrollRef.current) {
+              try {
+                scrollRef.current.setPointerCapture(e.pointerId);
+                gestureRef.current.captured = true;
+              } catch {
+                /* ignore */
+              }
+            }
+            engageMoveReminder(rem);
+          }
+        }, LONG_PRESS_MS);
+      }
+    },
+    [finalizePendingGlide, engageMoveReminder]
+  );
+
+  const onScrollPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // Ignore pointerdowns on the left time gutter
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('.gcal-hours')) return;
+
+    finalizePendingGlide();
+    clearHoldTimer();
+
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+    lastPointerClientRef.current = { x: clientX, y: clientY };
+
+    gestureRef.current = {
+      pointerId: e.pointerId,
+      pointerType: e.pointerType,
+      captured: false,
+      startX: clientX,
+      startY: clientY,
+      lastX: clientX,
+      lastTime: performance.now(),
+      vx: 0,
+      axis: 'none',
+      stageWidth: stageRef.current?.clientWidth || 320,
+      originKind: 'empty',
+    };
+
+    // On touch, holding on empty space for 190ms enters Google Calendar sweep-create drag mode
+    if (e.pointerType !== 'mouse') {
+      holdTimerRef.current = window.setTimeout(() => {
+        holdTimerRef.current = null;
+        if (gestureRef.current?.originKind === 'empty' && gestureRef.current.axis === 'none') {
+          if (scrollRef.current) {
+            try {
+              scrollRef.current.setPointerCapture(e.pointerId);
+              gestureRef.current.captured = true;
+            } catch {
+              /* ignore */
+            }
+          }
+          engageSweepCreate(lastPointerClientRef.current.x, lastPointerClientRef.current.y);
+        }
+      }, 190);
+    }
+  };
+
+  const onScrollPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const g = gestureRef.current;
+    if (!g || e.pointerId !== g.pointerId) return;
 
     const x = e.clientX;
     const y = e.clientY;
-    const dx = x - p.startX;
-    const dy = y - p.startY;
+    lastPointerClientRef.current = { x, y };
+    const dx = x - g.startX;
+    const dy = y - g.startY;
+    const dist = Math.hypot(dx, dy);
 
-    if (p.axis === 'none') {
-      if (Math.hypot(dx, dy) < 7) return;
-      p.axis = Math.abs(dx) > Math.abs(dy) * 1.1 ? 'x' : 'y';
-      if (p.axis === 'x') {
-        if (!p.captured) {
+    // 1. If already in an active drag/resize/sweep mode, update live grid coordinates!
+    if (activeDragRef.current) {
+      if (!g.captured && scrollRef.current) {
+        try {
+          scrollRef.current.setPointerCapture(g.pointerId);
+          g.captured = true;
+        } catch {
+          /* ignore */
+        }
+      }
+      updateDragFromClientPoint(x, y);
+      return;
+    }
+
+    // 2. On desktop mouse, moving >= 5px immediately promotes block/reminder/empty-vertical into live drag!
+    if (g.pointerType === 'mouse' && dist >= 5) {
+      if (g.originKind === 'block' && g.targetBlock) {
+        if (scrollRef.current) {
           try {
-            e.currentTarget.setPointerCapture(e.pointerId);
-            p.captured = true;
+            scrollRef.current.setPointerCapture(g.pointerId);
+            g.captured = true;
+          } catch {
+            /* ignore */
+          }
+        }
+        engageMoveBlock(g.targetBlock, g.startX, g.startY);
+        updateDragFromClientPoint(x, y);
+        return;
+      }
+      if (g.originKind === 'reminder' && g.targetReminder) {
+        if (scrollRef.current) {
+          try {
+            scrollRef.current.setPointerCapture(g.pointerId);
+            g.captured = true;
+          } catch {
+            /* ignore */
+          }
+        }
+        engageMoveReminder(g.targetReminder);
+        updateDragFromClientPoint(x, y);
+        return;
+      }
+      // On desktop empty space: vertical drag sweeps out an event; horizontal drag glides days/weeks!
+      if (g.originKind === 'empty' && g.axis === 'none' && Math.abs(dy) > Math.abs(dx) * 1.15) {
+        if (scrollRef.current) {
+          try {
+            scrollRef.current.setPointerCapture(g.pointerId);
+            g.captured = true;
+          } catch {
+            /* ignore */
+          }
+        }
+        engageSweepCreate(g.startX, g.startY);
+        updateDragFromClientPoint(x, y);
+        return;
+      }
+    }
+
+    // 3. Otherwise, if finger moved >= 7px before long-press fired, cancel long-press & run swipe/scroll!
+    if (g.axis === 'none') {
+      if (dist < 7) return;
+      clearHoldTimer();
+      g.axis = Math.abs(dx) > Math.abs(dy) * 1.1 ? 'x' : 'y';
+      if (g.axis === 'x') {
+        if (!g.captured && scrollRef.current) {
+          try {
+            scrollRef.current.setPointerCapture(g.pointerId);
+            g.captured = true;
           } catch {
             /* ignore */
           }
@@ -662,18 +1446,17 @@ export const CalendarGrid: React.FC<{
       }
     }
 
-    if (p.axis !== 'x') return;
+    if (g.axis !== 'x') return;
 
     const now = performance.now();
-    const dt = Math.max(1, now - p.lastTime);
-    p.vx = (x - p.lastX) / dt;
-    p.lastX = x;
-    p.lastTime = now;
+    const dt = Math.max(1, now - g.lastTime);
+    g.vx = (x - g.lastX) / dt;
+    g.lastX = x;
+    g.lastTime = now;
 
-    const clampedDx = Math.max(-p.stageWidth, Math.min(p.stageWidth, dx));
-    const progress = Math.min(1, Math.abs(clampedDx) / p.stageWidth);
+    const clampedDx = Math.max(-g.stageWidth, Math.min(g.stageWidth, dx));
+    const progress = Math.min(1, Math.abs(clampedDx) / g.stageWidth);
 
-    // Pure GPU 1:1 finger/pointer tracking — zero React re-renders during drag
     if (trackRef.current) {
       trackRef.current.style.transform = `translate3d(calc(-33.333333% + ${clampedDx}px), 0, 0)`;
     }
@@ -690,26 +1473,80 @@ export const CalendarGrid: React.FC<{
     }
   };
 
-  const finishPointerGesture = (e: React.PointerEvent<HTMLDivElement>, cancelled = false) => {
-    const p = pointerRef.current;
-    if (!p || e.pointerId !== p.pointerId) return;
-    pointerRef.current = null;
+  const finishScrollPointerGesture = (
+    e: React.PointerEvent<HTMLDivElement>,
+    cancelled = false
+  ) => {
+    clearHoldTimer();
+    const g = gestureRef.current;
+    if (!g || e.pointerId !== g.pointerId) return;
+    gestureRef.current = null;
 
-    if (p.captured) {
+    if (g.captured && scrollRef.current) {
       try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
+        scrollRef.current.releasePointerCapture(g.pointerId);
       } catch {
         /* ignore */
       }
     }
+
+    // 1. Finalize active block/reminder move, resize, or sweep-create!
+    const drag = activeDragRef.current;
+    if (drag) {
+      suppressClickUntilRef.current = performance.now() + 340;
+      setActiveDrag(null);
+
+      if (!cancelled) {
+        if (drag.kind === 'move-block' || drag.kind === 'resize-start' || drag.kind === 'resize-end') {
+          const nextStart = fromMin(drag.startMins);
+          const nextEnd = fromMin(drag.endMins);
+          if (
+            drag.date !== drag.block.date ||
+            nextStart !== drag.block.startTime ||
+            nextEnd !== drag.block.endTime
+          ) {
+            actions.updateCalendarBlock(drag.block.id, {
+              date: drag.date,
+              startTime: nextStart,
+              endTime: nextEnd,
+            });
+            setLocalFlashId(drag.block.id);
+          }
+        } else if (drag.kind === 'move-reminder') {
+          const nextTime = fromMin(drag.timeMins);
+          if (drag.date !== drag.reminder.date || nextTime !== drag.reminder.time) {
+            actions.updateReminder(drag.reminder.id, {
+              date: drag.date,
+              time: nextTime,
+            });
+            setLocalFlashId(drag.reminder.id);
+          }
+        } else if (drag.kind === 'sweep-create') {
+          openNewEventSheet(drag.date, drag.startMins, drag.endMins);
+        }
+      }
+      return;
+    }
+
     if (scrollRef.current) scrollRef.current.style.overflowY = '';
-    if (p.axis !== 'x') return;
+
+    // 2. Quick tap on empty calendar grid -> Google Calendar tap-to-add at that exact day & 30m slot!
+    const totalMove = Math.hypot(e.clientX - g.startX, e.clientY - g.startY);
+    if (!cancelled && g.originKind === 'empty' && g.axis === 'none' && totalMove < 7) {
+      const { date, rawMins } = resolveGridPoint(e.clientX, e.clientY);
+      const slotStart = Math.max(0, Math.min(23 * 60, Math.floor(rawMins / 30) * 30));
+      openNewEventSheet(date, slotStart, Math.min(24 * 60, slotStart + 60));
+      return;
+    }
+
+    // 3. Finalize horizontal day/week carousel swipe
+    if (g.axis !== 'x') return;
 
     suppressClickUntilRef.current = performance.now() + 320;
-    const dx = cancelled ? 0 : e.clientX - p.startX;
-    const distancePass = !cancelled && Math.abs(dx) > p.stageWidth * 0.22;
+    const dx = cancelled ? 0 : e.clientX - g.startX;
+    const distancePass = !cancelled && Math.abs(dx) > g.stageWidth * 0.22;
     const flickPass =
-      !cancelled && Math.abs(dx) > 22 && Math.abs(p.vx) > 0.32 && Math.sign(dx) === Math.sign(p.vx);
+      !cancelled && Math.abs(dx) > 22 && Math.abs(g.vx) > 0.32 && Math.sign(dx) === Math.sign(g.vx);
 
     if (distancePass || flickPass) {
       const dir: 1 | -1 = dx < 0 ? 1 : -1;
@@ -717,7 +1554,6 @@ export const CalendarGrid: React.FC<{
       return;
     }
 
-    // Smooth spring-back to center when swipe is cancelled
     if (trackRef.current) {
       trackRef.current.style.transition = `transform ${SNAP_BACK_MS}ms ${EASE_OUT_EXPO}`;
       trackRef.current.style.transform = 'translate3d(-33.333333%, 0, 0)';
@@ -737,6 +1573,7 @@ export const CalendarGrid: React.FC<{
   };
 
   const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (activeDragRef.current) return;
     if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) * 1.3 || Math.abs(e.deltaX) < 32) return;
     const now = performance.now();
     if (now < wheelCooldownRef.current) return;
@@ -826,11 +1663,11 @@ export const CalendarGrid: React.FC<{
       {/* Scrollable time grid */}
       <div
         ref={scrollRef}
-        className="gcal-scroll"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={(e) => finishPointerGesture(e, false)}
-        onPointerCancel={(e) => finishPointerGesture(e, true)}
+        className={`gcal-scroll ${activeDrag ? 'is-dragging-grid' : ''}`.trim()}
+        onPointerDown={onScrollPointerDown}
+        onPointerMove={onScrollPointerMove}
+        onPointerUp={(e) => finishScrollPointerGesture(e, false)}
+        onPointerCancel={(e) => finishScrollPointerGesture(e, true)}
         onWheel={onWheel}
       >
         {liveDraft && !liveDraft.startTime && (
@@ -851,7 +1688,7 @@ export const CalendarGrid: React.FC<{
           </div>
         )}
         <div className="gcal-body" style={{ height: gridHeight }}>
-          {/* Protected fixed-width time gutter — never covered by horizontal swipes or zooms */}
+          {/* Protected fixed-width time gutter */}
           <div className="gcal-gutter gcal-hours">
             {hourTicks.map((h, i) => (
               <div key={h} className="gcal-hour-label" style={{ top: i * hourHeight }}>
@@ -902,9 +1739,15 @@ export const CalendarGrid: React.FC<{
                     nowMin={nowMin}
                     blocks={windowBlocks}
                     reminders={windowReminders}
-                    highlightId={highlightId}
+                    highlightId={effectiveHighlightId}
                     liveDraft={liveDraft}
                     fallbackDraftIso={state.selectedDate}
+                    activeDrag={activeDrag}
+                    createPreview={createDraft}
+                    interactive
+                    onBlockPointerDown={handleBlockPointerDown}
+                    onResizePointerDown={handleResizePointerDown}
+                    onReminderPointerDown={handleReminderPointerDown}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />
@@ -933,7 +1776,155 @@ export const CalendarGrid: React.FC<{
         </div>
       </div>
 
-      {/* Event detail bottom sheet (Google Calendar-style) */}
+      {/* Google Calendar-style Tap/Sweep New Event Creation Sheet */}
+      {createDraft && (
+        <div
+          className="gcal-sheet-scrim is-light"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setCreateDraft(null);
+          }}
+        >
+          <form
+            className="gcal-sheet"
+            role="dialog"
+            aria-label="New calendar item"
+            onSubmit={(e) => {
+              e.preventDefault();
+              commitNewEventDraft();
+            }}
+          >
+            <div className="gcal-sheet-grip" />
+            <div className="ops-row-between" style={{ gap: 8 }}>
+              <input
+                ref={createInputRef}
+                className="gcal-create-title-input"
+                value={createDraft.title}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCreateDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          title: val,
+                          whyCategory: prev.manualWhy
+                            ? prev.whyCategory
+                            : inferWhyFromTitle(val || 'Event'),
+                        }
+                      : prev
+                  );
+                }}
+                placeholder={
+                  createDraft.mode === 'reminder'
+                    ? 'Add reminder…'
+                    : createDraft.mode === 'empty-zone'
+                    ? 'Focus slot topic (optional)…'
+                    : 'Add title'
+                }
+                aria-label="Event title"
+                enterKeyHint="done"
+              />
+              <button
+                type="button"
+                className="ui-command-mic"
+                aria-label="Cancel new event"
+                onClick={() => setCreateDraft(null)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="gcal-type-pills" style={{ marginTop: 12 }}>
+              {(['event', 'empty-zone', 'reminder'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={`gcal-pill-chip ${createDraft.mode === m ? 'is-active' : ''}`.trim()}
+                  onClick={() => setCreateDraft((prev) => (prev ? { ...prev, mode: m } : prev))}
+                >
+                  {m === 'event' ? 'Event' : m === 'empty-zone' ? 'Focus Slot' : 'Reminder'}
+                </button>
+              ))}
+            </div>
+
+            <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
+              <input
+                type="date"
+                className="ui-input gcal-compact-field"
+                aria-label="Date"
+                value={createDraft.date}
+                onChange={(e) =>
+                  e.target.value &&
+                  setCreateDraft((prev) => (prev ? { ...prev, date: e.target.value } : prev))
+                }
+              />
+              <input
+                type="time"
+                className="ui-input gcal-compact-field"
+                aria-label="Start time"
+                value={createDraft.startTime === '24:00' ? '23:59' : createDraft.startTime}
+                onChange={(e) => {
+                  const nextStart = e.target.value;
+                  if (!nextStart) return;
+                  setCreateDraft((prev) => {
+                    if (!prev) return prev;
+                    const sMin = toMin(nextStart);
+                    const eMin = toMin(prev.endTime);
+                    return {
+                      ...prev,
+                      startTime: nextStart,
+                      endTime: eMin <= sMin ? fromMin(Math.min(24 * 60, sMin + 60)) : prev.endTime,
+                    };
+                  });
+                }}
+              />
+              {createDraft.mode !== 'reminder' && (
+                <>
+                  <span className="gcal-sheet-meta">–</span>
+                  <input
+                    type="time"
+                    className="ui-input gcal-compact-field"
+                    aria-label="End time"
+                    value={createDraft.endTime === '24:00' ? '23:59' : createDraft.endTime}
+                    onChange={(e) =>
+                      e.target.value &&
+                      setCreateDraft((prev) => (prev ? { ...prev, endTime: e.target.value } : prev))
+                    }
+                  />
+                </>
+              )}
+            </div>
+
+            {createDraft.mode === 'event' && (
+              <div className="gcal-type-pills" style={{ marginTop: 10 }}>
+                {WHY_CATEGORIES.map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    className={`gcal-pill-chip is-why-${cat.toLowerCase()} ${
+                      createDraft.whyCategory === cat ? 'is-active' : ''
+                    }`.trim()}
+                    onClick={() =>
+                      setCreateDraft((prev) =>
+                        prev ? { ...prev, whyCategory: cat, manualWhy: true } : prev
+                      )
+                    }
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="gcal-sheet-actions">
+              <Button variant="primary" size="lg" fullWidth type="submit">
+                Save
+              </Button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Event detail & inline-edit bottom sheet (Google Calendar-style) */}
       {openBlock && (
         <div
           className="gcal-sheet-scrim"
@@ -943,16 +1934,17 @@ export const CalendarGrid: React.FC<{
         >
           <div className="gcal-sheet" role="dialog" aria-label={openBlock.title}>
             <div className="gcal-sheet-grip" />
-            <div className="ops-row-between" style={{ alignItems: 'flex-start' }}>
-              <div className="ops-row" style={{ alignItems: 'flex-start', gap: 12, minWidth: 0 }}>
-                <span className={`gcal-swatch ${eventClass(openBlock)}`} />
-                <div className="ops-stack-xs" style={{ minWidth: 0 }}>
-                  <h3 className="gcal-sheet-title">{openBlock.title}</h3>
-                  <span className="gcal-sheet-meta">
-                    {formatShortDate(openBlock.date)} · {fmtTime(openBlock.startTime)} –{' '}
-                    {fmtTime(openBlock.endTime)}
-                  </span>
-                </div>
+            <div className="ops-row-between" style={{ alignItems: 'center', gap: 10 }}>
+              <div className="ops-row" style={{ alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+                <span className={`gcal-swatch ${eventClass(openBlock)}`} style={{ marginTop: 0 }} />
+                <input
+                  className="gcal-create-title-input"
+                  value={openBlock.title}
+                  aria-label="Edit event title"
+                  onChange={(e) =>
+                    actions.updateCalendarBlock(openBlock.id, { title: e.target.value })
+                  }
+                />
               </div>
               <button
                 type="button"
@@ -964,13 +1956,68 @@ export const CalendarGrid: React.FC<{
               </button>
             </div>
 
-            <div className="ops-stack-sm" style={{ marginTop: 14 }}>
+            <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
+              <input
+                type="date"
+                className="ui-input gcal-compact-field"
+                aria-label="Event date"
+                value={openBlock.date}
+                onChange={(e) =>
+                  e.target.value &&
+                  actions.updateCalendarBlock(openBlock.id, { date: e.target.value })
+                }
+              />
+              <input
+                type="time"
+                className="ui-input gcal-compact-field"
+                aria-label="Event start time"
+                value={openBlock.startTime === '24:00' ? '23:59' : openBlock.startTime}
+                onChange={(e) =>
+                  e.target.value &&
+                  actions.updateCalendarBlock(openBlock.id, { startTime: e.target.value })
+                }
+              />
+              <span className="gcal-sheet-meta">–</span>
+              <input
+                type="time"
+                className="ui-input gcal-compact-field"
+                aria-label="Event end time"
+                value={openBlock.endTime === '24:00' ? '23:59' : openBlock.endTime}
+                onChange={(e) =>
+                  e.target.value &&
+                  actions.updateCalendarBlock(openBlock.id, { endTime: e.target.value })
+                }
+              />
+            </div>
+
+            {openBlock.kind === 'baseline' && (
+              <div className="gcal-type-pills" style={{ marginTop: 10 }}>
+                {WHY_CATEGORIES.map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    className={`gcal-pill-chip is-why-${cat.toLowerCase()} ${
+                      (openBlock.whyCategory || 'Organization') === cat ? 'is-active' : ''
+                    }`.trim()}
+                    onClick={() =>
+                      actions.updateCalendarBlock(openBlock.id, { whyCategory: cat })
+                    }
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="ops-stack-sm" style={{ marginTop: 12 }}>
               {openBlock.whyCategory && (
                 <div className="ops-stack-xs">
                   <div>
                     <Badge tone="why">Why: {openBlock.whyCategory}</Badge>
                   </div>
-                  <span className="gcal-sheet-meta">{state.whyStatements[openBlock.whyCategory]}</span>
+                  <span className="gcal-sheet-meta">
+                    {state.whyStatements[openBlock.whyCategory]}
+                  </span>
                 </div>
               )}
               {openBlock.startingStepHint && (
@@ -1092,7 +2139,7 @@ export const CalendarGrid: React.FC<{
         </div>
       )}
 
-      {/* Reminder detail bottom sheet */}
+      {/* Reminder detail & inline-edit bottom sheet */}
       {openReminder && (
         <div
           className="gcal-sheet-scrim"
@@ -1102,15 +2149,17 @@ export const CalendarGrid: React.FC<{
         >
           <div className="gcal-sheet" role="dialog" aria-label={openReminder.title}>
             <div className="gcal-sheet-grip" />
-            <div className="ops-row-between" style={{ alignItems: 'flex-start' }}>
-              <div className="ops-row" style={{ alignItems: 'flex-start', gap: 12, minWidth: 0 }}>
-                <span className="gcal-swatch gcal-swatch-rem" />
-                <div className="ops-stack-xs" style={{ minWidth: 0 }}>
-                  <h3 className="gcal-sheet-title">{openReminder.title}</h3>
-                  <span className="gcal-sheet-meta">
-                    Reminder · {formatShortDate(openReminder.date)} at {fmtTime(openReminder.time)}
-                  </span>
-                </div>
+            <div className="ops-row-between" style={{ alignItems: 'center', gap: 10 }}>
+              <div className="ops-row" style={{ alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+                <span className="gcal-swatch gcal-swatch-rem" style={{ marginTop: 0 }} />
+                <input
+                  className="gcal-create-title-input"
+                  value={openReminder.title}
+                  aria-label="Edit reminder title"
+                  onChange={(e) =>
+                    actions.updateReminder(openReminder.id, { title: e.target.value })
+                  }
+                />
               </div>
               <button
                 type="button"
@@ -1120,6 +2169,29 @@ export const CalendarGrid: React.FC<{
               >
                 <X size={16} />
               </button>
+            </div>
+
+            <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
+              <input
+                type="date"
+                className="ui-input gcal-compact-field"
+                aria-label="Reminder date"
+                value={openReminder.date}
+                onChange={(e) =>
+                  e.target.value &&
+                  actions.updateReminder(openReminder.id, { date: e.target.value })
+                }
+              />
+              <input
+                type="time"
+                className="ui-input gcal-compact-field"
+                aria-label="Reminder time"
+                value={openReminder.time}
+                onChange={(e) =>
+                  e.target.value &&
+                  actions.updateReminder(openReminder.id, { time: e.target.value })
+                }
+              />
             </div>
 
             <div className="gcal-sheet-actions">

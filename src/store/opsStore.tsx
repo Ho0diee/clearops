@@ -348,6 +348,15 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return id;
       },
 
+      updateCalendarBlock: (blockId, patch) => {
+        setState((prev) => ({
+          ...prev,
+          blocks: sortBlocks(
+            prev.blocks.map((b) => (b.id === blockId ? { ...b, ...patch } : b))
+          ),
+        }));
+      },
+
       toggleBlockCompleted: (blockId: string) => {
         setState((prev) => ({
           ...prev,
@@ -751,11 +760,22 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       addReminder: (remInput) => {
+        const id = makeId('rem');
         setState((prev) => ({
           ...prev,
-          reminders: [...prev.reminders, { ...remInput, id: makeId('rem') }].sort((a, b) =>
+          reminders: [...prev.reminders, { ...remInput, id }].sort((a, b) =>
             a.time.localeCompare(b.time)
           ),
+        }));
+        return id;
+      },
+
+      updateReminder: (reminderId, patch) => {
+        setState((prev) => ({
+          ...prev,
+          reminders: prev.reminders
+            .map((r) => (r.id === reminderId ? { ...r, ...patch } : r))
+            .sort((a, b) => a.time.localeCompare(b.time)),
         }));
       },
 
