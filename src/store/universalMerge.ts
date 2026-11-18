@@ -195,22 +195,24 @@ function normalizeRanksPerFolder(ideas: IdeaItem[], projects: string[]): IdeaIte
   return working;
 }
 
-export function isCustomizedOhchsBlock(block: CalendarBlock): boolean {
+export function isCustomizedOhchsBlock(block: CalendarBlock, todayIso?: string): boolean {
   if (!block.id.startsWith('ohchs-')) return false;
+  const completedOverride = todayIso ? block.date >= todayIso && block.completed : false;
   return Boolean(
     block.updatedAt ||
-      block.completed ||
+      completedOverride ||
       block.customColor !== undefined ||
       (block.notes && block.notes.trim().length > 0) ||
       typeof block.alertOffsetMinutes === 'number'
   );
 }
 
-export function isCustomizedOhchsReminder(rem: ReminderItem): boolean {
+export function isCustomizedOhchsReminder(rem: ReminderItem, todayIso?: string): boolean {
   if (!rem.id.startsWith('ohchs-rot-')) return false;
+  const completedOverride = todayIso ? rem.date >= todayIso && rem.completed : false;
   return Boolean(
     rem.updatedAt ||
-      rem.completed ||
+      completedOverride ||
       rem.title.includes('(90m Delay)') ||
       rem.title.includes('(2hr Delay)')
   );
@@ -281,13 +283,13 @@ export function mergeUniversalPayload(
   const b = incomingOrLocal;
   const tombstones = mergeTombstones(a.tombstones, b.tombstones);
 
-  // Detect whether each side has real user-created/edited Ideas or custom Folders
-  const aHasRealIdeas =
-    (a.ideas ?? []).some((i) => !isUntouchedSeedIdea(i)) ||
-    (a.projects ?? []).some((p) => !STATIC_SEED_PROJECTS.has(p));
-  const bHasRealIdeas =
-    (b.ideas ?? []).some((i) => !isUntouchedSeedIdea(i)) ||
-    (b.projects ?? []).some((p) => !STATIC_SEED_PROJECTS.has(p));
+  // Detect whether each side has real user-created/edited Ideas (ignoring automated sch-* schoolwork items)
+  const aHasRealIdeas = (a.ideas ?? []).some(
+    (i) => !isUntouchedSeedIdea(i) && !i.id.startsWith('sch-')
+  );
+  const bHasRealIdeas = (b.ideas ?? []).some(
+    (i) => !isUntouchedSeedIdea(i) && !i.id.startsWith('sch-')
+  );
 
   const aIdeaIds = new Set((a.ideas ?? []).map((i) => i.id));
   const bIdeaIds = new Set((b.ideas ?? []).map((i) => i.id));

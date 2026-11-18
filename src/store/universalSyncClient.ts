@@ -86,11 +86,16 @@ export function extractSyncPayloadFromState(
   explicitDelays: Record<string, SchoolDelayRecord>,
   updatedAtMs: number
 ): UniversalSyncPayload {
+  const nowDate = new Date();
+  const liveToday = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(
+    2,
+    '0'
+  )}-${String(nowDate.getDate()).padStart(2, '0')}`;
   const userBlocks = state.blocks.filter(
-    (b) => !b.id.startsWith('ohchs-') || isCustomizedOhchsBlock(b)
+    (b) => !b.id.startsWith('ohchs-') || isCustomizedOhchsBlock(b, liveToday)
   );
   const userReminders = state.reminders.filter(
-    (r) => !r.id.startsWith('ohchs-rot-') || isCustomizedOhchsReminder(r)
+    (r) => !r.id.startsWith('ohchs-rot-') || isCustomizedOhchsReminder(r, liveToday)
   );
   const ohchsDelayedDates = deriveOhchsDelaysFromReminders(state.reminders, explicitDelays);
 
