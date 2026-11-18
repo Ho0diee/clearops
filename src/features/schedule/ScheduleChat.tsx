@@ -28,11 +28,6 @@ interface SpeechRec {
   abort?: () => void;
 }
 
-/**
- * Inspects SpeechRecognition N-best alternatives (`maxAlternatives = 3`):
- * When rank-0 mishears "4 to 5" as "4:50" / "45" while rank-1/2 contains "4 to 5",
- * automatically picks the clearer range alternative.
- */
 function pickBestAlternative(resultItem: SpeechRecResultItem): string {
   const primary = (resultItem[0]?.transcript || '').trim();
   if (!primary) return '';
@@ -52,6 +47,8 @@ function pickBestAlternative(resultItem: SpeechRecResultItem): string {
   }
   return primary;
 }
+
+const BACKOFF_DELAYS_MS = [110, 220, 380, 600, 900];
 
 export const ScheduleChat: React.FC<{
   onDraftChange: (draft: VoiceScheduleDraft | null) => void;
@@ -75,7 +72,14 @@ export const ScheduleChat: React.FC<{
   const [listening, setListening] = useState(false);
 
   const recRef = useRef<SpeechRec | null>(null);
+  // Tracks a SpeechRecognition instance that is still tearing down in the browser so we never
+  // collide with the browser's global singleton SpeechRecognition lock on rapid Cancel -> Mic!
+  const closingRecRef = useRef<SpeechRec | null>(null);
+  const startQueuedAfterCloseRef = useRef(false);
+  const closeFallbackTimerRef = useRef<number | null>(null);
   const restartTimerRef = useRef<number | null>(null);
+
+  const sessionEpochRef = useRef(0);
   const wantListeningRef = useRef(false);
   const fatalErrorRef = useRef(false);
   const rapidEmptyEndsRef = useRef(0);
@@ -95,52 +99,90 @@ export const ScheduleChat: React.FC<{
     onDraftChange(draft);
   }, [draft, onDraftChange]);
 
-  const cancelPendingRestart = () => {
+  const clearTimers = useCallback(() => {
     if (restartTimerRef.current !== null) {
       window.clearTimeout(restartTimerRef.current);
       restartTimerRef.current = null;
     }
-  };
-
-  const stopMicSession = useCallback(() => {
-    wantListeningRef.current = false;
-    cancelPendingRestart();
-    setListening(false);
-    if (sessionTextRef.current.trim()) {
-      baseTextRef.current = [baseTextRef.current, sessionTextRef.current]
-        .filter(Boolean)
-        .join(' ')
-        .trim();
-      sessionTextRef.current = '';
-    }
-    if (recRef.current) {
-      const active = recRef.current;
-      recRef.current = null;
-      active.onresult = null;
-      active.onerror = null;
-      active.onend = null;
-      try {
-        active.stop();
-      } catch {
-        /* ignore */
-      }
+    if (closeFallbackTimerRef.current !== null) {
+      window.clearTimeout(closeFallbackTimerRef.current);
+      closeFallbackTimerRef.current = null;
     }
   }, []);
+
+  const startRecognitionPassRef = useRef<() => void>(() => {});
+
+  /**
+   * Stops or aborts the current browser SpeechRecognition instance while keeping an `onend`
+   * hook attached to `closingRecRef` so we know the exact moment the browser unlocks the mic.
+   */
+  const teardownActiveRecognizer = useCallback(
+    (immediateAbort: boolean) => {
+      sessionEpochRef.current += 1;
+      wantListeningRef.current = false;
+      startQueuedAfterCloseRef.current = false;
+      clearTimers();
+      setListening(false);
+
+      if (!immediateAbort && sessionTextRef.current.trim()) {
+        baseTextRef.current = [baseTextRef.current, sessionTextRef.current]
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+      }
+      sessionTextRef.current = '';
+
+      if (recRef.current) {
+        const retiring = recRef.current;
+        recRef.current = null;
+        closingRecRef.current = retiring;
+        retiring.onresult = null;
+        retiring.onerror = null;
+        retiring.onend = () => {
+          if (closingRecRef.current === retiring) {
+            closingRecRef.current = null;
+          }
+          if (closeFallbackTimerRef.current !== null) {
+            window.clearTimeout(closeFallbackTimerRef.current);
+            closeFallbackTimerRef.current = null;
+          }
+          if (startQueuedAfterCloseRef.current && wantListeningRef.current) {
+            startQueuedAfterCloseRef.current = false;
+            startRecognitionPassRef.current();
+          }
+        };
+
+        try {
+          if (immediateAbort && typeof retiring.abort === 'function') {
+            retiring.abort();
+          } else {
+            retiring.stop();
+          }
+        } catch {
+          closingRecRef.current = null;
+        }
+      }
+    },
+    [clearTimers]
+  );
 
   useEffect(() => {
     return () => {
       wantListeningRef.current = false;
-      cancelPendingRestart();
+      startQueuedAfterCloseRef.current = false;
+      clearTimers();
       try {
-        recRef.current?.stop();
+        if (recRef.current?.abort) recRef.current.abort();
+        else recRef.current?.stop();
       } catch {
         /* ignore */
       }
     };
-  }, []);
+  }, [clearTimers]);
 
   const clearDraft = useCallback(() => {
-    stopMicSession();
+    // Use immediate `abort()` on Cancel so the browser releases the microphone lock right away!
+    teardownActiveRecognizer(true);
     baseTextRef.current = '';
     sessionTextRef.current = '';
     setTranscript('');
@@ -148,12 +190,12 @@ export const ScheduleChat: React.FC<{
     if (window.location.search.includes('voiceDraft=')) {
       window.history.replaceState({}, '', window.location.pathname + window.location.hash);
     }
-  }, [onDraftChange, stopMicSession]);
+  }, [onDraftChange, teardownActiveRecognizer]);
 
   const confirmDraft = useCallback(() => {
     const current = latestDraftRef.current;
     if (!current || !current.isComplete) return;
-    stopMicSession();
+    teardownActiveRecognizer(true);
     const committed = actions.commitVoiceDraft(current);
     baseTextRef.current = '';
     sessionTextRef.current = '';
@@ -164,7 +206,7 @@ export const ScheduleChat: React.FC<{
     if (committed) {
       onAdded(committed);
     }
-  }, [actions, onAdded, stopMicSession]);
+  }, [actions, onAdded, teardownActiveRecognizer]);
 
   useEffect(() => {
     if (!draft && !listening) return;
@@ -184,8 +226,35 @@ export const ScheduleChat: React.FC<{
   }, [draft, listening, confirmDraft, clearDraft]);
 
   const startRecognitionPass = useCallback(() => {
-    cancelPendingRestart();
+    if (restartTimerRef.current !== null) {
+      window.clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
     if (!wantListeningRef.current) return;
+
+    // If a canceled recognizer is still finishing its browser-level teardown, wait for its `onend`
+    // (with a 180ms safety fallback) instead of colliding with the global SpeechRecognition lock!
+    if (closingRecRef.current) {
+      setListening(true);
+      startQueuedAfterCloseRef.current = true;
+      try {
+        closingRecRef.current.abort?.();
+      } catch {
+        /* ignore */
+      }
+      if (closeFallbackTimerRef.current !== null) {
+        window.clearTimeout(closeFallbackTimerRef.current);
+      }
+      closeFallbackTimerRef.current = window.setTimeout(() => {
+        closeFallbackTimerRef.current = null;
+        closingRecRef.current = null;
+        if (startQueuedAfterCloseRef.current && wantListeningRef.current) {
+          startQueuedAfterCloseRef.current = false;
+          startRecognitionPassRef.current();
+        }
+      }, 450);
+      return;
+    }
 
     const w = window as unknown as {
       SpeechRecognition?: new () => SpeechRec;
@@ -195,8 +264,11 @@ export const ScheduleChat: React.FC<{
     if (!Ctor) {
       wantListeningRef.current = false;
       setListening(false);
+      actions.showToast('Voice recognition is not supported in this browser');
       return;
     }
+
+    const myEpoch = sessionEpochRef.current;
 
     try {
       const rec = new Ctor();
@@ -211,6 +283,7 @@ export const ScheduleChat: React.FC<{
       let heardAnything = false;
 
       rec.onresult = (e) => {
+        if (sessionEpochRef.current !== myEpoch || !wantListeningRef.current) return;
         heardAnything = true;
         rapidEmptyEndsRef.current = 0;
 
@@ -221,7 +294,6 @@ export const ScheduleChat: React.FC<{
           const seg = pickBestAlternative(item);
           if (!seg) continue;
 
-          // Handle mobile WebKit/Android cumulative segments without swallowing distinct phrases
           const prev = segments[segments.length - 1];
           if (
             prev &&
@@ -241,8 +313,8 @@ export const ScheduleChat: React.FC<{
       };
 
       rec.onerror = (ev) => {
+        if (sessionEpochRef.current !== myEpoch) return;
         const errCode = ev?.error || '';
-        // Only stop permanently if microphone permission/hardware is explicitly blocked
         if (
           errCode === 'not-allowed' ||
           errCode === 'service-not-allowed' ||
@@ -252,11 +324,16 @@ export const ScheduleChat: React.FC<{
           wantListeningRef.current = false;
           setListening(false);
           recRef.current = null;
+          actions.showToast('Microphone access blocked — check browser mic permissions');
         }
-        // For transient 'no-speech', 'aborted', or brief 'network' blips, let `onend` seamlessly recover
       };
 
       rec.onend = () => {
+        if (recRef.current === rec) {
+          recRef.current = null;
+        }
+        if (sessionEpochRef.current !== myEpoch) return;
+
         if (sessionTextRef.current.trim()) {
           baseTextRef.current = [baseTextRef.current, sessionTextRef.current]
             .filter(Boolean)
@@ -264,7 +341,6 @@ export const ScheduleChat: React.FC<{
             .trim();
           sessionTextRef.current = '';
         }
-        recRef.current = null;
 
         if (!wantListeningRef.current || fatalErrorRef.current) {
           wantListeningRef.current = false;
@@ -279,52 +355,57 @@ export const ScheduleChat: React.FC<{
           rapidEmptyEndsRef.current = 0;
         }
 
-        // Stop retrying only if the environment fails instantaneously 3x in a row (e.g. headless browser)
-        if (rapidEmptyEndsRef.current >= 3) {
+        if (rapidEmptyEndsRef.current > BACKOFF_DELAYS_MS.length) {
           wantListeningRef.current = false;
           setListening(false);
           return;
         }
 
-        // Schedule restart asynchronously (90ms) so WebKit/Blink cleanly releases the prior audio stream
+        const delay =
+          BACKOFF_DELAYS_MS[Math.max(0, rapidEmptyEndsRef.current - 1)] ?? 200;
         restartTimerRef.current = window.setTimeout(() => {
           restartTimerRef.current = null;
-          if (wantListeningRef.current) {
-            startRecognitionPass();
+          if (wantListeningRef.current && sessionEpochRef.current === myEpoch) {
+            startRecognitionPassRef.current();
           }
-        }, 90);
+        }, delay);
       };
 
       setListening(true);
       rec.start();
     } catch {
-      // If synchronous start threw InvalidStateError during handoff, retry once after 140ms
       rapidEmptyEndsRef.current += 1;
-      if (wantListeningRef.current && rapidEmptyEndsRef.current < 3) {
+      if (wantListeningRef.current && rapidEmptyEndsRef.current <= BACKOFF_DELAYS_MS.length) {
+        const delay =
+          BACKOFF_DELAYS_MS[Math.max(0, rapidEmptyEndsRef.current - 1)] ?? 220;
         restartTimerRef.current = window.setTimeout(() => {
           restartTimerRef.current = null;
-          if (wantListeningRef.current) {
-            startRecognitionPass();
+          if (wantListeningRef.current && sessionEpochRef.current === myEpoch) {
+            startRecognitionPassRef.current();
           }
-        }, 140);
+        }, delay);
       } else {
         wantListeningRef.current = false;
         setListening(false);
       }
     }
-  }, []);
+  }, [actions]);
+
+  startRecognitionPassRef.current = startRecognitionPass;
 
   const toggleMic = () => {
-    if (document.activeElement instanceof HTMLElement) {
+    if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
       document.activeElement.blur();
     }
 
     if (listening) {
-      stopMicSession();
+      teardownActiveRecognizer(false);
       return;
     }
 
+    sessionEpochRef.current += 1;
     baseTextRef.current = transcript.trim();
+    sessionTextRef.current = '';
     rapidEmptyEndsRef.current = 0;
     fatalErrorRef.current = false;
     wantListeningRef.current = true;
@@ -341,8 +422,6 @@ export const ScheduleChat: React.FC<{
             type="button"
             className="voice-side-btn is-cancel"
             aria-label="Cancel voice input"
-            onPointerDown={(e) => e.preventDefault()}
-            onMouseDown={(e) => e.preventDefault()}
             onClick={clearDraft}
           >
             <X size={18} />
@@ -353,8 +432,6 @@ export const ScheduleChat: React.FC<{
           type="button"
           className={`voice-orb-btn ${listening ? 'is-listening' : ''}`.trim()}
           aria-label={listening ? 'Pause microphone' : 'Tap to speak to schedule'}
-          onPointerDown={(e) => e.preventDefault()}
-          onMouseDown={(e) => e.preventDefault()}
           onClick={toggleMic}
         >
           <Mic size={22} />
@@ -368,8 +445,6 @@ export const ScheduleChat: React.FC<{
               draft?.isComplete ? 'Confirm and add to schedule' : 'Incomplete schedule item'
             }
             disabled={!draft?.isComplete}
-            onPointerDown={(e) => e.preventDefault()}
-            onMouseDown={(e) => e.preventDefault()}
             onClick={confirmDraft}
           >
             <Check size={18} strokeWidth={2.6} />
