@@ -26,16 +26,18 @@ function toMinutes(hhmm: string): number {
 }
 
 function fromMinutes(total: number): string {
-  const clamped = Math.max(0, Math.min(23 * 60 + 55, Math.round(total)));
+  const clamped = Math.max(0, Math.min(24 * 60, Math.round(total)));
+  if (clamped === 24 * 60) return '24:00';
   const h = Math.floor(clamped / 60);
   const m = clamped % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 export function formatFriendlyTime(hhmm: string): string {
-  const [h, m] = hhmm.split(':').map(Number);
+  const [hRaw, m] = hhmm.split(':').map(Number);
+  const h = hRaw % 24;
   const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${String(m).padStart(2, '0')}${h < 12 ? 'am' : 'pm'}`;
+  return `${h12}:${String(m || 0).padStart(2, '0')}${h < 12 ? 'am' : 'pm'}`;
 }
 
 function isOpenFocusBlock(b: CalendarBlock): boolean {
@@ -277,7 +279,7 @@ function resolveSingleHour(
     } else if (periodHint === 'afternoon') {
       if (hour >= 1 && hour <= 7) hour += 12;
     } else if (periodHint === 'morning') {
-      if (hour === 12) hour = 8;
+      // Keep 1..11 as AM and 12 as 12:00pm (noon)
     } else {
       // Conversational default: bare 1..6 ("4 to 5", "for 6", "for 3") -> 1:00pm..6:00pm
       if (hour >= 1 && hour <= 6) hour += 12;
@@ -294,13 +296,16 @@ function resolveEndAfterStart(
   endMeridiem: string | undefined,
   periodHint: DayPeriodHint
 ): number | null {
+  if (endHourRaw === 12 && endMinuteRaw === 0 && endMeridiem?.toLowerCase() === 'am' && startMins > 0) {
+    return 24 * 60;
+  }
   let endMins = resolveSingleHour(endHourRaw, endMinuteRaw, endMeridiem, periodHint);
   if (endMins === null) return null;
-  if (!endMeridiem && endMins <= startMins && endMins + 12 * 60 < 24 * 60) {
+  if (!endMeridiem && endMins <= startMins && endMins + 12 * 60 <= 24 * 60) {
     endMins += 12 * 60;
   }
   if (endMins <= startMins) {
-    endMins = Math.min(23 * 60 + 55, startMins + 60);
+    endMins = Math.min(24 * 60, startMins + 60);
   }
   return endMins;
 }

@@ -16,14 +16,16 @@ function toMin(t: string): number {
 }
 
 function fmtHourLabel(h: number): string {
-  const s = h % 12 === 0 ? 12 : h % 12;
-  return `${s} ${h < 12 ? 'AM' : 'PM'}`;
+  const norm = h % 24;
+  const s = norm % 12 === 0 ? 12 : norm % 12;
+  return `${s} ${norm < 12 ? 'AM' : 'PM'}`;
 }
 
 function fmtTime(t: string): string {
-  const [h, m] = t.split(':').map(Number);
+  const [hRaw, m] = t.split(':').map(Number);
+  const h = hRaw % 24;
   const s = h % 12 === 0 ? 12 : h % 12;
-  return `${s}:${String(m).padStart(2, '0')}${h < 12 ? 'am' : 'pm'}`;
+  return `${s}:${String(m || 0).padStart(2, '0')}${h < 12 ? 'am' : 'pm'}`;
 }
 
 function dayNumber(iso: string): number {
@@ -396,33 +398,14 @@ export const CalendarGrid: React.FC<{
     [state.reminders, allWindowSet]
   );
 
-  // Shared hour range across all 3 panes so time labels & rulings stay rock-solid across swipes
-  const { startHour, endHour } = useMemo(() => {
-    let lo = 7;
-    let hi = 21;
-    state.blocks.forEach((b) => {
-      lo = Math.min(lo, Math.floor(toMin(b.startTime) / 60));
-      hi = Math.max(hi, Math.ceil(toMin(b.endTime) / 60));
-    });
-    state.reminders.forEach((r) => {
-      const m = toMin(r.time);
-      lo = Math.min(lo, Math.floor(m / 60));
-      hi = Math.max(hi, Math.ceil((m + 30) / 60));
-    });
-    if (liveDraft?.startTime) {
-      const s = toMin(liveDraft.startTime);
-      const e = liveDraft.endTime ? toMin(liveDraft.endTime) : s + 60;
-      lo = Math.min(lo, Math.floor(s / 60));
-      hi = Math.max(hi, Math.ceil(e / 60));
-    }
-    return { startHour: Math.max(0, lo), endHour: Math.min(24, hi + 1) };
-  }, [state.blocks, state.reminders, liveDraft?.startTime, liveDraft?.endTime]);
-
-  const hours = useMemo(
-    () => Array.from({ length: endHour - startHour }, (_, i) => startHour + i),
-    [startHour, endHour]
+  // Full 24-hour day (12 AM through 12 AM) so hours before 8 AM and through midnight are never cut off
+  const startHour = 0;
+  const endHour = 24;
+  const hourTicks = useMemo(
+    () => Array.from({ length: endHour - startHour + 1 }, (_, i) => startHour + i),
+    []
   );
-  const gridHeight = hours.length * hourHeight;
+  const gridHeight = (endHour - startHour) * hourHeight;
 
   const resetTrackStylesInstant = useCallback(() => {
     if (trackRef.current) {
@@ -870,9 +853,9 @@ export const CalendarGrid: React.FC<{
         <div className="gcal-body" style={{ height: gridHeight }}>
           {/* Protected fixed-width time gutter — never covered by horizontal swipes or zooms */}
           <div className="gcal-gutter gcal-hours">
-            {hours.map((h, i) => (
+            {hourTicks.map((h, i) => (
               <div key={h} className="gcal-hour-label" style={{ top: i * hourHeight }}>
-                {i === 0 ? '' : fmtHourLabel(h)}
+                {fmtHourLabel(h)}
               </div>
             ))}
           </div>
@@ -880,7 +863,7 @@ export const CalendarGrid: React.FC<{
           {/* Clipped stage strictly to the right of the hour labels */}
           <div ref={stageRef} className="gcal-stage">
             <div className="gcal-hlines" aria-hidden="true">
-              {hours.map((h, i) => (
+              {hourTicks.map((h, i) => (
                 <div key={h} className="gcal-hline" style={{ top: i * hourHeight }} />
               ))}
             </div>

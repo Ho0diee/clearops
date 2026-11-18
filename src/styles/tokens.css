@@ -1769,7 +1769,8 @@ textarea {
 .gcal-body {
   position: relative;
   display: flex;
-  padding-top: 8px;
+  padding-top: 14px;
+  padding-bottom: 14px;
   box-sizing: content-box;
 }
 
@@ -2073,7 +2074,7 @@ textarea {
 
 @media (max-width: 768px) {
   :root {
-    --cal-gutter: 42px;
+    --cal-gutter: 46px;
   }
 
   /* Calendar bleeds edge-to-edge on phone like a native calendar app */
