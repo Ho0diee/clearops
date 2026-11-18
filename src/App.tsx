@@ -2,7 +2,9 @@ import React, { useEffect } from 'react';
 import {
   Activity,
   Calendar,
+  Cloud,
   Lightbulb,
+  RefreshCw,
   Settings,
   Sun,
   ShieldCheck,
@@ -20,7 +22,7 @@ import { SiteConfigView } from './features/config';
 import { AlertMonitor } from './components/AlertMonitor';
 
 const ClearOpsWorkspace: React.FC = () => {
-  const { state, actions } = useOpsStore();
+  const { state, actions, syncStatus } = useOpsStore();
   const isScheduleLocked = state.activeTab === 'schedule';
 
   // Hard-lock viewport on iPhone/iOS Safari when on Schedule so touching/dragging
@@ -155,6 +157,33 @@ const ClearOpsWorkspace: React.FC = () => {
 
 
         <div className="ops-topbar-right">
+          <button
+            type="button"
+            className={`ops-sync-btn is-${syncStatus}`}
+            aria-label={
+              syncStatus === 'synced'
+                ? 'Cloud synced across all devices (tap to sync now)'
+                : syncStatus === 'syncing'
+                ? 'Syncing across devices…'
+                : 'Offline — saved locally, tap to retry cloud sync'
+            }
+            title={
+              syncStatus === 'synced'
+                ? 'Synced across all devices — tap to sync now'
+                : syncStatus === 'syncing'
+                ? 'Syncing across devices…'
+                : 'Saved locally — tap to sync with cloud'
+            }
+            onClick={() => void actions.syncNow()}
+          >
+            {syncStatus === 'syncing' ? (
+              <RefreshCw size={14} className="ops-sync-spin" />
+            ) : (
+              <Cloud size={14} />
+            )}
+            <span className="ops-sync-dot" aria-hidden="true" />
+          </button>
+
           <Badge
             tone="streak"
             icon={<ShieldCheck size={14} />}

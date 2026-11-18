@@ -1,6 +1,15 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type {
   CalendarBlock,
+  CloudSyncStatus,
   ConfidenceLevel,
   IdeaItem,
   OffloadedTask,
@@ -29,6 +38,22 @@ import {
   OHCHS_BY_DATE,
 } from './ohchsSchedule';
 import { interpretScheduleInput, parseProgressiveVoiceDraft } from './scheduleAi';
+import { useSchoolworkExtractorBridge } from './schoolworkBridge';
+import {
+  mergeTombstones,
+  mergeUniversalPayload,
+  type SchoolDelayRecord,
+  type SyncTombstones,
+} from './universalMerge';
+import {
+  applySyncPayloadToState,
+  ensurePreSyncBackupSaved,
+  extractSyncPayloadFromState,
+  fetchCloudWorkspace,
+  loadLocalTombstones,
+  pushAndMergeCloudWorkspace,
+  saveLocalTombstones,
+} from './universalSyncClient';
 
 export { getTodayISO };
 
@@ -40,6 +65,8 @@ type PersistedOpsEnvelope = Partial<OpsState> & {
   _cleanSlateVersion?: number;
   _ohchsScheduleVersion?: number;
   _lastSavedToday?: string;
+  _metaUpdatedAtMs?: number;
+  _ohchsDelayedDates?: Record<string, SchoolDelayRecord>;
 };
 
 /* ==========================================================================
@@ -255,12 +282,47 @@ interface OpsStoreValue {
   actions: OpsActions;
   reflectionPrompts: string[];
   todayIso: string;
+  syncStatus: CloudSyncStatus;
+  lastSyncedAt: number | null;
 }
 
 const OpsStoreContext = createContext<OpsStoreValue | null>(null);
 
+function computeSyncFingerprint(
+  state: OpsState,
+  tombstones: SyncTombstones,
+  ohchsDelays: Record<string, SchoolDelayRecord>
+): string {
+  const payload = extractSyncPayloadFromState(state, tombstones, 0, ohchsDelays, 0);
+  return JSON.stringify({
+    siteConfig: payload.siteConfig,
+    whyStatements: payload.whyStatements,
+    hourlyRateDollars: payload.hourlyRateDollars,
+    projects: payload.projects,
+    ideas: payload.ideas,
+    userBlocks: payload.userBlocks,
+    ohchsDelayedDates: payload.ohchsDelayedDates,
+    userReminders: payload.userReminders,
+    checkups: payload.checkups,
+    pacedGoals: payload.pacedGoals,
+    pacingLogs: payload.pacingLogs,
+    offloadedTasks: payload.offloadedTasks,
+    reflections: payload.reflections,
+    draftDailyNote: payload.draftDailyNote,
+    draftReflectionPrompt: payload.draftReflectionPrompt,
+    draftReflectionText: payload.draftReflectionText,
+    streak: payload.streak,
+    tombstones: payload.tombstones,
+  });
+}
+
 export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [todayIso, setTodayIso] = useState<string>(() => getTodayISO());
+  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>('syncing');
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+
+  const initialMetaMsRef = useRef<number>(0);
+  const initialDelaysRef = useRef<Record<string, SchoolDelayRecord>>({});
 
   // IMPORTANT: Keep useState initializer 100% pure (read-only) so React 18 <StrictMode>
   // double-invocation returns the exact same migrated state on both passes before useEffect commits.
@@ -271,6 +333,13 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (raw) {
         const parsed = JSON.parse(raw) as PersistedOpsEnvelope;
         if (parsed && Array.isArray(parsed.blocks) && Array.isArray(parsed.ideas)) {
+          if (typeof parsed._metaUpdatedAtMs === 'number') {
+            initialMetaMsRef.current = parsed._metaUpdatedAtMs;
+          }
+          if (parsed._ohchsDelayedDates && typeof parsed._ohchsDelayedDates === 'object') {
+            initialDelaysRef.current = parsed._ohchsDelayedDates;
+          }
+
           const mergedProjects = parsed.projects ?? INITIAL_OPS_STATE.projects;
           const savedName = parsed.siteConfig?.workspaceName;
           const migratedName =
@@ -346,19 +415,6 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           };
         }
       }
-
-      if (window.location.hostname.toLowerCase().includes('airbnb710')) {
-        return {
-          ...INITIAL_OPS_STATE,
-          ...AIRBNB710_STR_PRESET,
-          selectedDate: liveToday,
-          ideas: normalizeAllProjectsRanks(
-            AIRBNB710_STR_PRESET.ideas,
-            AIRBNB710_STR_PRESET.projects
-          ),
-          toastMessage: null,
-        };
-      }
     } catch {
       // Ignore storage read errors
     }
@@ -367,6 +423,26 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       selectedDate: liveToday,
     };
   });
+
+  const stateRef = useRef<OpsState>(state);
+  stateRef.current = state;
+
+  const tombstonesRef = useRef<SyncTombstones | null>(null);
+  if (tombstonesRef.current === null) {
+    tombstonesRef.current = loadLocalTombstones();
+  }
+
+  const metaUpdatedAtRef = useRef<number>(initialMetaMsRef.current);
+  const ohchsDelaysRef = useRef<Record<string, SchoolDelayRecord>>(initialDelaysRef.current);
+  const lastEtagRef = useRef<string | null>(null);
+  const syncInFlightRef = useRef<boolean>(false);
+  const pendingPushAfterFlightRef = useRef<boolean>(false);
+  const pushDebounceRef = useRef<number | null>(null);
+  const didBootSyncRef = useRef<boolean>(false);
+
+  const lastSyncedFingerprintRef = useRef<string>(
+    computeSyncFingerprint(state, tombstonesRef.current, ohchsDelaysRef.current)
+  );
 
   // Automatically follow the real-world calendar across midnight or when waking the phone on a new day
   useEffect(() => {
@@ -408,12 +484,251 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         _cleanSlateVersion: CLEAN_SLATE_VERSION,
         _ohchsScheduleVersion: OHCHS_SCHEDULE_VERSION,
         _lastSavedToday: todayIso,
+        _metaUpdatedAtMs: metaUpdatedAtRef.current,
+        _ohchsDelayedDates: ohchsDelaysRef.current,
       };
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(envelope));
     } catch {
       // Ignore storage write errors
     }
   }, [state, todayIso]);
+
+  const performCloudSync = useCallback(
+    async (mode: 'boot' | 'push' | 'pull', keepalive = false): Promise<boolean> => {
+      if (syncInFlightRef.current) {
+        if (mode === 'push') {
+          pendingPushAfterFlightRef.current = true;
+        }
+        return false;
+      }
+
+      syncInFlightRef.current = true;
+      if (mode !== 'pull') {
+        setSyncStatus('syncing');
+      }
+
+      try {
+        // Save a one-time read-only local backup of pre-sync phone data before first cloud merge
+        ensurePreSyncBackupSaved(STORAGE_KEY);
+
+        const currentTombstones = tombstonesRef.current ?? loadLocalTombstones();
+        const snapshotAtStartFp = computeSyncFingerprint(
+          stateRef.current,
+          currentTombstones,
+          ohchsDelaysRef.current
+        );
+        const localPayload = extractSyncPayloadFromState(
+          stateRef.current,
+          currentTombstones,
+          metaUpdatedAtRef.current,
+          ohchsDelaysRef.current,
+          Date.now()
+        );
+
+        const hasUnpushedLocalChanges = snapshotAtStartFp !== lastSyncedFingerprintRef.current;
+
+        if (mode === 'pull' && !hasUnpushedLocalChanges && didBootSyncRef.current) {
+          const remoteRes = await fetchCloudWorkspace();
+          if (!remoteRes) {
+            setSyncStatus('offline');
+            return false;
+          }
+          if (!remoteRes.payload) {
+            // Cloud store is empty — push this device's state up to initialize universal store
+            const pushed = await pushAndMergeCloudWorkspace(localPayload);
+            if (!pushed?.payload) {
+              setSyncStatus('offline');
+              return false;
+            }
+            lastEtagRef.current = pushed.etag ?? null;
+            setSyncStatus('synced');
+            setLastSyncedAt(Date.now());
+            return true;
+          }
+
+          if (remoteRes.etag && remoteRes.etag === lastEtagRef.current) {
+            setSyncStatus('synced');
+            return true;
+          }
+
+          // Merge latest local (in case user edited during fetch) with remote payload
+          const latestLocal = extractSyncPayloadFromState(
+            stateRef.current,
+            tombstonesRef.current ?? currentTombstones,
+            metaUpdatedAtRef.current,
+            ohchsDelaysRef.current,
+            Date.now()
+          );
+          const merged = mergeUniversalPayload(remoteRes.payload, latestLocal);
+          tombstonesRef.current = mergeTombstones(merged.tombstones, tombstonesRef.current ?? {});
+          saveLocalTombstones(tombstonesRef.current);
+          metaUpdatedAtRef.current = Math.max(metaUpdatedAtRef.current, merged.metaUpdatedAtMs);
+          ohchsDelaysRef.current = merged.ohchsDelayedDates;
+          lastEtagRef.current = remoteRes.etag ?? null;
+
+          const liveToday = getTodayISO();
+          const nextState = applySyncPayloadToState(stateRef.current, merged, liveToday);
+          lastSyncedFingerprintRef.current = computeSyncFingerprint(
+            nextState,
+            tombstonesRef.current,
+            ohchsDelaysRef.current
+          );
+          setState((prev) => applySyncPayloadToState(prev, merged, liveToday));
+          setSyncStatus('synced');
+          setLastSyncedAt(Date.now());
+          return true;
+        }
+
+        // 'boot' or 'push': atomically push & merge local workspace with cloud
+        const pushRes = await pushAndMergeCloudWorkspace(localPayload, keepalive);
+        if (!pushRes || !pushRes.payload) {
+          setSyncStatus('offline');
+          return false;
+        }
+
+        didBootSyncRef.current = true;
+        lastEtagRef.current = pushRes.etag ?? null;
+
+        // Re-merge with live stateRef in case the user typed characters while PUT was in flight
+        const latestLocal = extractSyncPayloadFromState(
+          stateRef.current,
+          tombstonesRef.current ?? currentTombstones,
+          metaUpdatedAtRef.current,
+          ohchsDelaysRef.current,
+          Date.now()
+        );
+        const finalMerged = mergeUniversalPayload(pushRes.payload, latestLocal);
+
+        tombstonesRef.current = mergeTombstones(
+          finalMerged.tombstones,
+          tombstonesRef.current ?? {}
+        );
+        saveLocalTombstones(tombstonesRef.current);
+        metaUpdatedAtRef.current = Math.max(metaUpdatedAtRef.current, finalMerged.metaUpdatedAtMs);
+        ohchsDelaysRef.current = finalMerged.ohchsDelayedDates;
+
+        const liveToday = getTodayISO();
+        const nextState = applySyncPayloadToState(stateRef.current, finalMerged, liveToday);
+        const postFlightFp = computeSyncFingerprint(
+          stateRef.current,
+          tombstonesRef.current,
+          ohchsDelaysRef.current
+        );
+        const mergedFp = computeSyncFingerprint(
+          nextState,
+          tombstonesRef.current,
+          ohchsDelaysRef.current
+        );
+
+        // If user did NOT type new characters mid-flight, mark mergedFp as synced;
+        // if user DID type mid-flight, keep pendingPushAfterFlightRef true so the new characters push next!
+        if (postFlightFp === snapshotAtStartFp) {
+          lastSyncedFingerprintRef.current = mergedFp;
+        } else {
+          pendingPushAfterFlightRef.current = true;
+        }
+
+        if (mergedFp !== postFlightFp) {
+          setState((prev) => applySyncPayloadToState(prev, finalMerged, liveToday));
+        }
+
+        setSyncStatus('synced');
+        setLastSyncedAt(Date.now());
+        return true;
+      } catch {
+        setSyncStatus('offline');
+        return false;
+      } finally {
+        syncInFlightRef.current = false;
+        if (pendingPushAfterFlightRef.current) {
+          pendingPushAfterFlightRef.current = false;
+          if (pushDebounceRef.current !== null) window.clearTimeout(pushDebounceRef.current);
+          pushDebounceRef.current = window.setTimeout(() => {
+            pushDebounceRef.current = null;
+            void performCloudSync('push');
+          }, 350);
+        }
+      }
+    },
+    []
+  );
+
+  // Boot sync + periodic multi-device pull + focus/visibility/pagehide handlers
+  useEffect(() => {
+    void performCloudSync('boot');
+
+    const pollId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void performCloudSync('pull');
+      }
+    }, 8000);
+
+    const onFocusOrOnline = () => {
+      void performCloudSync(didBootSyncRef.current ? 'pull' : 'boot');
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void performCloudSync(didBootSyncRef.current ? 'pull' : 'boot');
+      } else {
+        // Flush any unsaved phone edits immediately with keepalive when switching apps or locking screen
+        const currFp = computeSyncFingerprint(
+          stateRef.current,
+          tombstonesRef.current ?? loadLocalTombstones(),
+          ohchsDelaysRef.current
+        );
+        if (currFp !== lastSyncedFingerprintRef.current) {
+          void performCloudSync('push', true);
+        }
+      }
+    };
+
+    const onPageHide = () => {
+      const currFp = computeSyncFingerprint(
+        stateRef.current,
+        tombstonesRef.current ?? loadLocalTombstones(),
+        ohchsDelaysRef.current
+      );
+      if (currFp !== lastSyncedFingerprintRef.current) {
+        void performCloudSync('push', true);
+      }
+    };
+
+    window.addEventListener('focus', onFocusOrOnline);
+    window.addEventListener('online', onFocusOrOnline);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+
+    return () => {
+      window.clearInterval(pollId);
+      if (pushDebounceRef.current !== null) window.clearTimeout(pushDebounceRef.current);
+      window.removeEventListener('focus', onFocusOrOnline);
+      window.removeEventListener('online', onFocusOrOnline);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [performCloudSync]);
+
+  // Watch state changes and debounce push to universal cloud whenever local data changes
+  useEffect(() => {
+    const currFp = computeSyncFingerprint(
+      state,
+      tombstonesRef.current ?? loadLocalTombstones(),
+      ohchsDelaysRef.current
+    );
+    if (currFp === lastSyncedFingerprintRef.current) return;
+
+    setSyncStatus('syncing');
+    if (pushDebounceRef.current !== null) {
+      window.clearTimeout(pushDebounceRef.current);
+    }
+    pushDebounceRef.current = window.setTimeout(() => {
+      pushDebounceRef.current = null;
+      void performCloudSync('push');
+    }, 450);
+  }, [state, performCloudSync]);
+
+  useSchoolworkExtractorBridge(state, setState);
 
   useEffect(() => {
     document.documentElement.dataset.accent = state.siteConfig.accentTheme || 'cobalt';
@@ -461,32 +776,44 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       addCalendarBlock: (blockInput) => {
         const id = makeId('blk');
+        const nowIso = new Date().toISOString();
         setState((prev) => ({
           ...prev,
-          blocks: sortBlocks([...prev.blocks, { ...blockInput, id }]),
+          blocks: sortBlocks([...prev.blocks, { ...blockInput, id, updatedAt: nowIso }]),
         }));
         return id;
       },
 
       updateCalendarBlock: (blockId, patch) => {
+        const nowIso = new Date().toISOString();
         setState((prev) => ({
           ...prev,
           blocks: sortBlocks(
-            prev.blocks.map((b) => (b.id === blockId ? { ...b, ...patch } : b))
+            prev.blocks.map((b) =>
+              b.id === blockId ? { ...b, ...patch, updatedAt: nowIso } : b
+            )
           ),
         }));
       },
 
       toggleBlockCompleted: (blockId: string) => {
+        const nowIso = new Date().toISOString();
         setState((prev) => ({
           ...prev,
           blocks: prev.blocks.map((b) =>
-            b.id === blockId ? { ...b, completed: !b.completed } : b
+            b.id === blockId ? { ...b, completed: !b.completed, updatedAt: nowIso } : b
           ),
         }));
       },
 
       deleteCalendarBlock: (blockId: string) => {
+        if (tombstonesRef.current) {
+          tombstonesRef.current = {
+            ...tombstonesRef.current,
+            blocks: { ...tombstonesRef.current.blocks, [blockId]: Date.now() },
+          };
+          saveLocalTombstones(tombstonesRef.current);
+        }
         setState((prev) => ({
           ...prev,
           blocks: prev.blocks.filter((b) => b.id !== blockId),
@@ -494,6 +821,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       updateWhyStatement: (category: WhyCategory, statement: string) => {
+        metaUpdatedAtRef.current = Date.now();
         setState((prev) => ({
           ...prev,
           whyStatements: {
@@ -985,9 +1313,10 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       addReminder: (remInput) => {
         const id = makeId('rem');
+        const nowIso = new Date().toISOString();
         setState((prev) => ({
           ...prev,
-          reminders: [...prev.reminders, { ...remInput, id }].sort((a, b) =>
+          reminders: [...prev.reminders, { ...remInput, id, updatedAt: nowIso }].sort((a, b) =>
             a.time.localeCompare(b.time)
           ),
         }));
@@ -995,24 +1324,33 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       updateReminder: (reminderId, patch) => {
+        const nowIso = new Date().toISOString();
         setState((prev) => ({
           ...prev,
           reminders: prev.reminders
-            .map((r) => (r.id === reminderId ? { ...r, ...patch } : r))
+            .map((r) => (r.id === reminderId ? { ...r, ...patch, updatedAt: nowIso } : r))
             .sort((a, b) => a.time.localeCompare(b.time)),
         }));
       },
 
       toggleReminder: (reminderId: string) => {
+        const nowIso = new Date().toISOString();
         setState((prev) => ({
           ...prev,
           reminders: prev.reminders.map((r) =>
-            r.id === reminderId ? { ...r, completed: !r.completed } : r
+            r.id === reminderId ? { ...r, completed: !r.completed, updatedAt: nowIso } : r
           ),
         }));
       },
 
       deleteReminder: (reminderId: string) => {
+        if (tombstonesRef.current) {
+          tombstonesRef.current = {
+            ...tombstonesRef.current,
+            reminders: { ...tombstonesRef.current.reminders, [reminderId]: Date.now() },
+          };
+          saveLocalTombstones(tombstonesRef.current);
+        }
         setState((prev) => ({
           ...prev,
           reminders: prev.reminders.filter((r) => r.id !== reminderId),
@@ -1022,6 +1360,10 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setSchoolDayDelay: (date, delayMode) => {
         const entry = OHCHS_BY_DATE.get(date);
         if (!entry || entry.isNoSchool || !entry.dayCode) return;
+        ohchsDelaysRef.current = {
+          ...ohchsDelaysRef.current,
+          [date]: { mode: delayMode, updatedAtMs: Date.now() },
+        };
         const liveToday = getTodayISO();
         setState((prev) => {
           const keptBlocks = prev.blocks.filter(
@@ -1050,6 +1392,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const cleanProject = project.trim() || 'Personal';
         const cleanTitle = title.trim();
         const cleanStep = startingStep.trim();
+        if (tombstonesRef.current && tombstonesRef.current.projects[cleanProject]) {
+          const nextProjTomb = { ...tombstonesRef.current.projects };
+          delete nextProjTomb[cleanProject];
+          tombstonesRef.current = { ...tombstonesRef.current, projects: nextProjTomb };
+          saveLocalTombstones(tombstonesRef.current);
+        }
         setState((prev) => {
           const existingCount = prev.ideas.filter(
             (i) => i.project === cleanProject && i.status !== 'completed'
@@ -1083,9 +1431,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       updateIdea: (ideaId, patch) => {
+        const nowIso = new Date().toISOString();
         setState((prev) => ({
           ...prev,
-          ideas: prev.ideas.map((i) => (i.id === ideaId ? { ...i, ...patch } : i)),
+          ideas: prev.ideas.map((i) =>
+            i.id === ideaId ? { ...i, ...patch, updatedAt: nowIso } : i
+          ),
         }));
       },
 
@@ -1164,6 +1515,13 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       deleteIdea: (ideaId) => {
+        if (tombstonesRef.current) {
+          tombstonesRef.current = {
+            ...tombstonesRef.current,
+            ideas: { ...tombstonesRef.current.ideas, [ideaId]: Date.now() },
+          };
+          saveLocalTombstones(tombstonesRef.current);
+        }
         setState((prev) => {
           const target = prev.ideas.find((i) => i.id === ideaId);
           const remaining = prev.ideas.filter((i) => i.id !== ideaId);
@@ -1186,6 +1544,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       moveIdeaRank: (ideaId, direction) => {
+        const nowIso = new Date().toISOString();
         setState((prev) => {
           const target = prev.ideas.find((i) => i.id === ideaId);
           if (!target) return prev;
@@ -1208,7 +1567,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             ...prev,
             ideas: prev.ideas.map((item) =>
               rankLookup.has(item.id)
-                ? { ...item, priorityRank: rankLookup.get(item.id)! }
+                ? { ...item, priorityRank: rankLookup.get(item.id)!, updatedAt: nowIso }
                 : item
             ),
           };
@@ -1216,6 +1575,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       setIdeaRank: (ideaId, newRank) => {
+        const nowIso = new Date().toISOString();
         setState((prev) => {
           const target = prev.ideas.find((i) => i.id === ideaId);
           if (!target) return prev;
@@ -1236,7 +1596,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             ...prev,
             ideas: prev.ideas.map((item) =>
               rankLookup.has(item.id)
-                ? { ...item, priorityRank: rankLookup.get(item.id)! }
+                ? { ...item, priorityRank: rankLookup.get(item.id)!, updatedAt: nowIso }
                 : item
             ),
           };
@@ -1244,6 +1604,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       toggleWaitingOn: (ideaId, waitingReason) => {
+        const nowIso = new Date().toISOString();
         setState((prev) => {
           const target = prev.ideas.find((i) => i.id === ideaId);
           if (!target) return prev;
@@ -1255,6 +1616,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               ? {
                   ...i,
                   status: nextStatus,
+                  updatedAt: nowIso,
                   waitingReason:
                     nextStatus === 'waiting-on'
                       ? waitingReason ||
@@ -1293,10 +1655,11 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       toggleIdeaBottleneck: (ideaId) => {
+        const nowIso = new Date().toISOString();
         setState((prev) => ({
           ...prev,
           ideas: prev.ideas.map((i) =>
-            i.id === ideaId ? { ...i, isBottleneck: !i.isBottleneck } : i
+            i.id === ideaId ? { ...i, isBottleneck: !i.isBottleneck, updatedAt: nowIso } : i
           ),
         }));
       },
@@ -1304,6 +1667,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       addProject: (projectName) => {
         const clean = projectName.trim();
         if (!clean) return;
+        if (tombstonesRef.current && tombstonesRef.current.projects[clean]) {
+          const nextProjTomb = { ...tombstonesRef.current.projects };
+          delete nextProjTomb[clean];
+          tombstonesRef.current = { ...tombstonesRef.current, projects: nextProjTomb };
+          saveLocalTombstones(tombstonesRef.current);
+        }
         setState((prev) => ({
           ...prev,
           projects: prev.projects.includes(clean)
@@ -1606,6 +1975,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       setHourlyRateDollars: (rate: number) => {
+        metaUpdatedAtRef.current = Date.now();
         const valid = Number.isFinite(rate) ? Math.max(0, rate) : 0;
         setState((prev) => ({ ...prev, hourlyRateDollars: valid }));
       },
@@ -1626,6 +1996,13 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       deleteOffloadedTask: (taskId: string) => {
+        if (tombstonesRef.current) {
+          tombstonesRef.current = {
+            ...tombstonesRef.current,
+            offloadedTasks: { ...tombstonesRef.current.offloadedTasks, [taskId]: Date.now() },
+          };
+          saveLocalTombstones(tombstonesRef.current);
+        }
         setState((prev) => ({
           ...prev,
           offloadedTasks: prev.offloadedTasks.filter((t) => t.id !== taskId),
@@ -1633,14 +2010,17 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       setDraftDailyNote: (note: string) => {
+        metaUpdatedAtRef.current = Date.now();
         setState((prev) => ({ ...prev, draftDailyNote: note }));
       },
 
       setDraftReflectionPrompt: (prompt: string) => {
+        metaUpdatedAtRef.current = Date.now();
         setState((prev) => ({ ...prev, draftReflectionPrompt: prompt }));
       },
 
       setDraftReflectionText: (text: string) => {
+        metaUpdatedAtRef.current = Date.now();
         setState((prev) => ({ ...prev, draftReflectionText: text }));
       },
 
@@ -1782,6 +2162,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       updateSiteConfig: (patch: Partial<SiteConfig>) => {
+        metaUpdatedAtRef.current = Date.now();
         setState((prev) => {
           const nextDomain = patch.targetDomain ?? prev.siteConfig.targetDomain;
           let derivedLabel = patch.domainLabel ?? prev.siteConfig.domainLabel;
@@ -1872,6 +2253,13 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       removeProject: (projectName: string) => {
+        if (tombstonesRef.current) {
+          tombstonesRef.current = {
+            ...tombstonesRef.current,
+            projects: { ...tombstonesRef.current.projects, [projectName]: Date.now() },
+          };
+          saveLocalTombstones(tombstonesRef.current);
+        }
         setState((prev) => {
           if (prev.projects.length <= 1) return prev;
           return {
@@ -1901,6 +2289,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         try {
           const parsed = JSON.parse(jsonText) as Partial<OpsState>;
           if (!parsed || typeof parsed !== 'object') return false;
+          metaUpdatedAtRef.current = Date.now();
           setState((prev) => {
             const nextProjects = Array.isArray(parsed.projects)
               ? parsed.projects
@@ -1938,12 +2327,29 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           return false;
         }
       },
+
+      syncNow: async () => {
+        const ok = await performCloudSync('push');
+        if (ok) {
+          showToast('Synced across all devices');
+        } else {
+          showToast('Saved locally — will sync automatically when online');
+        }
+        return ok;
+      },
     };
-  }, [state]);
+  }, [state, performCloudSync]);
 
   const value = useMemo(
-    () => ({ state, actions, reflectionPrompts: REFLECTION_PROMPTS, todayIso }),
-    [state, actions, todayIso]
+    () => ({
+      state,
+      actions,
+      reflectionPrompts: REFLECTION_PROMPTS,
+      todayIso,
+      syncStatus,
+      lastSyncedAt,
+    }),
+    [state, actions, todayIso, syncStatus, lastSyncedAt]
   );
 
   return <OpsStoreContext.Provider value={value}>{children}</OpsStoreContext.Provider>;

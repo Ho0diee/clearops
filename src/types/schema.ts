@@ -54,6 +54,7 @@ export interface CalendarBlock {
   spilloverCount?: number;
   /** Event description / freeform details */
   notes?: string;
+  updatedAt?: string;
 }
 
 export interface ReminderItem {
@@ -63,6 +64,7 @@ export interface ReminderItem {
   title: string;
   completed: boolean;
   linkedIdeaId?: string;
+  updatedAt?: string;
 }
 
 export type IdeaStatus = 'active' | 'waiting-on' | 'completed';
@@ -321,4 +323,7 @@ export interface OpsActions {
   removeProject: (projectName: string) => void;
   exportSiteConfigJson: () => string;
   importSiteConfigJson: (jsonText: string) => boolean;
+  syncNow: () => Promise<boolean>;
 }
+
+export type CloudSyncStatus = 'syncing' | 'synced' | 'offline';

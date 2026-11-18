@@ -6,6 +6,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: false,
+    proxy: {
+      '/api': {
+        target: 'https://airbnb710.com',
+        changeOrigin: true,
+        secure: true,
+      },
+    },
     allowedHosts: [
       'airbnb710.com',
       'www.airbnb710.com',

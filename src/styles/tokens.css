@@ -4431,3 +4431,54 @@ html.is-schedule-locked #root {
   background: var(--text-primary);
   color: #FFFFFF;
 }
+
+
+/* Universal Cross-Device Cloud Sync Indicator */
+.ops-sync-btn {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 140ms var(--ease-calm), color 140ms var(--ease-calm), border-color 140ms var(--ease-calm);
+}
+
+.ops-sync-btn:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.ops-sync-dot {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bg-surface);
+  background: #16A34A;
+}
+
+.ops-sync-btn.is-syncing .ops-sync-dot {
+  background: #2563EB;
+}
+
+.ops-sync-btn.is-offline .ops-sync-dot {
+  background: #D97706;
+}
+
+.ops-sync-spin {
+  animation: opsSyncSpin 1s linear infinite;
+}
+
+@keyframes opsSyncSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
