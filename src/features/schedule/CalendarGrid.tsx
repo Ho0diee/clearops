@@ -454,7 +454,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                 );
                 const isMicro = height < 20;
                 const roomy = !isWeek && height >= 40;
-                const showHandles = interactive && !isBeingDragged && height >= 28;
+                const showHandles = interactive && !isBeingDragged && height >= 40;
                 const clampLines = isWeek ? Math.max(1, Math.floor((height - 4) / 11)) : undefined;
                 const isSlotDraftTarget =
                   draftOnThisDay?.mode === 'fill-slot' && draftOnThisDay.targetBlockId === block.id;
@@ -524,7 +524,6 @@ const CalendarPane = memo<CalendarPaneProps>(
                         className="gcal-resize-handle is-top"
                         aria-label="Adjust start time"
                         onPointerDown={(ev) => onResizePointerDown(ev, block, 'resize-start')}
-                        onClick={(ev) => ev.stopPropagation()}
                       />
                     )}
 
@@ -567,7 +566,6 @@ const CalendarPane = memo<CalendarPaneProps>(
                         className="gcal-resize-handle is-bottom"
                         aria-label="Adjust end time"
                         onPointerDown={(ev) => onResizePointerDown(ev, block, 'resize-end')}
-                        onClick={(ev) => ev.stopPropagation()}
                       />
                     )}
                   </div>
@@ -1270,13 +1268,28 @@ export const CalendarGrid: React.FC<{
   const handleOpenBlock = useCallback((id: string) => {
     if (performance.now() < suppressClickUntilRef.current || activeDragRef.current) return;
     setCreateDraft(null);
+    setOpenReminderId(null);
     setOpenBlockId(id);
   }, []);
 
   const handleOpenReminder = useCallback((id: string) => {
     if (performance.now() < suppressClickUntilRef.current || activeDragRef.current) return;
     setCreateDraft(null);
+    setOpenBlockId(null);
     setOpenReminderId(id);
+  }, []);
+
+  useEffect(() => {
+    const onExternalOpenBlock = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ blockId?: string }>).detail;
+      if (detail?.blockId) {
+        setCreateDraft(null);
+        setOpenReminderId(null);
+        setOpenBlockId(detail.blockId);
+      }
+    };
+    window.addEventListener('intuition:open-block', onExternalOpenBlock);
+    return () => window.removeEventListener('intuition:open-block', onExternalOpenBlock);
   }, []);
 
   const openNewEventSheet = useCallback((date: string, startMins: number, endMins: number) => {
@@ -1658,11 +1671,13 @@ export const CalendarGrid: React.FC<{
       return;
     }
 
-    // 2. If pointer moves >= 7px BEFORE the 380ms hold completes, cancel the hold & run scroll/swipe!
+    // 2. Require larger movement slop (14px) when finger/mouse started on an event or reminder
+    //    so taps with slight thumb roll NEVER get hijacked as a day-swipe or suppressed!
     if (g.axis === 'none') {
-      if (dist < 7) return;
+      const slopPx = g.originKind === 'empty' ? 7 : 14;
+      if (dist < slopPx) return;
       clearHoldTimer();
-      g.axis = Math.abs(dx) > Math.abs(dy) * 1.1 ? 'x' : 'y';
+      g.axis = Math.abs(dx) > Math.abs(dy) * 1.15 ? 'x' : 'y';
       if (g.axis === 'x') {
         if (!g.captured && scrollRef.current) {
           try {
@@ -1763,6 +1778,18 @@ export const CalendarGrid: React.FC<{
     }
 
     if (scrollRef.current) scrollRef.current.style.overflowY = '';
+
+    // 2. Direct tap-open guarantee for ALL event & reminder sizes (even 5m/10m/15m/30m micro chips):
+    //    If pointerdown landed on a block, resize edge, or reminder and released without dragging/swiping,
+    //    open its edit sheet immediately even if :active scale or thumb roll shifted pointerup slightly!
+    if (!cancelled && g.axis === 'none') {
+      if ((g.originKind === 'block' || g.originKind === 'resize') && g.targetBlock) {
+        handleOpenBlock(g.targetBlock.id);
+      } else if (g.originKind === 'reminder' && g.targetReminder) {
+        handleOpenReminder(g.targetReminder.id);
+      }
+      return;
+    }
 
     // Finalize horizontal day/week carousel swipe (quick taps on empty space never create events by accident)
     if (g.axis !== 'x') return;

@@ -2100,7 +2100,7 @@ textarea {
   position: absolute;
   left: 0;
   right: 0;
-  height: 11px;
+  height: 7px;
   z-index: 3;
   cursor: ns-resize;
 }

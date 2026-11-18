@@ -188,7 +188,14 @@ export const ScheduleChat: React.FC<{
     setTranscript('');
     onDraftChange(null);
     if (window.location.search.includes('voiceDraft=')) {
-      window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+      const params = new URLSearchParams(window.location.search);
+      params.delete('voiceDraft');
+      const nextSearch = params.toString();
+      window.history.replaceState(
+        {},
+        '',
+        window.location.pathname + (nextSearch ? `?${nextSearch}` : '') + window.location.hash
+      );
     }
   }, [onDraftChange, teardownActiveRecognizer]);
 
@@ -201,7 +208,14 @@ export const ScheduleChat: React.FC<{
     sessionTextRef.current = '';
     setTranscript('');
     if (window.location.search.includes('voiceDraft=')) {
-      window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+      const params = new URLSearchParams(window.location.search);
+      params.delete('voiceDraft');
+      const nextSearch = params.toString();
+      window.history.replaceState(
+        {},
+        '',
+        window.location.pathname + (nextSearch ? `?${nextSearch}` : '') + window.location.hash
+      );
     }
     if (committed) {
       onAdded(committed);

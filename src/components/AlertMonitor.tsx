@@ -219,6 +219,16 @@ export const AlertMonitor: React.FC = () => {
 
   const nowMs = Date.now();
 
+  const openAlertEventEditor = (block: CalendarBlock) => {
+    actions.setSelectedDate(block.date);
+    actions.setActiveTab('schedule');
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent('intuition:open-block', { detail: { blockId: block.id } })
+      );
+    }, 30);
+  };
+
   return createPortal(
     <div className="ops-live-alert-stack" role="region" aria-label="Active event alerts">
       {activeAlerts.map((item) => {
@@ -233,7 +243,8 @@ export const AlertMonitor: React.FC = () => {
             key={item.signature}
             className="ops-live-alert-card"
             role="alert"
-            style={{ '--alert-accent': accentHex } as React.CSSProperties}
+            style={{ '--alert-accent': accentHex, cursor: 'pointer' } as React.CSSProperties}
+            onClick={() => openAlertEventEditor(liveBlock)}
           >
             <div className="ops-live-alert-bar" />
             <div className="ops-live-alert-body">
@@ -249,25 +260,18 @@ export const AlertMonitor: React.FC = () => {
                   type="button"
                   className="ops-live-alert-close"
                   aria-label="Dismiss alert"
-                  onClick={() =>
+                  onClick={(e) => {
+                    e.stopPropagation();
                     setActiveAlerts((prev) =>
                       prev.filter((a) => a.signature !== item.signature)
-                    )
-                  }
+                    );
+                  }}
                 >
                   <X size={15} />
                 </button>
               </div>
 
-              <div
-                className="ops-live-alert-title"
-                onClick={() => {
-                  actions.setSelectedDate(liveBlock.date);
-                  actions.setActiveTab('schedule');
-                }}
-              >
-                {liveBlock.title}
-              </div>
+              <div className="ops-live-alert-title">{liveBlock.title}</div>
 
               {liveBlock.notes && (
                 <div className="ops-live-alert-desc">{liveBlock.notes}</div>
@@ -277,7 +281,18 @@ export const AlertMonitor: React.FC = () => {
                 <button
                   type="button"
                   className="ops-live-alert-btn is-secondary"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openAlertEventEditor(liveBlock);
+                  }}
+                >
+                  <span>Edit</span>
+                </button>
+                <button
+                  type="button"
+                  className="ops-live-alert-btn is-secondary"
+                  onClick={(e) => {
+                    e.stopPropagation();
                     snoozedUntilRef.current.set(liveBlock.id, Date.now() + 5 * 60_000);
                     setActiveAlerts((prev) =>
                       prev.filter((a) => a.signature !== item.signature)
@@ -290,11 +305,12 @@ export const AlertMonitor: React.FC = () => {
                 <button
                   type="button"
                   className="ops-live-alert-btn is-primary"
-                  onClick={() =>
+                  onClick={(e) => {
+                    e.stopPropagation();
                     setActiveAlerts((prev) =>
                       prev.filter((a) => a.signature !== item.signature)
-                    )
-                  }
+                    );
+                  }}
                 >
                   Dismiss
                 </button>
