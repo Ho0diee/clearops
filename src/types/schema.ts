@@ -238,6 +238,7 @@ export interface OpsActions {
   updateReminder: (reminderId: string, patch: Partial<Omit<ReminderItem, 'id'>>) => void;
   toggleReminder: (reminderId: string) => void;
   deleteReminder: (reminderId: string) => void;
+  setSchoolDayDelay: (date: string, delayMode: 'regular' | 'late-90' | 'late-2hr') => void;
 
   // Subagent 2: Ideas & Checkups
   addIdea: (input: {

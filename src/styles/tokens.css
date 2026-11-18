@@ -1972,6 +1972,28 @@ textarea {
   font-size: 9.5px;
 }
 
+.gcal-ev.is-micro {
+  padding: 0 6px;
+  border-radius: 4px;
+  justify-content: center;
+}
+
+.gcal-ev.is-micro .gcal-ev-title {
+  font-size: 10.5px;
+  line-height: 11px;
+  white-space: nowrap;
+}
+
+.gcal-ev.is-compact.is-micro {
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+.gcal-ev.is-compact.is-micro .gcal-ev-title {
+  font-size: 9px;
+  line-height: 9.5px;
+}
+
 .gcal-ev.is-done {
   opacity: 0.55;
 }
@@ -2556,10 +2578,40 @@ html.is-schedule-locked #root {
   font-size: 10px;
 }
 
+.gcal-rem.is-ohchs-green {
+  background: #E8F6EE;
+  color: #145A32;
+  border-color: rgba(22, 128, 67, 0.42);
+}
+
+.gcal-rem.is-ohchs-gold {
+  background: #FEF6DF;
+  color: #8A5207;
+  border-color: rgba(196, 124, 14, 0.45);
+}
+
+.gcal-rem.is-ohchs-noschool {
+  background: #F4F2EE;
+  color: #5C5B56;
+  border-color: rgba(120, 118, 110, 0.38);
+}
+
 .gcal-rem.is-done {
   background: #F6F4EE;
   color: #8A857B;
   border-color: rgba(140, 134, 123, 0.35);
+}
+
+.gcal-rem.is-ohchs-green.is-done,
+.gcal-rem.is-ohchs-gold.is-done,
+.gcal-rem.is-ohchs-noschool.is-done {
+  opacity: 0.72;
+}
+
+.gcal-rem.is-ohchs-green.is-done .gcal-rem-title,
+.gcal-rem.is-ohchs-gold.is-done .gcal-rem-title,
+.gcal-rem.is-ohchs-noschool.is-done .gcal-rem-title {
+  text-decoration: none;
 }
 
 .gcal-rem.is-done .gcal-rem-title {

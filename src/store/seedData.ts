@@ -1,4 +1,5 @@
 import type { OpsState, SiteConfig } from '../types/schema';
+import { buildFullOhchsSchedule } from './ohchsSchedule';
 
 /** Returns the real-world local calendar date in YYYY-MM-DD format. */
 export function getTodayISO(now: Date = new Date()): string {
@@ -9,6 +10,8 @@ export function getTodayISO(now: Date = new Date()): string {
 }
 
 export const TODAY_ISO = getTodayISO();
+
+const INITIAL_OHCHS = buildFullOhchsSchedule(TODAY_ISO);
 
 export const DEFAULT_SITE_CONFIG: SiteConfig = {
   targetDomain: 'https://airbnb710.com',
@@ -39,8 +42,8 @@ export const INITIAL_OPS_STATE: OpsState = {
     Family: 'Be fully present at the table every evening with zero work bleed.',
     Organization: 'Keep personal and financial systems frictionless so profitable work runs calm.',
   },
-  blocks: [],
-  reminders: [],
+  blocks: INITIAL_OHCHS.blocks,
+  reminders: INITIAL_OHCHS.reminders,
   projects: ['OHCR', 'CBS', 'Personal'],
   ideas: [
     {
@@ -173,8 +176,8 @@ export const AIRBNB710_STR_PRESET: Pick<
     School: 'Keep learning and technical systems sharp so property operations compound.',
   },
   projects: ['Airbnb710', 'Turnovers & Guests', 'Listing & Pricing', 'Personal'],
-  blocks: [],
-  reminders: [],
+  blocks: INITIAL_OHCHS.blocks,
+  reminders: INITIAL_OHCHS.reminders,
   ideas: [
     {
       id: 'idea-710-1',

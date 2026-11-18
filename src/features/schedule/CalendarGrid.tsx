@@ -22,6 +22,7 @@ import { Badge, Button } from '../../components/ui';
 import { addDaysISO, formatShortDate, getWeekDatesISO, useOpsStore } from '../../store/opsStore';
 import { inferWhyFromTitle } from '../../store/scheduleAi';
 import { getBlockingBottleneck } from '../../store/ideaBlocking';
+import { OHCHS_BY_DATE } from '../../store/ohchsSchedule';
 import type {
   CalendarBlock,
   ReminderItem,
@@ -117,7 +118,7 @@ function layoutColumn(blocks: CalendarBlock[]): Positioned[] {
 
   sorted.forEach((b) => {
     const s = toMin(b.startTime);
-    const e = Math.max(s + 15, toMin(b.endTime));
+    const e = Math.max(s + 10, toMin(b.endTime));
     if (cluster.length && s >= clusterEnd) flush();
     let col = colEnds.findIndex((end) => end <= s);
     if (col === -1) {
@@ -280,12 +281,24 @@ const CalendarPane = memo<CalendarPaneProps>(
               {laid.map(({ block, col, cols }) => {
                 const isBeingDragged = interactive && draggedBlockId === block.id;
                 const s = toMin(block.startTime);
-                const e = Math.max(s + 15, toMin(block.endTime));
+                const e = Math.max(s + 10, toMin(block.endTime));
                 const top = ((s - startHour * 60) / 60) * hourHeight;
-                const height = Math.max(isWeek ? 18 : 22, ((e - s) / 60) * hourHeight - 2);
+                const nextInColStarts = laid
+                  .filter((other) => other.col === col && toMin(other.block.startTime) >= e)
+                  .map((other) => toMin(other.block.startTime));
+                const nextStartMin = nextInColStarts.length ? Math.min(...nextInColStarts) : null;
+                const maxAvailPx =
+                  nextStartMin !== null
+                    ? Math.max(11, ((nextStartMin - s) / 60) * hourHeight - 1.5)
+                    : Infinity;
+                const height = Math.min(
+                  maxAvailPx,
+                  Math.max(isWeek ? 18 : 22, ((e - s) / 60) * hourHeight - 2)
+                );
+                const isMicro = height < 20;
                 const roomy = !isWeek && height >= 40;
-                const showHandles = interactive && !isBeingDragged && (!isWeek || height >= 28);
-                const clampLines = isWeek ? Math.max(1, Math.floor((height - 6) / 12.5)) : undefined;
+                const showHandles = interactive && !isBeingDragged && height >= 28;
+                const clampLines = isWeek ? Math.max(1, Math.floor((height - 4) / 11)) : undefined;
                 const isSlotDraftTarget =
                   draftOnThisDay?.mode === 'fill-slot' && draftOnThisDay.targetBlockId === block.id;
                 const displayTitle = isSlotDraftTarget
@@ -303,7 +316,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                     tabIndex={0}
                     className={`gcal-ev ${eventClass(block)} ${block.completed ? 'is-done' : ''} ${
                       isWeek ? 'is-compact' : ''
-                    } ${block.id === highlightId ? 'is-flash' : ''} ${
+                    } ${isMicro ? 'is-micro' : ''} ${block.id === highlightId ? 'is-flash' : ''} ${
                       isSlotDraftTarget ? 'is-voice-slot-target' : ''
                     } ${isBeingDragged ? 'is-drag-origin' : ''}`.trim()}
                     style={{
@@ -483,6 +496,14 @@ const CalendarPane = memo<CalendarPaneProps>(
 
               {dayReminders.map((rem, idx) => {
                 const isRemDragged = interactive && draggedRemId === rem.id;
+                const isOhchsRot = rem.id.startsWith('ohchs-rot-');
+                const ohchsTone = isOhchsRot
+                  ? /^NO SCHOOL/i.test(rem.title)
+                    ? 'is-ohchs-noschool'
+                    : /^(GREEN|EN THURS)/i.test(rem.title)
+                    ? 'is-ohchs-green'
+                    : 'is-ohchs-gold'
+                  : '';
                 const m = toMin(rem.time);
                 const sameTimeIdx = dayReminders
                   .slice(0, idx)
@@ -493,7 +514,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                   <button
                     key={rem.id}
                     type="button"
-                    className={`gcal-rem ${rem.completed ? 'is-done' : ''} ${
+                    className={`gcal-rem ${ohchsTone} ${rem.completed ? 'is-done' : ''} ${
                       isWeek ? 'is-compact' : ''
                     } ${rem.id === highlightId ? 'is-flash' : ''} ${
                       isRemDragged ? 'is-drag-origin' : ''
@@ -508,11 +529,14 @@ const CalendarPane = memo<CalendarPaneProps>(
                       ev.stopPropagation();
                       onOpenReminder(rem.id);
                     }}
-                    title={`Reminder: ${rem.title} (${fmtTime(rem.time)})`}
+                    title={isOhchsRot ? rem.title : `Reminder: ${rem.title} (${fmtTime(rem.time)})`}
                   >
-                    {rem.completed ? <Check size={10} strokeWidth={3} /> : <Bell size={10} />}
+                    {!isOhchsRot &&
+                      (rem.completed ? <Check size={10} strokeWidth={3} /> : <Bell size={10} />)}
                     <span className="gcal-rem-title">{rem.title}</span>
-                    {!isWeek && <span className="gcal-rem-time">{fmtTime(rem.time)}</span>}
+                    {!isWeek && !isOhchsRot && (
+                      <span className="gcal-rem-time">{fmtTime(rem.time)}</span>
+                    )}
                   </button>
                 );
               })}
@@ -929,10 +953,13 @@ export const CalendarGrid: React.FC<{
     prevModeRef.current = state.scheduleViewMode;
     if (liveDraft?.startTime) return;
     const currBlocks = windowBlocks.filter((b) => currColumns.includes(b.date));
-    const firstMin = currBlocks.length
-      ? Math.min(...currBlocks.map((b) => toMin(b.startTime)))
-      : 8 * 60;
-    const target = ((firstMin - startHour * 60) / 60) * hourHeight - 12;
+    const currRems = windowReminders.filter((r) => currColumns.includes(r.date));
+    const mins = [
+      ...currBlocks.map((b) => toMin(b.startTime)),
+      ...currRems.map((r) => toMin(r.time)),
+    ];
+    const firstMin = mins.length ? Math.min(...mins) : 8 * 60;
+    const target = ((firstMin - startHour * 60) / 60) * hourHeight - 16;
     scrollRef.current.scrollTop = Math.max(0, target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.scheduleViewMode]);
@@ -2015,7 +2042,11 @@ export const CalendarGrid: React.FC<{
                 )}
                 {openBlock.startingStepHint && (
                   <div>
-                    <Badge tone="zone">Starting step: {openBlock.startingStepHint}</Badge>
+                    <Badge tone={openBlock.id.startsWith('ohchs-') ? 'why' : 'zone'}>
+                      {openBlock.id.startsWith('ohchs-')
+                        ? openBlock.startingStepHint
+                        : `Starting step: ${openBlock.startingStepHint}`}
+                    </Badge>
                   </div>
                 )}
                 {isOpenZone(openBlock) && (
@@ -2198,6 +2229,44 @@ export const CalendarGrid: React.FC<{
                   }
                 />
               </div>
+
+              {(() => {
+                if (!openReminder.id.startsWith('ohchs-rot-')) return null;
+                const entry = OHCHS_BY_DATE.get(openReminder.date);
+                if (!entry || entry.isNoSchool || !entry.dayCode) return null;
+                const activeDelay = openReminder.title.includes('(2hr Delay)')
+                  ? 'late-2hr'
+                  : openReminder.title.includes('(90m Delay)')
+                  ? 'late-90'
+                  : 'regular';
+                return (
+                  <div className="ops-stack-xs" style={{ marginTop: 12 }}>
+                    <span className="gcal-sheet-meta">Bell schedule timing (snow / late start):</span>
+                    <div className="gcal-type-pills">
+                      {(
+                        [
+                          { id: 'regular', label: 'Regular' },
+                          { id: 'late-90', label: '90-Min Delay' },
+                          { id: 'late-2hr', label: '2-Hr Delay' },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          className={`gcal-pill-chip ${
+                            activeDelay === opt.id ? 'is-active' : ''
+                          }`.trim()}
+                          onClick={() => {
+                            actions.setSchoolDayDelay(openReminder.date, opt.id);
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="gcal-sheet-actions">
                 <div className="ops-row" style={{ gap: 8 }}>

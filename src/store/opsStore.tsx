@@ -22,15 +22,23 @@ import {
   INITIAL_OPS_STATE,
   REFLECTION_PROMPTS,
 } from './seedData';
+import {
+  buildFullOhchsSchedule,
+  buildOhchsBlocksForEntry,
+  buildOhchsPinForEntry,
+  OHCHS_BY_DATE,
+} from './ohchsSchedule';
 import { interpretScheduleInput, parseProgressiveVoiceDraft } from './scheduleAi';
 
 export { getTodayISO };
 
 const STORAGE_KEY = 'clearops_state_v1';
 const CLEAN_SLATE_VERSION = 2;
+const OHCHS_SCHEDULE_VERSION = 1;
 
 type PersistedOpsEnvelope = Partial<OpsState> & {
   _cleanSlateVersion?: number;
+  _ohchsScheduleVersion?: number;
   _lastSavedToday?: string;
 };
 
@@ -271,6 +279,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               : savedName;
 
           if (parsed._cleanSlateVersion !== CLEAN_SLATE_VERSION) {
+            const ohchs = buildFullOhchsSchedule(liveToday);
             return {
               ...INITIAL_OPS_STATE,
               selectedDate: liveToday,
@@ -290,8 +299,8 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                   : INITIAL_OPS_STATE.hourlyRateDollars,
               projects: mergedProjects,
               ideas: normalizeAllProjectsRanks(parsed.ideas, mergedProjects),
-              blocks: [],
-              reminders: [],
+              blocks: ohchs.blocks,
+              reminders: ohchs.reminders,
               checkups: [],
               pacedGoals: [],
               pacingLogs: [],
@@ -310,10 +319,22 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             };
           }
 
+          let nextBlocks = parsed.blocks;
+          let nextReminders = parsed.reminders ?? [];
+          if (parsed._ohchsScheduleVersion !== OHCHS_SCHEDULE_VERSION) {
+            const ohchs = buildFullOhchsSchedule(liveToday);
+            const userBlocks = parsed.blocks.filter((b) => !b.id.startsWith('ohchs-'));
+            const userReminders = nextReminders.filter((r) => !r.id.startsWith('ohchs-rot-'));
+            nextBlocks = sortBlocks([...ohchs.blocks, ...userBlocks]);
+            nextReminders = [...ohchs.reminders, ...userReminders];
+          }
+
           const shouldRollToToday = parsed._lastSavedToday !== liveToday;
           return {
             ...INITIAL_OPS_STATE,
             ...parsed,
+            blocks: nextBlocks,
+            reminders: nextReminders,
             selectedDate: shouldRollToToday ? liveToday : parsed.selectedDate || liveToday,
             siteConfig: {
               ...DEFAULT_SITE_CONFIG,
@@ -385,6 +406,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const envelope: PersistedOpsEnvelope = {
         ...persisted,
         _cleanSlateVersion: CLEAN_SLATE_VERSION,
+        _ohchsScheduleVersion: OHCHS_SCHEDULE_VERSION,
         _lastSavedToday: todayIso,
       };
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(envelope));
@@ -891,6 +913,32 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           ...prev,
           reminders: prev.reminders.filter((r) => r.id !== reminderId),
         }));
+      },
+
+      setSchoolDayDelay: (date, delayMode) => {
+        const entry = OHCHS_BY_DATE.get(date);
+        if (!entry || entry.isNoSchool || !entry.dayCode) return;
+        const liveToday = getTodayISO();
+        setState((prev) => {
+          const keptBlocks = prev.blocks.filter(
+            (b) => !(b.date === date && b.id.startsWith('ohchs-'))
+          );
+          const keptRems = prev.reminders.filter((r) => r.id !== `ohchs-rot-${date}`);
+          const nextDayBlocks = buildOhchsBlocksForEntry(entry, liveToday, delayMode);
+          const nextPin = buildOhchsPinForEntry(entry, liveToday, delayMode);
+          return {
+            ...prev,
+            blocks: sortBlocks([...keptBlocks, ...nextDayBlocks]),
+            reminders: [...keptRems, nextPin].sort((a, b) => a.time.localeCompare(b.time)),
+          };
+        });
+        showToast(
+          delayMode === 'regular'
+            ? `Restored regular ${entry.dayCode} bell schedule`
+            : delayMode === 'late-90'
+            ? `Switched ${formatShortDate(date)} to 90-Min Delay`
+            : `Switched ${formatShortDate(date)} to 2-Hr Delay`
+        );
       },
 
       addIdea: ({ project, title, startingStep, isBottleneck = false, estimatedMinutes = 45 }) => {
