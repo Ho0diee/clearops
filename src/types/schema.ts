@@ -162,6 +162,25 @@ export interface ParsedLiveInput {
   explanation?: string;
 }
 
+export type MissingVoiceField = 'title' | 'date' | 'startTime' | 'endTime';
+
+export interface VoiceScheduleDraft {
+  rawTranscript: string;
+  mode: 'event' | 'empty-zone' | 'reminder' | 'fill-slot';
+  title?: string;
+  date?: string;
+  dateSpoken: boolean;
+  startTime?: string;
+  endTime?: string;
+  whyCategory?: WhyCategory;
+  targetBlockId?: string;
+  matchedIdeaId?: string;
+  startingStepHint?: string;
+  missingFields: MissingVoiceField[];
+  nextPrompt: string;
+  isComplete: boolean;
+}
+
 export interface OpsState {
   activeTab: RouteTab;
   isReflectionOpen: boolean;
@@ -204,6 +223,8 @@ export interface OpsActions {
   assignIdeaToNextEmptyZone: (ideaId: string, fromDate?: string) => CalendarBlock | null;
   parseLiveCommand: (rawText: string) => ParsedLiveInput | null;
   submitLiveCommand: (rawText: string) => ParsedLiveInput | null;
+  parseVoiceDraft: (rawText: string) => VoiceScheduleDraft | null;
+  commitVoiceDraft: (draft: VoiceScheduleDraft) => ParsedLiveInput | null;
   addReminder: (reminder: Omit<ReminderItem, 'id'>) => void;
   toggleReminder: (reminderId: string) => void;
   deleteReminder: (reminderId: string) => void;

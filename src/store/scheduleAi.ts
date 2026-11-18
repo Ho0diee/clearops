@@ -1,4 +1,11 @@
-import type { CalendarBlock, IdeaItem, ParsedLiveInput, WhyCategory } from '../types/schema';
+import type {
+  CalendarBlock,
+  IdeaItem,
+  MissingVoiceField,
+  ParsedLiveInput,
+  VoiceScheduleDraft,
+  WhyCategory,
+} from '../types/schema';
 
 export interface ScheduleAiContext {
   todayIso: string;
@@ -39,10 +46,18 @@ function isOpenFocusBlock(b: CalendarBlock): boolean {
 
 export function inferWhyFromTitle(title: string): WhyCategory {
   const lower = title.toLowerCase();
-  if (/(class|lecture|seminar|lab|study|exam|homework|problem set|school|quiz|thesis|course|cs\b)/.test(lower)) {
+  if (
+    /(class|lecture|seminar|lab|study|exam|homework|problem set|school|quiz|thesis|course|cs\b)/.test(
+      lower
+    )
+  ) {
     return 'School';
   }
-  if (/(gym|run|workout|strength|mobility|dentist|doctor|therapy|sleep|walk|yoga|lift|health)/.test(lower)) {
+  if (
+    /(gym|run|workout|strength|mobility|dentist|doctor|therapy|sleep|walk|yoga|lift|health)/.test(
+      lower
+    )
+  ) {
     return 'Health';
   }
   if (/(family|dinner|lunch with|mom|dad|sister|brother|kids|parents|call home|date night)/.test(lower)) {
@@ -67,8 +82,8 @@ const WORD_HOURS: Record<string, number> = {
 };
 
 /**
- * Normalize spoken speech-to-text transcripts & common mobile typos
- * ("tommorow" -> "tomorrow", "four thirty" -> "4:30", "three pm" -> "3pm", "noon" -> "12:00pm")
+ * Normalize spoken speech-to-text transcripts, natural spoken durations, & mobile variants
+ * ("tommorow" -> "tomorrow", "four thirty" -> "4:30", "an hour and a half" -> "90 minutes", "for six" -> "for 6")
  */
 function normalizeSpokenTranscript(raw: string): string {
   let s = raw
@@ -81,6 +96,21 @@ function normalizeSpokenTranscript(raw: string): string {
     .replace(/\bnoon\b/gi, '12:00pm')
     .replace(/\bmidnight\b/gi, '12:00am');
 
+  // Spoken durations BEFORE word-hour conversion
+  s = s
+    .replace(/\b(?:an|one|1)\s+hour\s+(?:and\s+)?(?:a\s+)?half\b/gi, '90 minutes')
+    .replace(/\b(?:a\s+half(?:\s+an)?\s+hour|half\s+an\s+hour|half\s+hour)\b/gi, '30 minutes')
+    .replace(/\b(?:an|one)\s+(hours?|hrs?|hr)\b/gi, '1 hour')
+    .replace(
+      /\b(two|three|four|five|six|seven|eight)\s+(hours?|hrs?|hr)\b/gi,
+      (_, w: string, unit: string) => `${WORD_HOURS[w.toLowerCase()]} ${unit}`
+    )
+    .replace(/\bfifteen\s+(minutes?|mins?|min)\b/gi, '15 minutes')
+    .replace(/\btwenty\s+(minutes?|mins?|min)\b/gi, '20 minutes')
+    .replace(/\bthirty\s+(minutes?|mins?|min)\b/gi, '30 minutes')
+    .replace(/\bforty[-\s]?five\s+(minutes?|mins?|min)\b/gi, '45 minutes')
+    .replace(/\bninety\s+(minutes?|mins?|min)\b/gi, '90 minutes');
+
   // "half past four" -> "4:30", "quarter past three" -> "3:15"
   s = s.replace(
     /\b(half|quarter)\s+past\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b/gi,
@@ -91,7 +121,7 @@ function normalizeSpokenTranscript(raw: string): string {
     }
   );
 
-  // Spoken hour + spoken minutes: "four thirty" -> "4:30", "five fifteen" -> "5:15", "six forty five" -> "6:45"
+  // Spoken hour + spoken minutes: "four thirty" -> "4:30", "seven thirty" -> "7:30"
   s = s.replace(
     /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(fifteen|thirty|forty[-\s]?five)\b/gi,
     (_, hWord: string, mWord: string) => {
@@ -101,7 +131,7 @@ function normalizeSpokenTranscript(raw: string): string {
     }
   );
 
-  // Spoken hour followed by am/pm or preceded by time preposition: "for three" -> "for 3", "at five pm" -> "at 5pm"
+  // Spoken hour followed by am/pm or preceded by time preposition: "for six" -> "for 6", "until eight" -> "until 8"
   s = s.replace(
     /\b(at|for|from|between|by|around|until|til|to)\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/gi,
     (_, prep: string, hWord: string) => `${prep} ${WORD_HOURS[hWord.toLowerCase()]}`
@@ -149,14 +179,31 @@ function resolveSingleHour(
     } else if (periodHint === 'morning') {
       if (hour === 12) hour = 8;
     } else {
-      // Natural human conversational default:
-      // Bare 1..6 ("at 3", "at 4:30", "for 5") means 1:00pm..6:00pm!
-      // Bare 7..11 means 7:00am..11:00am; bare 12 means 12:00pm.
+      // Natural human conversational default: bare 1..6 ("for 6", "at 4:30", "for 3") -> 1:00pm..6:00pm
       if (hour >= 1 && hour <= 6) hour += 12;
     }
   }
 
   return hour * 60 + minuteRaw;
+}
+
+function resolveEndAfterStart(
+  startMins: number,
+  endHourRaw: number,
+  endMinuteRaw: number,
+  endMeridiem: string | undefined,
+  periodHint: DayPeriodHint
+): number | null {
+  let endMins = resolveSingleHour(endHourRaw, endMinuteRaw, endMeridiem, periodHint);
+  if (endMins === null) return null;
+  // e.g. start is 18:00 (6pm) and user says "to 7:30" or "to 8" without "pm": 7:30 -> 19:30!
+  if (!endMeridiem && endMins <= startMins && endMins + 12 * 60 < 24 * 60) {
+    endMins += 12 * 60;
+  }
+  if (endMins <= startMins) {
+    endMins = Math.min(23 * 60 + 55, startMins + 60);
+  }
+  return endMins;
 }
 
 function resolveDateFromText(
@@ -184,11 +231,13 @@ function resolveDateFromText(
   }
 
   if (/\b(today|tonight|this\s+morning|this\s+afternoon|this\s+evening)\b/i.test(text)) {
-    text = text.replace(/\b(today'?s?|tonight|this\s+morning|this\s+afternoon|this\s+evening)\b/gi, ' ');
+    text = text.replace(
+      /\b(today'?s?|tonight|this\s+morning|this\s+afternoon|this\s+evening)\b/gi,
+      ' '
+    );
     return { date: todayIso, hasExplicitDate: true, cleanedText: text };
   }
 
-  // Weekday names: monday..sunday
   const weekdays: Record<string, number> = {
     sunday: 0,
     sun: 0,
@@ -224,7 +273,6 @@ function resolveDateFromText(
     return { date: addDays(todayIso, diff), hasExplicitDate: true, cleanedText: text };
   }
 
-  // Explicit month + day: "Nov 20", "November 21st"
   const months: Record<string, number> = {
     jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
     apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
@@ -248,9 +296,6 @@ function resolveDateFromText(
   return { date: selectedDate || todayIso, hasExplicitDate: false, cleanedText: text };
 }
 
-/**
- * Find the first conflict-free gap of `durationMins` on `date` between 08:30 and 21:00.
- */
 function findOpenScheduleGap(
   blocks: CalendarBlock[],
   date: string,
@@ -258,12 +303,13 @@ function findOpenScheduleGap(
 ): { startTime: string; endTime: string } {
   const dayBlocks = blocks
     .filter((b) => b.date === date && !isOpenFocusBlock(b))
-    .map((b) => ({ s: toMinutes(b.startTime), e: Math.max(toMinutes(b.startTime) + 15, toMinutes(b.endTime)) }))
+    .map((b) => ({
+      s: toMinutes(b.startTime),
+      e: Math.max(toMinutes(b.startTime) + 15, toMinutes(b.endTime)),
+    }))
     .sort((a, b) => a.s - b.s);
 
-  let cursor = 9 * 60; // Start scanning at 9:00 AM
-  const dayEnd = 21 * 60;
-
+  let cursor = 9 * 60;
   for (const busy of dayBlocks) {
     if (busy.s - cursor >= durationMins) {
       return { startTime: fromMinutes(cursor), endTime: fromMinutes(cursor + durationMins) };
@@ -280,33 +326,28 @@ function findOpenScheduleGap(
 
 function cleanExtractedTitle(raw: string): string {
   let t = raw
-    // Strip leading conversational phrasing
     .replace(
       /^(?:hey|hi|yo|ok|okay|um|uh|so|please|can you|could you|would you|will you|let'?s)+[, ]*/gi,
       ''
     )
+    .replace(/^(?:can you|could you|would you|please)(?:\s+|$)/gi, '')
     .replace(
-      /^(?:can you|could you|would you|please)\s+/gi,
+      /^(?:i\s+have(?:\s+got)?|i'?ve\s+got|i\s+got|i\s+need\s+to|i\s+have\s+to|i\s+gotta|we\s+have|there'?s|there\s+is|add|create|schedule|put|set\s+up|set|book|block\s+out|block|fit\s+in|drop\s+in|open\s+up|open|make)(?:\s+|$)/i,
       ''
     )
     .replace(
-      /^(?:i\s+have(?:\s+got)?|i'?ve\s+got|i\s+got|i\s+need\s+to|i\s+have\s+to|i\s+gotta|we\s+have|there'?s|there\s+is|add|create|schedule|put|set\s+up|set|book|block\s+out|block|fit\s+in|drop\s+in|open\s+up|open|make)\s+/i,
+      /^(?:a\s+|an\s+|my\s+|some\s+)?(?:reminder|scheduled\s+event|calendar\s+event|event|appointment|time\s+block|block)\s*(?:for\s+me\s+)?(?:(?:to|for|about|on|that)(?:\s+|$))?\s*/i,
       ''
     )
-    .replace(
-      /^(?:a\s+|an\s+|my\s+|some\s+)?(?:reminder|scheduled\s+event|calendar\s+event|event|appointment|time\s+block|block)\s*(?:for\s+me\s+)?(?:to|for|about|on|that)?\s*/i,
-      ''
-    )
-    .replace(/^remind\s+me\s*(?:to|about|for|that)?\s*/i, '')
-    // Strip leading articles on common calendar nouns ("a meeting with..." -> "Meeting with...")
-    .replace(/^(?:a|an)\s+(?=(?:meeting|call|shift|class|workout|session|check[- ]?in|sync|chat|dinner|lunch|coffee|dentist|doctor)\b)/i, '')
-    // Strip leftover prepositions/connectors at boundaries
-    .replace(/^(?:to|for|about|that|on|at|in|into)\s+/i, '')
+    .replace(/^remind(?:\s+me)?\s*(?:(?:to|about|for|that)(?:\s+|$))?\s*/i, '')
+    // Strip leading bare articles ("add a family dinner" -> "Family dinner", "add a" -> "")
+    .replace(/^(?:a|an|the|my|some)(?:\s+|$)/i, '')
+    .replace(/^(?:to|for|about|that|on|at|in|into|from|until|til)(?:\s+|$)/i, '')
     .replace(
       /\s+(?:on\s+my\s+(?:schedule|calendar)|to\s+my\s+(?:schedule|calendar)|on\s+the\s+(?:schedule|calendar)|in\s+my\s+(?:schedule|calendar)|right\s+here|in\s+here|here|please|thanks|thank\s+you)\s*$/gi,
       ''
     )
-    .replace(/\s+(?:at|for|from|between|on|in|into|to|by|around|about)\s*$/gi, '')
+    .replace(/\s+(?:at|for|from|between|on|in|into|to|by|around|about|until|til|end|ending|ends)\s*$/gi, '')
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
@@ -327,16 +368,74 @@ function matchExistingIdea(title: string, ideas: IdeaItem[]): IdeaItem | undefin
   });
 }
 
+function buildMissingPrompt(
+  mode: VoiceScheduleDraft['mode'],
+  missing: MissingVoiceField[],
+  knownStart?: string
+): string {
+  if (missing.length === 0) {
+    return 'Complete — tap ✓ or press Enter to add';
+  }
+  if (mode === 'fill-slot') {
+    return 'Say what task to place in this Focus Slot';
+  }
+  if (mode === 'reminder') {
+    if (missing.includes('title') && missing.includes('startTime')) {
+      return 'Say what & when — e.g. "for 3 about guest code"';
+    }
+    if (missing.includes('title')) {
+      return 'Say what the reminder is about';
+    }
+    if (missing.includes('startTime')) {
+      return 'Say what time — e.g. "for 3" or "at 4:30"';
+    }
+    return 'Say which day — e.g. "today" or "tomorrow"';
+  }
+
+  // Event / Empty Zone progressive guidance
+  const needTitle = missing.includes('title');
+  const needDate = missing.includes('date');
+  const needStart = missing.includes('startTime');
+  const needEnd = missing.includes('endTime');
+  const suggestedEnd = knownStart
+    ? formatFriendlyTime(fromMinutes(toMinutes(knownStart) + 60)).replace(':00', '')
+    : '7:30pm';
+
+  if (needTitle && needStart) {
+    return 'Speak event, day & time — e.g. "Family dinner for 6 today to 7:30"';
+  }
+  if (needTitle) {
+    return 'Say what the event is (e.g. "Family dinner")';
+  }
+  if (needDate && needStart) {
+    return 'Say day & start time — e.g. "for 6 today"';
+  }
+  if (needDate && needEnd) {
+    return `Say which day & end time — e.g. "today to ${suggestedEnd}"`;
+  }
+  if (needDate) {
+    return 'Say which day — e.g. "today" or "tomorrow"';
+  }
+  if (needStart) {
+    return 'Say start & end time — e.g. "from 6 to 7:30"';
+  }
+  if (needEnd) {
+    return `Say end time — e.g. "to ${suggestedEnd}" or "for 1 hour"`;
+  }
+  return 'Keep speaking to finish details…';
+}
+
 /**
- * Schedule-Aware Natural Language Interpreter:
- * Understands everything from vague slot requests ("add ___ for the next focus slot")
- * to casual specifics ("I have work at 4:30- 6 tommorow here")
- * to reminders ("set a reminder for 3 about ___").
+ * Progressive Live Voice Interpreter:
+ * Extracts ONLY what the user has genuinely spoken so far, leaving unmentioned slots
+ * (such as `endTime` when user has only said "add a family dinner for 6 today") undefined
+ * and listing exact `missingFields` + `nextPrompt` so the calendar can pop to the known
+ * day/time immediately while showing what else to say to finish the add.
  */
-export function interpretScheduleInput(
+export function parseProgressiveVoiceDraft(
   rawInput: string,
   ctx: ScheduleAiContext
-): ParsedLiveInput | null {
+): VoiceScheduleDraft | null {
   const rawTrimmed = rawInput.trim();
   if (!rawTrimmed) return null;
 
@@ -350,7 +449,7 @@ export function interpretScheduleInput(
 
   let working = afterDate;
 
-  // 1. Check relative time ("in 2 hours", "in 30 minutes") BEFORE duration so "in 2 hours" isn't eaten as duration
+  // 1. Relative start time ("in 2 hours", "in 30 minutes")
   let relStartMins: number | null = null;
   const relTimeMatch = working.match(/\bin\s+(\d{1,2})\s*(hours?|hrs?|minutes?|mins?)\b/i);
   if (relTimeMatch) {
@@ -363,19 +462,19 @@ export function interpretScheduleInput(
     working = working.replace(relTimeMatch[0], ' ');
   }
 
-  // 1b. Check Duration hint ("for 45 min", "for 2 hours", "90 minutes")
-  let durationMins = 60;
+  // 2. Explicit duration ("for 1 hour", "for 45 minutes", "90 minutes")
+  let explicitDurationMins: number | null = null;
   const durMatch = working.match(
     /\b(?:for\s+)?(\d{1,3}(?:\.\d+)?)\s*(hours?|hrs?|hr|minutes?|mins?|min)\b/i
   );
   if (durMatch) {
     const val = Number(durMatch[1]);
     const isHours = /^h/i.test(durMatch[2]);
-    durationMins = Math.max(15, Math.min(480, Math.round(isHours ? val * 60 : val)));
+    explicitDurationMins = Math.max(15, Math.min(480, Math.round(isHours ? val * 60 : val)));
     working = working.replace(durMatch[0], ' ');
   }
 
-  // 2. Check Slot-Placement Intent ("add ___ for the next focus slot", "in my next empty zone", "add ___ next focus slot")
+  // 3. Slot-placement intent ("add ___ for the next focus slot")
   const slotTargetRegex =
     /(?:\b(?:for|in|into|to|during|on|at)\s+(?:the\s+|my\s+|a\s+|an\s+)?(?:(?:next|upcoming|first|open|available)\s+)?(?:focus\s*(?:slot|zone|block|time|session)|empty\s*(?:zone|slot|block)|open\s*(?:focus\s*)?(?:slot|zone|block)|free\s*(?:slot|block|time))\b|\b(?:the\s+|my\s+)?(?:next|upcoming|first)\s+(?:open\s+)?(?:focus\s*(?:slot|zone|block|time|session)|empty\s*(?:zone|slot|block)|open\s*(?:focus\s*)?(?:slot|zone|block)|free\s*(?:slot|block|time))\b)/i;
   const slotMatch = working.match(slotTargetRegex);
@@ -383,10 +482,11 @@ export function interpretScheduleInput(
   if (slotMatch) {
     const taskTitleRaw = cleanExtractedTitle(working.replace(slotMatch[0], ' '));
     const searchFromDate = hasExplicitDate ? resolvedDate : ctx.todayIso;
-
     const orderedOpenZones = [...ctx.blocks]
       .filter((b) => isOpenFocusBlock(b))
-      .sort((a, b) => (a.date !== b.date ? a.date.localeCompare(b.date) : a.startTime.localeCompare(b.startTime)));
+      .sort((a, b) =>
+        a.date !== b.date ? a.date.localeCompare(b.date) : a.startTime.localeCompare(b.startTime)
+      );
 
     const chosenZone = hasExplicitDate
       ? orderedOpenZones.find((b) => b.date === resolvedDate) ??
@@ -396,39 +496,48 @@ export function interpretScheduleInput(
     const matchedIdea = taskTitleRaw ? matchExistingIdea(taskTitleRaw, ctx.ideas) : undefined;
     const finalTitle = matchedIdea
       ? `${matchedIdea.project} #${matchedIdea.priorityRank}: ${matchedIdea.title}`
-      : taskTitleRaw || ( ctx.ideas.find((i) => i.status === 'active')?.title ?? 'Deep Focus Work' );
+      : taskTitleRaw || undefined;
+
+    const missing: MissingVoiceField[] = finalTitle ? [] : ['title'];
 
     if (chosenZone) {
       return {
+        rawTranscript: rawTrimmed,
         mode: 'fill-slot',
         title: finalTitle,
         date: chosenZone.date,
+        dateSpoken: true,
         startTime: chosenZone.startTime,
         endTime: chosenZone.endTime,
         targetBlockId: chosenZone.id,
         matchedIdeaId: matchedIdea?.id,
         startingStepHint: matchedIdea?.startingStep,
-        explanation: `Placed into your open Focus Slot`,
+        missingFields: missing,
+        nextPrompt: buildMissingPrompt('fill-slot', missing),
+        isComplete: missing.length === 0,
       };
     }
 
-    // No open Empty Zone left — find the next conflict-free gap on the calendar!
-    const gap = findOpenScheduleGap(ctx.blocks, searchFromDate, durationMins);
+    const gap = findOpenScheduleGap(ctx.blocks, searchFromDate, explicitDurationMins ?? 60);
     return {
+      rawTranscript: rawTrimmed,
       mode: 'empty-zone',
-      title: `Empty Zone — ${finalTitle}`,
+      title: finalTitle ? `Empty Zone — ${finalTitle}` : undefined,
       date: searchFromDate,
+      dateSpoken: true,
       startTime: gap.startTime,
       endTime: gap.endTime,
       matchedIdeaId: matchedIdea?.id,
       startingStepHint: matchedIdea?.startingStep,
-      explanation: `No empty focus slot was open, so created one in your next free gap`,
+      missingFields: missing,
+      nextPrompt: buildMissingPrompt('fill-slot', missing),
+      isComplete: missing.length === 0,
     };
   }
 
-  // 3. Extract Time Range ("at 4:30- 6", "between 2pm and 3:30pm", "from 9 to 5", "10:30 - 12")
+  // 4. Time Range ("for 6 to 7:30", "at 4:30- 6", "between 2pm and 3:30pm")
   const rangeRegex =
-    /(?:\b(?:at|from|between)\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|and|until|til|through|-)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i;
+    /(?:\b(?:at|from|between|for)\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|and|until|til|through|ending\s+at|ends?\s+at|-)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i;
   const rangeMatch = working.match(rangeRegex);
 
   let startMins: number | null = null;
@@ -442,36 +551,28 @@ export function interpretScheduleInput(
     const em = rangeMatch[5] ? Number(rangeMatch[5]) : 0;
     const eMer = rangeMatch[6]?.toLowerCase();
 
-    // If only end has am/pm (e.g. "2 to 3:30pm" or "11 to 1pm")
     if (!sMer && eMer) {
       if (eMer === 'pm' && sh >= 7 && sh <= 11 && eh >= 1 && eh <= 6) {
-        sMer = 'am'; // "11 to 1pm" -> 11am to 1pm
+        sMer = 'am';
       } else if (sh === 12 && eMer === 'pm') {
         sMer = 'pm';
       } else if (sh <= eh) {
-        sMer = eMer; // "4:30 to 6pm" -> 4:30pm to 6pm
+        sMer = eMer;
       }
     }
 
     startMins = resolveSingleHour(sh, sm, sMer, periodHint);
-    endMins = resolveSingleHour(eh, em, eMer ?? sMer, periodHint);
-
-    if (startMins !== null && endMins !== null && endMins <= startMins) {
-      // e.g. "9 to 5" -> start=09:00, end=05:00 -> bump end +12h to 17:00!
-      if (endMins + 12 * 60 <= 24 * 60) {
-        endMins += 12 * 60;
-      } else {
-        endMins = startMins + durationMins;
-      }
+    if (startMins !== null) {
+      endMins = resolveEndAfterStart(startMins, eh, em, eMer ?? sMer, periodHint);
     }
-
     working = working.replace(rangeMatch[0], ' ');
   } else {
-    // 4. Single Time ("at 3", "for 3", "by 4:30", "around 5pm", "3pm", "3:30")
-    // Also support "in 2 hours" / "in 30 minutes"
+    // 5. Single Start Time ("for 6", "at 4:30", "3pm") + optional separated End Time ("...until 7:30", "...end at 8", or trailing "7:30")
     if (relStartMins !== null) {
       startMins = relStartMins;
-      endMins = startMins + durationMins;
+      if (explicitDurationMins !== null) {
+        endMins = Math.min(23 * 60 + 55, startMins + explicitDurationMins);
+      }
     } else {
       const singleTimeRegex =
         /(?:\b(at|for|by|around|from)\s+)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b|\b(\d{1,2})(?::(\d{2}))\s*(am|pm)?\b|\b(\d{1,2})\s*(am|pm)\b/i;
@@ -481,19 +582,41 @@ export function interpretScheduleInput(
         const m = Number(singleMatch[3] ?? singleMatch[6] ?? 0);
         const mer = singleMatch[4] ?? singleMatch[7] ?? singleMatch[9];
         startMins = resolveSingleHour(h, m, mer, periodHint);
-        if (startMins !== null) {
-          endMins = startMins + durationMins;
-        }
         working = working.replace(singleMatch[0], ' ');
-      } else if (periodHint) {
-        startMins =
-          periodHint === 'morning' ? 9 * 60 : periodHint === 'afternoon' ? 14 * 60 : 19 * 60;
-        endMins = startMins + durationMins;
+
+        if (startMins !== null) {
+          // Check if user also spoke a separated end time ("until 7:30", "to 8", "end at 7:30")
+          const sepEndRegex =
+            /\b(?:until|til|through|ending\s+at|ends?\s+at|finish(?:es|ing)?\s+at|to)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i;
+          const sepEndMatch = working.match(sepEndRegex);
+          if (sepEndMatch) {
+            endMins = resolveEndAfterStart(
+              startMins,
+              Number(sepEndMatch[1]),
+              Number(sepEndMatch[2] ?? 0),
+              sepEndMatch[3],
+              periodHint
+            );
+            working = working.replace(sepEndMatch[0], ' ');
+          } else if (explicitDurationMins !== null) {
+            endMins = Math.min(23 * 60 + 55, startMins + explicitDurationMins);
+          } else {
+            // Also support bare follow-up time spoken at the end ("add a family dinner for 6 today 7:30")
+            const bareSecondTime = working.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\s*$|\b(\d{1,2})\s*(am|pm)\s*$/i);
+            if (bareSecondTime) {
+              const bh = Number(bareSecondTime[1] ?? bareSecondTime[4]);
+              const bm = Number(bareSecondTime[2] ?? 0);
+              const bmer = bareSecondTime[3] ?? bareSecondTime[5];
+              endMins = resolveEndAfterStart(startMins, bh, bm, bmer, periodHint);
+              working = working.replace(bareSecondTime[0], ' ');
+            }
+          }
+        }
       }
     }
   }
 
-  // 5. Determine Mode: Reminder vs Empty Zone vs Event
+  // 6. Mode classification
   const isPureEmptyZoneRequest =
     /\b(empty\s*zone|focus\s*slot|focus\s*zone|open\s*slot)\b/i.test(working);
   const isReminder = !isPureEmptyZoneRequest && /\b(remind(?:\s+me)?|reminder)\b/i.test(rawTrimmed);
@@ -508,52 +631,118 @@ export function interpretScheduleInput(
   const cleanedTitle = cleanExtractedTitle(working);
 
   if (isReminder) {
-    const remStart = startMins !== null ? fromMinutes(startMins) : '15:00';
+    const hasDate = hasExplicitDate || startMins !== null;
+    const remDate = hasDate ? (hasExplicitDate ? resolvedDate : ctx.todayIso) : undefined;
+    const remStart = startMins !== null ? fromMinutes(startMins) : undefined;
+    const missing: MissingVoiceField[] = [];
+    if (!cleanedTitle) missing.push('title');
+    if (!remDate) missing.push('date');
+    if (!remStart) missing.push('startTime');
+
+    return {
+      rawTranscript: rawTrimmed,
+      mode: 'reminder',
+      title: cleanedTitle || undefined,
+      date: remDate,
+      dateSpoken: hasExplicitDate,
+      startTime: remStart,
+      missingFields: missing,
+      nextPrompt: buildMissingPrompt('reminder', missing),
+      isComplete: missing.length === 0,
+    };
+  }
+
+  const mode: 'event' | 'empty-zone' = isPureEmptyZoneRequest ? 'empty-zone' : 'event';
+  const effectiveTitle = isPureEmptyZoneRequest
+    ? cleanedTitle
+      ? `Empty Zone — ${cleanedTitle}`
+      : 'Empty Zone — Open Focus Slot'
+    : cleanedTitle || undefined;
+
+  const knownDate = hasExplicitDate ? resolvedDate : undefined;
+  const knownStart = startMins !== null ? fromMinutes(startMins) : undefined;
+  const knownEnd = endMins !== null ? fromMinutes(endMins) : undefined;
+
+  const missing: MissingVoiceField[] = [];
+  if (!effectiveTitle) missing.push('title');
+  if (!knownDate) missing.push('date');
+  if (!knownStart) missing.push('startTime');
+  if (!knownEnd) missing.push('endTime');
+
+  return {
+    rawTranscript: rawTrimmed,
+    mode,
+    title: effectiveTitle,
+    date: knownDate,
+    dateSpoken: hasExplicitDate,
+    startTime: knownStart,
+    endTime: knownEnd,
+    whyCategory:
+      mode === 'event' && effectiveTitle ? inferWhyFromTitle(effectiveTitle) : undefined,
+    missingFields: missing,
+    nextPrompt: buildMissingPrompt(mode, missing, knownStart),
+    isComplete: missing.length === 0,
+  };
+}
+
+/**
+ * Full single-shot interpreter (retained for backwards compatibility with any direct command calls).
+ */
+export function interpretScheduleInput(
+  rawInput: string,
+  ctx: ScheduleAiContext
+): ParsedLiveInput | null {
+  const draft = parseProgressiveVoiceDraft(rawInput, ctx);
+  if (!draft) return null;
+
+  const date = draft.date ?? (ctx.selectedDate || ctx.todayIso);
+
+  if (draft.mode === 'fill-slot' && draft.targetBlockId && draft.startTime) {
+    return {
+      mode: 'fill-slot',
+      title: draft.title ?? 'Deep Focus Work',
+      date,
+      startTime: draft.startTime,
+      endTime: draft.endTime,
+      targetBlockId: draft.targetBlockId,
+      matchedIdeaId: draft.matchedIdeaId,
+      startingStepHint: draft.startingStepHint,
+      explanation: 'Placed into your open Focus Slot',
+    };
+  }
+
+  if (draft.mode === 'reminder') {
     return {
       mode: 'reminder',
-      title: cleanedTitle || 'Reminder',
-      date: resolvedDate,
-      startTime: remStart,
+      title: draft.title ?? 'Reminder',
+      date,
+      startTime: draft.startTime ?? '15:00',
     };
   }
 
-  // If no explicit time was spoken at all, find the next open gap on the target date!
-  let startTime: string;
-  let endTime: string;
-  let gapNote: string | undefined;
+  let startTime = draft.startTime;
+  let endTime = draft.endTime;
+  let explanation: string | undefined;
 
-  if (startMins !== null) {
-    startTime = fromMinutes(startMins);
-    endTime = fromMinutes(endMins ?? startMins + durationMins);
-  } else {
-    const gap = findOpenScheduleGap(ctx.blocks, resolvedDate, durationMins);
+  if (!startTime) {
+    const gap = findOpenScheduleGap(ctx.blocks, date, 60);
     startTime = gap.startTime;
     endTime = gap.endTime;
-    gapNote = 'Scheduled into your next open window';
+    explanation = 'Scheduled into your next open window';
+  } else if (!endTime) {
+    endTime = fromMinutes(toMinutes(startTime) + 60);
   }
 
-  if (isPureEmptyZoneRequest) {
-    const zoneTitle = cleanedTitle
-      ? `Empty Zone — ${cleanedTitle}`
-      : 'Empty Zone — Open Focus Slot';
-    return {
-      mode: 'empty-zone',
-      title: zoneTitle,
-      date: resolvedDate,
-      startTime,
-      endTime,
-      explanation: gapNote,
-    };
-  }
-
-  const eventTitle = cleanedTitle || 'Scheduled Block';
+  const title = draft.title ?? 'Scheduled Block';
   return {
-    mode: 'event',
-    title: eventTitle,
-    date: resolvedDate,
+    mode: draft.mode === 'empty-zone' ? 'empty-zone' : 'event',
+    title,
+    date,
     startTime,
     endTime,
-    whyCategory: inferWhyFromTitle(eventTitle),
-    explanation: gapNote,
+    whyCategory: draft.mode === 'event' ? draft.whyCategory ?? inferWhyFromTitle(title) : undefined,
+    matchedIdeaId: draft.matchedIdeaId,
+    startingStepHint: draft.startingStepHint,
+    explanation,
   };
 }

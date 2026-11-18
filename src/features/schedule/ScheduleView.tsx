@@ -1,17 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { CalendarGrid } from './CalendarGrid';
 import { ScheduleChat } from './ScheduleChat';
-import type { ParsedLiveInput } from '../../types/schema';
+import type { ParsedLiveInput, VoiceScheduleDraft } from '../../types/schema';
 
 /**
- * Schedule = calendar + chat. Nothing else.
- * Week by default → tap a day to zoom in → "‹ Week" to zoom back out.
- * The chat log at the bottom adds events, fills focus slots, or sets reminders on the grid instantly.
+ * Schedule = calendar + voice-only progressive dock.
+ * No chat log, no typing input: tap the microphone and speak — the calendar
+ * pops to the target day & time in real time and shows filled vs missing slots.
  */
 export const ScheduleView: React.FC = () => {
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [liveDraft, setLiveDraft] = useState<VoiceScheduleDraft | null>(null);
 
   const handleAdded = (committed: ParsedLiveInput) => {
+    setLiveDraft(null);
     if (committed.targetBlockId) {
       setHighlightId(committed.targetBlockId);
     }
@@ -25,8 +27,8 @@ export const ScheduleView: React.FC = () => {
 
   return (
     <div className="sched-page">
-      <CalendarGrid highlightId={highlightId} />
-      <ScheduleChat onAdded={handleAdded} />
+      <CalendarGrid highlightId={highlightId} liveDraft={liveDraft} />
+      <ScheduleChat onDraftChange={setLiveDraft} onAdded={handleAdded} />
     </div>
   );
 };

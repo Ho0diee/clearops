@@ -12,6 +12,7 @@ import type {
   RouteTab,
   ScheduleViewMode,
   SiteConfig,
+  VoiceScheduleDraft,
   WhyCategory,
 } from '../types/schema';
 import {
@@ -21,7 +22,7 @@ import {
   REFLECTION_PROMPTS,
   TODAY_ISO,
 } from './seedData';
-import { interpretScheduleInput } from './scheduleAi';
+import { interpretScheduleInput, parseProgressiveVoiceDraft } from './scheduleAi';
 
 const STORAGE_KEY = 'clearops_state_v1';
 
@@ -644,6 +645,109 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           `Scheduled "${parsed.title}" (${newBlock.startTime}-${newBlock.endTime})`
         );
         return { ...parsed, targetBlockId: blockId };
+      },
+
+      parseVoiceDraft: (rawText: string) => {
+        return parseProgressiveVoiceDraft(rawText, {
+          todayIso: TODAY_ISO,
+          selectedDate: state.selectedDate,
+          blocks: state.blocks,
+          ideas: state.ideas,
+        });
+      },
+
+      commitVoiceDraft: (draft: VoiceScheduleDraft) => {
+        if (!draft.isComplete || !draft.title || !draft.date || !draft.startTime) {
+          return null;
+        }
+
+        if (draft.mode === 'fill-slot' && draft.targetBlockId) {
+          const slotTitle = /^empty zone/i.test(draft.title)
+            ? draft.title
+            : `Empty Zone — ${draft.title}`;
+          setState((prev) => ({
+            ...prev,
+            selectedDate: draft.date!,
+            activeTab: 'schedule',
+            blocks: prev.blocks.map((b) =>
+              b.id === draft.targetBlockId
+                ? {
+                    ...b,
+                    title: slotTitle,
+                    assignedIdeaId: draft.matchedIdeaId ?? b.assignedIdeaId,
+                    startingStepHint: draft.startingStepHint ?? b.startingStepHint,
+                  }
+                : b
+            ),
+          }));
+          showToast(`Placed "${draft.title}" into Focus Slot`);
+          return {
+            mode: 'fill-slot',
+            title: draft.title,
+            date: draft.date,
+            startTime: draft.startTime,
+            endTime: draft.endTime,
+            targetBlockId: draft.targetBlockId,
+            matchedIdeaId: draft.matchedIdeaId,
+            startingStepHint: draft.startingStepHint,
+          };
+        }
+
+        if (draft.mode === 'reminder') {
+          const remId = makeId('rem');
+          const newRem: ReminderItem = {
+            id: remId,
+            date: draft.date,
+            time: draft.startTime,
+            title: draft.title,
+            completed: false,
+          };
+          setState((prev) => ({
+            ...prev,
+            selectedDate: draft.date!,
+            reminders: [...prev.reminders, newRem].sort((a, b) => a.time.localeCompare(b.time)),
+          }));
+          showToast(`Reminder set: "${draft.title}"`);
+          return {
+            mode: 'reminder',
+            title: draft.title,
+            date: draft.date,
+            startTime: draft.startTime,
+            targetBlockId: remId,
+          };
+        }
+
+        if (!draft.endTime) return null;
+        const blockId = makeId('blk');
+        const newBlock: CalendarBlock = {
+          id: blockId,
+          date: draft.date,
+          startTime: draft.startTime,
+          endTime: draft.endTime,
+          title: draft.title,
+          kind: draft.mode === 'empty-zone' ? 'empty-zone' : 'baseline',
+          completed: false,
+          whyCategory: draft.mode === 'event' ? draft.whyCategory : undefined,
+          assignedIdeaId: draft.matchedIdeaId,
+          startingStepHint: draft.startingStepHint,
+        };
+
+        setState((prev) => ({
+          ...prev,
+          selectedDate: draft.date!,
+          activeTab: 'schedule',
+          blocks: sortBlocks([...prev.blocks, newBlock]),
+        }));
+        showToast(`Added "${draft.title}"`);
+        return {
+          mode: draft.mode,
+          title: draft.title,
+          date: draft.date,
+          startTime: draft.startTime,
+          endTime: draft.endTime,
+          whyCategory: draft.whyCategory,
+          targetBlockId: blockId,
+        };
       },
 
       addReminder: (remInput) => {

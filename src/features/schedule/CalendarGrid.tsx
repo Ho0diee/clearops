@@ -2,7 +2,7 @@ import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, 
 import { Activity, ArrowRight, Bell, Check, ChevronLeft, Sparkles, Trash2, X } from 'lucide-react';
 import { Badge, Button } from '../../components/ui';
 import { addDaysISO, formatShortDate, getWeekDatesISO, useOpsStore } from '../../store/opsStore';
-import type { CalendarBlock, ReminderItem } from '../../types/schema';
+import type { CalendarBlock, ReminderItem, VoiceScheduleDraft } from '../../types/schema';
 
 const TODAY_ANCHOR = '2026-11-17';
 const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
@@ -99,6 +99,7 @@ interface CalendarPaneProps {
   blocks: CalendarBlock[];
   reminders: ReminderItem[];
   highlightId?: string | null;
+  liveDraft?: VoiceScheduleDraft | null;
   onOpenBlock: (id: string) => void;
   onOpenReminder: (id: string) => void;
 }
@@ -114,6 +115,7 @@ const CalendarPane = memo<CalendarPaneProps>(
     blocks,
     reminders,
     highlightId,
+    liveDraft,
     onOpenBlock,
     onOpenReminder,
   }) => {
@@ -123,6 +125,7 @@ const CalendarPane = memo<CalendarPaneProps>(
           const laid = layoutColumn(blocks.filter((b) => b.date === iso));
           const dayReminders = reminders.filter((r) => r.date === iso);
           const showNow = iso === TODAY_ANCHOR && nowMin >= startHour * 60 && nowMin <= endHour * 60;
+          const draftOnThisDay = liveDraft && liveDraft.date === iso ? liveDraft : null;
 
           return (
             <div
@@ -136,13 +139,25 @@ const CalendarPane = memo<CalendarPaneProps>(
                 const height = Math.max(isWeek ? 18 : 22, ((e - s) / 60) * hourHeight - 2);
                 const roomy = !isWeek && height >= 40;
                 const clampLines = isWeek ? Math.max(1, Math.floor((height - 6) / 12.5)) : undefined;
+                const isSlotDraftTarget =
+                  draftOnThisDay?.mode === 'fill-slot' && draftOnThisDay.targetBlockId === block.id;
+                const displayTitle = isSlotDraftTarget
+                  ? draftOnThisDay.title
+                    ? `Empty Zone — ${draftOnThisDay.title}`
+                    : 'Empty Zone — Speak task to place here…'
+                  : isWeek
+                  ? shortTitle(block)
+                  : block.title;
+
                 return (
                   <button
                     key={block.id}
                     type="button"
                     className={`gcal-ev ${eventClass(block)} ${block.completed ? 'is-done' : ''} ${
                       isWeek ? 'is-compact' : ''
-                    } ${block.id === highlightId ? 'is-flash' : ''}`.trim()}
+                    } ${block.id === highlightId ? 'is-flash' : ''} ${
+                      isSlotDraftTarget ? 'is-voice-slot-target' : ''
+                    }`.trim()}
                     style={{
                       top,
                       height,
@@ -157,7 +172,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                       style={clampLines ? { WebkitLineClamp: clampLines } : undefined}
                     >
                       {block.completed && !isWeek && <Check size={11} strokeWidth={3} />}
-                      {isWeek ? shortTitle(block) : block.title}
+                      {displayTitle}
                       {!roomy && !isWeek && (
                         <span className="gcal-ev-inline-time">, {fmtTime(block.startTime)}</span>
                       )}
@@ -175,6 +190,48 @@ const CalendarPane = memo<CalendarPaneProps>(
                   </button>
                 );
               })}
+
+              {/* Live Progressive Voice Event / Empty-Zone Draft Block */}
+              {draftOnThisDay &&
+                (draftOnThisDay.mode === 'event' || draftOnThisDay.mode === 'empty-zone') &&
+                draftOnThisDay.startTime && (() => {
+                  const s = toMin(draftOnThisDay.startTime);
+                  const hasEnd = Boolean(draftOnThisDay.endTime);
+                  const e = hasEnd ? Math.max(s + 20, toMin(draftOnThisDay.endTime!)) : s + 60;
+                  const top = ((s - startHour * 60) / 60) * hourHeight;
+                  const height = Math.max(
+                    isWeek ? 26 : 48,
+                    ((e - s) / 60) * hourHeight - 2
+                  );
+                  const toneClass =
+                    draftOnThisDay.mode === 'empty-zone'
+                      ? 'gcal-ev-zone'
+                      : `gcal-ev-${(draftOnThisDay.whyCategory || 'Organization').toLowerCase()}`;
+                  return (
+                    <div
+                      className={`gcal-ev gcal-voice-draft ${toneClass} ${
+                        hasEnd ? 'is-end-known' : 'is-open-end'
+                      } ${draftOnThisDay.isComplete ? 'is-draft-complete' : ''}`.trim()}
+                      style={{
+                        top,
+                        height,
+                        left: '2px',
+                        width: 'calc(100% - 4px)',
+                      }}
+                    >
+                      <span className="gcal-ev-title">
+                        {draftOnThisDay.title || 'Say event title…'}
+                      </span>
+                      <span className="gcal-ev-time">
+                        {hasEnd
+                          ? `${fmtTime(draftOnThisDay.startTime)} – ${fmtTime(
+                              draftOnThisDay.endTime!
+                            )}`
+                          : `${fmtTime(draftOnThisDay.startTime)} – ?  ·  Say end time`}
+                      </span>
+                    </div>
+                  );
+                })()}
 
               {dayReminders.map((rem, idx) => {
                 const m = toMin(rem.time);
@@ -201,6 +258,28 @@ const CalendarPane = memo<CalendarPaneProps>(
                 );
               })}
 
+              {/* Live Progressive Voice Reminder Draft Pin */}
+              {draftOnThisDay &&
+                draftOnThisDay.mode === 'reminder' &&
+                draftOnThisDay.startTime && (
+                  <div
+                    className={`gcal-rem gcal-rem-draft ${
+                      draftOnThisDay.isComplete ? 'is-draft-complete' : ''
+                    }`.trim()}
+                    style={{
+                      top: ((toMin(draftOnThisDay.startTime) - startHour * 60) / 60) * hourHeight,
+                    }}
+                  >
+                    <Bell size={10} />
+                    <span className="gcal-rem-title">
+                      {draftOnThisDay.title || 'Say what reminder is about…'}
+                    </span>
+                    {!isWeek && (
+                      <span className="gcal-rem-time">{fmtTime(draftOnThisDay.startTime)}</span>
+                    )}
+                  </div>
+                )}
+
               {showNow && (
                 <div
                   className="gcal-now"
@@ -216,7 +295,10 @@ const CalendarPane = memo<CalendarPaneProps>(
 );
 CalendarPane.displayName = 'CalendarPane';
 
-export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highlightId }) => {
+export const CalendarGrid: React.FC<{
+  highlightId?: string | null;
+  liveDraft?: VoiceScheduleDraft | null;
+}> = ({ highlightId, liveDraft }) => {
   const { state, actions } = useOpsStore();
   const isWeek = state.scheduleViewMode === 'week';
   const stepDays = isWeek ? 7 : 1;
@@ -323,8 +405,14 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
       lo = Math.min(lo, Math.floor(m / 60));
       hi = Math.max(hi, Math.ceil((m + 30) / 60));
     });
+    if (liveDraft?.startTime) {
+      const s = toMin(liveDraft.startTime);
+      const e = liveDraft.endTime ? toMin(liveDraft.endTime) : s + 60;
+      lo = Math.min(lo, Math.floor(s / 60));
+      hi = Math.max(hi, Math.ceil(e / 60));
+    }
     return { startHour: Math.max(0, lo), endHour: Math.min(24, hi + 1) };
-  }, [state.blocks, state.reminders]);
+  }, [state.blocks, state.reminders, liveDraft?.startTime, liveDraft?.endTime]);
 
   const hours = useMemo(
     () => Array.from({ length: endHour - startHour }, (_, i) => startHour + i),
@@ -435,6 +523,7 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
     }
     didInitialScrollRef.current = true;
     prevModeRef.current = state.scheduleViewMode;
+    if (liveDraft?.startTime) return;
     const currBlocks = windowBlocks.filter((b) => currColumns.includes(b.date));
     const firstMin = currBlocks.length
       ? Math.min(...currBlocks.map((b) => toMin(b.startTime)))
@@ -448,7 +537,7 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
   const dayIdx = Math.max(0, headerWeekDates.indexOf(headerIso));
   const zoomOrigin = `${((dayIdx + 0.5) / 7) * 100}% 0`;
 
-  // Scroll a newly added (chat) event or reminder into view
+  // Scroll a newly added event or reminder into view
   useEffect(() => {
     if (!highlightId || !scrollRef.current) return;
     const b = state.blocks.find((x) => x.id === highlightId);
@@ -459,6 +548,34 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
     scrollRef.current.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightId]);
+
+  // Automatically pop to the spoken day & scroll to the spoken start time as voice info arrives
+  useEffect(() => {
+    if (!liveDraft?.date) return;
+    if (state.scheduleViewMode === 'week') {
+      finalizePendingGlide();
+      actions.setSelectedDate(liveDraft.date);
+      actions.setScheduleViewMode('day');
+      return;
+    }
+    if (liveDraft.date !== state.selectedDate && animTargetIsoRef.current !== liveDraft.date) {
+      finalizePendingGlide();
+      const dir: 1 | -1 = liveDraft.date > state.selectedDate ? 1 : -1;
+      if (liveDraft.date === addDaysISO(state.selectedDate, dir)) {
+        executeGlide(dir, liveDraft.date);
+      } else {
+        setPendingHeaderIso(liveDraft.date);
+        setOverrideSide({ dir, iso: liveDraft.date });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveDraft?.date]);
+
+  useEffect(() => {
+    if (!liveDraft?.startTime || !scrollRef.current) return;
+    const y = ((toMin(liveDraft.startTime) - startHour * 60) / 60) * hourHeight - 56;
+    scrollRef.current.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+  }, [liveDraft?.startTime, liveDraft?.date, state.scheduleViewMode, startHour, hourHeight]);
 
   const openBlock = openBlockId ? state.blocks.find((b) => b.id === openBlockId) ?? null : null;
   const openReminder = openReminderId
@@ -764,6 +881,7 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                     blocks={windowBlocks}
                     reminders={windowReminders}
                     highlightId={null}
+                    liveDraft={liveDraft}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />
@@ -780,6 +898,7 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                     blocks={windowBlocks}
                     reminders={windowReminders}
                     highlightId={highlightId}
+                    liveDraft={liveDraft}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />
@@ -796,6 +915,7 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                     blocks={windowBlocks}
                     reminders={windowReminders}
                     highlightId={null}
+                    liveDraft={liveDraft}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />

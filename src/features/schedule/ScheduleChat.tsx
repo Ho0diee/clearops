@@ -1,16 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUp, Mic, Sparkles, Square } from 'lucide-react';
+import { Check, Mic, Sparkles, X } from 'lucide-react';
 import { formatShortDate, useOpsStore } from '../../store/opsStore';
 import { formatFriendlyTime } from '../../store/scheduleAi';
-import type { ParsedLiveInput } from '../../types/schema';
-
-interface ChatMsg {
-  id: string;
-  role: 'user' | 'app';
-  text: string;
-}
-
-const CHAT_KEY = 'clearops_schedule_chat_v1';
+import type { ParsedLiveInput, VoiceScheduleDraft } from '../../types/schema';
 
 interface SpeechRecResultItem {
   0: { transcript: string };
@@ -28,47 +20,88 @@ interface SpeechRec {
   stop: () => void;
 }
 
-function modeBadgeLabel(mode: ParsedLiveInput['mode']): string {
-  if (mode === 'fill-slot') return 'Focus Slot';
-  if (mode === 'empty-zone') return 'Empty Zone';
-  if (mode === 'reminder') return 'Reminder';
-  return 'Event';
+interface SlotPillProps {
+  label: string;
+  value?: string;
+  emphasizedMissing?: boolean;
 }
 
-export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void }> = ({ onAdded }) => {
+const SlotPill: React.FC<SlotPillProps> = ({ label, value, emphasizedMissing }) => {
+  const filled = Boolean(value);
+  return (
+    <div
+      className={`voice-slot ${filled ? 'is-filled' : 'is-missing'} ${
+        !filled && emphasizedMissing ? 'is-next-needed' : ''
+      }`.trim()}
+    >
+      <span className="voice-slot-label">
+        {filled ? <Check size={10} strokeWidth={3} /> : <span className="voice-slot-q">?</span>}
+        {label}
+      </span>
+      <span className="voice-slot-value">{value || 'Needed'}</span>
+    </div>
+  );
+};
+
+export const ScheduleChat: React.FC<{
+  onDraftChange: (draft: VoiceScheduleDraft | null) => void;
+  onAdded: (parsed: ParsedLiveInput) => void;
+}> = ({ onDraftChange, onAdded }) => {
   const { actions } = useOpsStore();
-  const [messages, setMessages] = useState<ChatMsg[]>(() => {
+
+  const [transcript, setTranscript] = useState<string>(() => {
     try {
-      const raw = window.sessionStorage.getItem(CHAT_KEY);
-      if (raw) {
-        return (JSON.parse(raw) as ChatMsg[]).filter((m) => m.id !== 'welcome');
+      const params = new URLSearchParams(window.location.search);
+      const seeded = params.get('voiceDraft');
+      if (seeded) {
+        return seeded.trim();
       }
     } catch {
       /* ignore */
     }
-    return [];
+    return '';
   });
-  const [text, setText] = useState('');
-  const [listening, setListening] = useState(false);
-  // Keeps virtual keyboard suppressed on mobile throughout voice mode unless user explicitly taps the text input
-  const [suppressKeyboard, setSuppressKeyboard] = useState(false);
 
-  const logRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [listening, setListening] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
   const recRef = useRef<SpeechRec | null>(null);
   const wantListeningRef = useRef(false);
-  const prefixTextRef = useRef('');
-  const latestTextRef = useRef('');
-  latestTextRef.current = text;
+  const baseTextRef = useRef(transcript);
+  const sessionTextRef = useRef('');
+  const latestDraftRef = useRef<VoiceScheduleDraft | null>(null);
+
+  const draft = useMemo(() => {
+    const clean = transcript.trim();
+    if (!clean) return null;
+    return actions.parseVoiceDraft(clean);
+  }, [transcript, actions]);
+
+  latestDraftRef.current = draft;
 
   useEffect(() => {
-    try {
-      window.sessionStorage.setItem(CHAT_KEY, JSON.stringify(messages.slice(-40)));
-    } catch {
-      /* ignore */
+    onDraftChange(draft);
+  }, [draft, onDraftChange]);
+
+  const stopMicSession = useCallback(() => {
+    wantListeningRef.current = false;
+    setListening(false);
+    if (sessionTextRef.current.trim()) {
+      baseTextRef.current = [baseTextRef.current, sessionTextRef.current]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      sessionTextRef.current = '';
     }
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [messages]);
+    if (recRef.current) {
+      try {
+        recRef.current.stop();
+      } catch {
+        /* ignore */
+      }
+      recRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -81,123 +114,63 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
     };
   }, []);
 
-  const preview = useMemo(() => {
-    const trimmed = text.trim();
-    if (!trimmed) return null;
-    return actions.parseLiveCommand(trimmed);
-  }, [text, actions]);
-
-  const push = useCallback((role: ChatMsg['role'], msg: string) => {
-    setMessages((prev) => [
-      ...prev,
-      { id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role, text: msg },
-    ]);
-  }, []);
-
-  const stopListening = useCallback(() => {
-    wantListeningRef.current = false;
-    setListening(false);
-    if (recRef.current) {
-      try {
-        recRef.current.stop();
-      } catch {
-        /* ignore */
-      }
-      recRef.current = null;
+  const clearDraft = useCallback(() => {
+    stopMicSession();
+    baseTextRef.current = '';
+    sessionTextRef.current = '';
+    setTranscript('');
+    setVoiceError(null);
+    onDraftChange(null);
+    if (window.location.search.includes('voiceDraft=')) {
+      window.history.replaceState({}, '', window.location.pathname + window.location.hash);
     }
-    // Never focus inputRef here so mobile on-screen keyboard never pops up during/after voice mode
-  }, []);
+  }, [onDraftChange, stopMicSession]);
 
-  const send = useCallback(
-    (raw: string) => {
-      const clean = raw.trim();
-      if (!clean) return;
-      stopListening();
-      setSuppressKeyboard(false);
-      inputRef.current?.blur();
-      push('user', clean);
-      setText('');
-      prefixTextRef.current = '';
-
-      const committed = actions.submitLiveCommand(clean);
-      if (!committed) {
-        push(
-          'app',
-          'Try saying something like "add patio photos for the next focus slot", "I have work at 4:30-6 tomorrow", or "set a reminder for 3 about keys".'
-        );
-        return;
-      }
-
+  const confirmDraft = useCallback(() => {
+    const current = latestDraftRef.current;
+    if (!current || !current.isComplete) return;
+    stopMicSession();
+    const committed = actions.commitVoiceDraft(current);
+    baseTextRef.current = '';
+    sessionTextRef.current = '';
+    setTranscript('');
+    setVoiceError(null);
+    if (window.location.search.includes('voiceDraft=')) {
+      window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+    }
+    if (committed) {
       onAdded(committed);
+    }
+  }, [actions, onAdded, stopMicSession]);
 
-      const when = `${formatShortDate(committed.date)}, ${formatFriendlyTime(committed.startTime)}${
-        committed.endTime ? `–${formatFriendlyTime(committed.endTime)}` : ''
-      }`;
-
-      if (committed.mode === 'fill-slot') {
-        push('app', `Placed "${committed.title}" into your open Focus Slot · ${when}.`);
-      } else if (committed.mode === 'reminder') {
-        push('app', `Reminder set: "${committed.title}" · ${when}.`);
-      } else if (committed.mode === 'empty-zone') {
-        const cleanZoneTitle = committed.title.replace(/^Empty Zone\s*[—-]\s*/i, '');
-        push('app', `Scheduled Focus Slot "${cleanZoneTitle}" · ${when}.`);
-      } else {
-        push(
-          'app',
-          `Added "${committed.title}" · ${when}${
-            committed.whyCategory ? ` · Why: ${committed.whyCategory}` : ''
-          }.`
-        );
-      }
-    },
-    [actions, onAdded, push, stopListening]
-  );
-
-  // Support pressing physical Enter key to submit voice dictation even while <input> stays blurred (no mobile keyboard!)
+  // Allow pressing Enter to finish & commit once all required slots are spoken
   useEffect(() => {
-    if (!listening && !suppressKeyboard) return;
-    const onGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Enter' || e.isComposing) return;
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        active &&
-        active !== inputRef.current &&
-        (active.tagName === 'INPUT' ||
-          active.tagName === 'TEXTAREA' ||
-          active.tagName === 'SELECT' ||
-          active.isContentEditable)
-      ) {
-        return;
-      }
-      if (latestTextRef.current.trim()) {
+    if (!draft && !listening) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.isComposing) {
+        if (latestDraftRef.current?.isComplete) {
+          e.preventDefault();
+          confirmDraft();
+        }
+      } else if (e.key === 'Escape') {
         e.preventDefault();
-        send(latestTextRef.current);
+        clearDraft();
       }
     };
-    window.addEventListener('keydown', onGlobalKeyDown);
-    return () => window.removeEventListener('keydown', onGlobalKeyDown);
-  }, [listening, suppressKeyboard, send]);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [draft, listening, confirmDraft, clearDraft]);
 
-  const toggleMic = () => {
-    // Ensure software keyboard stays dismissed when using voice mode
-    setSuppressKeyboard(true);
-    inputRef.current?.blur();
-
-    if (listening) {
-      stopListening();
-      return;
-    }
-
+  const startRecognitionPass = useCallback(() => {
     const w = window as unknown as {
       SpeechRecognition?: new () => SpeechRec;
       webkitSpeechRecognition?: new () => SpeechRec;
     };
     const Ctor = w.SpeechRecognition || w.webkitSpeechRecognition;
     if (!Ctor) {
-      push(
-        'app',
-        "Voice recognition isn't supported in this browser."
-      );
+      wantListeningRef.current = false;
+      setListening(false);
+      setVoiceError('Speech recognition is not supported in this browser.');
       return;
     }
 
@@ -207,10 +180,12 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
       rec.continuous = true;
       rec.interimResults = true;
       rec.lang = 'en-US';
-      prefixTextRef.current = text.trim();
-      wantListeningRef.current = true;
+      sessionTextRef.current = '';
+      const startedAt = Date.now();
+      let heardAnything = false;
 
       rec.onresult = (e) => {
+        heardAnything = true;
         const parts: string[] = [];
         for (let i = 0; i < e.results.length; i += 1) {
           const seg = (e.results[i]?.[0]?.transcript || '').trim();
@@ -223,21 +198,57 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
           }
         }
         const spoken = parts.join(' ').trim();
-        const combined = [prefixTextRef.current, spoken].filter(Boolean).join(' ').trim();
-        setText(combined);
+        sessionTextRef.current = spoken;
+        const combined = [baseTextRef.current, spoken].filter(Boolean).join(' ').trim();
+        setTranscript(combined);
       };
 
-      rec.onerror = () => {
-        wantListeningRef.current = false;
-        setListening(false);
-        recRef.current = null;
+      rec.onerror = (ev) => {
+        const errCode = ev?.error || '';
+        if (
+          errCode === 'not-allowed' ||
+          errCode === 'service-not-allowed' ||
+          errCode === 'audio-capture'
+        ) {
+          wantListeningRef.current = false;
+          setListening(false);
+          recRef.current = null;
+          setVoiceError('Microphone access is needed to speak events.');
+          return;
+        }
+        if (errCode !== 'no-speech' && errCode !== 'aborted') {
+          wantListeningRef.current = false;
+          setListening(false);
+          recRef.current = null;
+          if (errCode === 'network') {
+            setVoiceError('Speech service unavailable in this window — use Chrome or iPhone Safari.');
+          }
+        }
       };
 
-      // Voice mode NEVER auto-sends on silence/end and NEVER pops up the keyboard!
       rec.onend = () => {
+        if (sessionTextRef.current.trim()) {
+          baseTextRef.current = [baseTextRef.current, sessionTextRef.current]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+          sessionTextRef.current = '';
+        }
+        recRef.current = null;
+
+        // Keep mic open across natural thinking pauses while user reads what's missing,
+        // unless recognition exited immediately without audio (e.g. headless browser).
+        const elapsed = Date.now() - startedAt;
+        if (wantListeningRef.current && (heardAnything || elapsed > 650)) {
+          try {
+            startRecognitionPass();
+            return;
+          } catch {
+            /* fall through */
+          }
+        }
         wantListeningRef.current = false;
         setListening(false);
-        recRef.current = null;
       };
 
       setListening(true);
@@ -246,97 +257,158 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
       wantListeningRef.current = false;
       setListening(false);
     }
+  }, []);
+
+  const toggleMic = () => {
+    setVoiceError(null);
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
+    if (listening) {
+      stopMicSession();
+      return;
+    }
+
+    baseTextRef.current = transcript.trim();
+    wantListeningRef.current = true;
+    startRecognitionPass();
   };
 
+  const showCard = listening || Boolean(draft) || Boolean(voiceError);
+  const firstMissing = draft?.missingFields[0];
+
   return (
-    <div className="sched-chat">
-      {messages.length > 0 && (
-        <div className="sched-chat-log" ref={logRef} aria-live="polite">
-          {messages.map((m) => (
-            <div key={m.id} className={`chat-msg is-${m.role}`}>
-              {m.text}
-            </div>
-          ))}
+    <div className={`voice-dock ${showCard ? 'is-expanded' : ''}`.trim()}>
+      {showCard && (
+        <div className="voice-builder-card" aria-live="polite">
+          <div className="voice-transcript-row">
+            <span className={`voice-live-dot ${listening ? 'is-active' : ''}`.trim()} />
+            <span className="voice-transcript-text">
+              {transcript.trim()
+                ? `“${transcript.trim()}”`
+                : voiceError || 'Listening… say what you want to schedule'}
+            </span>
+          </div>
+
+          {draft && (
+            <>
+              {draft.mode === 'fill-slot' ? (
+                <div className="voice-slots-grid is-two">
+                  <SlotPill
+                    label="Focus Task"
+                    value={draft.title}
+                    emphasizedMissing={firstMissing === 'title'}
+                  />
+                  <SlotPill
+                    label="Open Slot"
+                    value={
+                      draft.date && draft.startTime
+                        ? `${formatShortDate(draft.date)} · ${formatFriendlyTime(draft.startTime)}${
+                            draft.endTime ? `–${formatFriendlyTime(draft.endTime)}` : ''
+                          }`
+                        : undefined
+                    }
+                  />
+                </div>
+              ) : draft.mode === 'reminder' ? (
+                <div className="voice-slots-grid is-three">
+                  <SlotPill
+                    label="Reminder"
+                    value={draft.title}
+                    emphasizedMissing={firstMissing === 'title'}
+                  />
+                  <SlotPill
+                    label="Day"
+                    value={draft.date ? formatShortDate(draft.date) : undefined}
+                    emphasizedMissing={firstMissing === 'date'}
+                  />
+                  <SlotPill
+                    label="Time"
+                    value={draft.startTime ? formatFriendlyTime(draft.startTime) : undefined}
+                    emphasizedMissing={firstMissing === 'startTime'}
+                  />
+                </div>
+              ) : (
+                <div className="voice-slots-grid is-four">
+                  <SlotPill
+                    label="Event"
+                    value={draft.title?.replace(/^Empty Zone\s*[—-]\s*/i, '')}
+                    emphasizedMissing={firstMissing === 'title'}
+                  />
+                  <SlotPill
+                    label="Day"
+                    value={draft.date ? formatShortDate(draft.date) : undefined}
+                    emphasizedMissing={firstMissing === 'date'}
+                  />
+                  <SlotPill
+                    label="Start"
+                    value={draft.startTime ? formatFriendlyTime(draft.startTime) : undefined}
+                    emphasizedMissing={firstMissing === 'startTime'}
+                  />
+                  <SlotPill
+                    label="End"
+                    value={draft.endTime ? formatFriendlyTime(draft.endTime) : undefined}
+                    emphasizedMissing={firstMissing === 'endTime'}
+                  />
+                </div>
+              )}
+
+              <div
+                className={`voice-prompt-bar ${
+                  draft.isComplete ? 'is-complete' : 'is-incomplete'
+                }`.trim()}
+              >
+                {draft.isComplete ? <Check size={13} strokeWidth={2.6} /> : <Sparkles size={13} />}
+                <span>{draft.nextPrompt}</span>
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {preview && (
-        <div className="sched-live-preview" aria-live="polite">
-          <span className={`sched-preview-tag is-${preview.mode}`}>
-            <Sparkles size={11} />
-            {modeBadgeLabel(preview.mode)}
-          </span>
-          <span className="sched-preview-body">
-            <strong>{preview.title.replace(/^Empty Zone\s*[—-]\s*/i, '')}</strong>
-            {' · '}
-            {formatShortDate(preview.date)}, {formatFriendlyTime(preview.startTime)}
-            {preview.endTime ? `–${formatFriendlyTime(preview.endTime)}` : ''}
-          </span>
-          <span className="sched-preview-hint">Enter ↵</span>
-        </div>
-      )}
+      <div className="voice-controls-row">
+        {showCard && (
+          <button
+            type="button"
+            className="voice-side-btn is-cancel"
+            aria-label="Cancel voice input"
+            title="Clear"
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={clearDraft}
+          >
+            <X size={18} />
+          </button>
+        )}
 
-      <form
-        className={`sched-chat-composer ${listening ? 'is-listening' : ''}`.trim()}
-        onSubmit={(e) => {
-          e.preventDefault();
-          send(text);
-        }}
-      >
-        <input
-          ref={inputRef}
-          className="sched-chat-input"
-          value={text}
-          inputMode={listening || suppressKeyboard ? 'none' : 'text'}
-          onPointerDown={() => {
-            if (listening) {
-              stopListening();
-            }
-            if (suppressKeyboard) {
-              setSuppressKeyboard(false);
-            }
-          }}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              send(text);
-            }
-          }}
-          placeholder={
-            listening
-              ? 'Listening… tap ↑ or press Enter when done'
-              : 'Add event, focus slot, or reminder…'
-          }
-          aria-label="Add an event, focus slot, or reminder"
-          enterKeyHint="send"
-        />
         <button
           type="button"
-          className={`${
-            text.trim() && !listening ? 'ui-command-mic' : 'ui-command-mic-filled'
-          } ${listening ? 'is-listening' : ''}`.trim()}
-          aria-label={listening ? 'Done speaking (pause mic)' : 'Speak an event'}
-          title={listening ? 'Stop mic' : 'Voice input'}
+          className={`voice-orb-btn ${listening ? 'is-listening' : ''}`.trim()}
+          aria-label={listening ? 'Pause microphone' : 'Tap to speak to schedule'}
+          title={listening ? 'Pause microphone' : 'Speak to schedule'}
           onPointerDown={(e) => e.preventDefault()}
           onMouseDown={(e) => e.preventDefault()}
           onClick={toggleMic}
         >
-          {listening ? <Square size={13} fill="currentColor" /> : <Mic size={16} />}
+          <Mic size={22} />
         </button>
-        {text.trim().length > 0 && (
+
+        {showCard && (
           <button
-            type="submit"
-            className="ui-command-mic-filled"
-            aria-label="Send to schedule"
-            title="Send"
+            type="button"
+            className={`voice-side-btn is-confirm ${draft?.isComplete ? 'is-ready' : ''}`.trim()}
+            aria-label={draft?.isComplete ? 'Confirm and add to schedule' : 'Speak remaining details to finish'}
+            title={draft?.isComplete ? 'Add to schedule (Enter)' : draft?.nextPrompt || 'Keep speaking to finish'}
+            disabled={!draft?.isComplete}
             onPointerDown={(e) => e.preventDefault()}
             onMouseDown={(e) => e.preventDefault()}
+            onClick={confirmDraft}
           >
-            <ArrowUp size={16} />
+            <Check size={18} strokeWidth={2.6} />
           </button>
         )}
-      </form>
+      </div>
     </div>
   );
 };
