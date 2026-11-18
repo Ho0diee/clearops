@@ -150,12 +150,16 @@ export interface ProtectedStreakState {
 }
 
 export interface ParsedLiveInput {
-  mode: 'event' | 'empty-zone' | 'reminder';
+  mode: 'event' | 'empty-zone' | 'reminder' | 'fill-slot';
   title: string;
   date: string;
   startTime: string;
   endTime?: string;
   whyCategory?: WhyCategory;
+  targetBlockId?: string;
+  matchedIdeaId?: string;
+  startingStepHint?: string;
+  explanation?: string;
 }
 
 export interface OpsState {
@@ -202,6 +206,7 @@ export interface OpsActions {
   submitLiveCommand: (rawText: string) => ParsedLiveInput | null;
   addReminder: (reminder: Omit<ReminderItem, 'id'>) => void;
   toggleReminder: (reminderId: string) => void;
+  deleteReminder: (reminderId: string) => void;
 
   // Subagent 2: Ideas & Checkups
   addIdea: (input: {

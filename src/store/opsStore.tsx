@@ -21,6 +21,7 @@ import {
   REFLECTION_PROMPTS,
   TODAY_ISO,
 } from './seedData';
+import { interpretScheduleInput } from './scheduleAi';
 
 const STORAGE_KEY = 'clearops_state_v1';
 
@@ -559,16 +560,50 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       parseLiveCommand: (rawText: string) => {
-        return parseNaturalLanguageInput(rawText, state.selectedDate);
+        return interpretScheduleInput(rawText, {
+          todayIso: TODAY_ISO,
+          selectedDate: state.selectedDate,
+          blocks: state.blocks,
+          ideas: state.ideas,
+        });
       },
 
       submitLiveCommand: (rawText: string) => {
-        const parsed = parseNaturalLanguageInput(rawText, state.selectedDate);
+        const parsed = interpretScheduleInput(rawText, {
+          todayIso: TODAY_ISO,
+          selectedDate: state.selectedDate,
+          blocks: state.blocks,
+          ideas: state.ideas,
+        });
         if (!parsed) return null;
 
+        if (parsed.mode === 'fill-slot' && parsed.targetBlockId) {
+          const slotTitle = /^empty zone/i.test(parsed.title)
+            ? parsed.title
+            : `Empty Zone — ${parsed.title}`;
+          setState((prev) => ({
+            ...prev,
+            selectedDate: parsed.date,
+            activeTab: 'schedule',
+            blocks: prev.blocks.map((b) =>
+              b.id === parsed.targetBlockId
+                ? {
+                    ...b,
+                    title: slotTitle,
+                    assignedIdeaId: parsed.matchedIdeaId ?? b.assignedIdeaId,
+                    startingStepHint: parsed.startingStepHint ?? b.startingStepHint,
+                  }
+                : b
+            ),
+          }));
+          showToast(`Placed "${parsed.title}" into ${parsed.startTime} Focus Slot`);
+          return parsed;
+        }
+
         if (parsed.mode === 'reminder') {
+          const remId = makeId('rem');
           const newRem: ReminderItem = {
-            id: makeId('rem'),
+            id: remId,
             date: parsed.date,
             time: parsed.startTime,
             title: parsed.title,
@@ -582,11 +617,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             ),
           }));
           showToast(`Added reminder "${parsed.title}" at ${parsed.startTime}`);
-          return parsed;
+          return { ...parsed, targetBlockId: remId };
         }
 
+        const blockId = makeId('blk');
         const newBlock: CalendarBlock = {
-          id: makeId('blk'),
+          id: blockId,
           date: parsed.date,
           startTime: parsed.startTime,
           endTime: parsed.endTime ?? addMinutesToTime(parsed.startTime, 60),
@@ -594,6 +630,8 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           kind: parsed.mode === 'empty-zone' ? 'empty-zone' : 'baseline',
           completed: false,
           whyCategory: parsed.mode === 'event' ? parsed.whyCategory : undefined,
+          assignedIdeaId: parsed.matchedIdeaId,
+          startingStepHint: parsed.startingStepHint,
         };
 
         setState((prev) => ({
@@ -605,7 +643,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         showToast(
           `Scheduled "${parsed.title}" (${newBlock.startTime}-${newBlock.endTime})`
         );
-        return parsed;
+        return { ...parsed, targetBlockId: blockId };
       },
 
       addReminder: (remInput) => {
@@ -623,6 +661,13 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           reminders: prev.reminders.map((r) =>
             r.id === reminderId ? { ...r, completed: !r.completed } : r
           ),
+        }));
+      },
+
+      deleteReminder: (reminderId: string) => {
+        setState((prev) => ({
+          ...prev,
+          reminders: prev.reminders.filter((r) => r.id !== reminderId),
         }));
       },
 

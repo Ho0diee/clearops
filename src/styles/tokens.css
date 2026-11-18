@@ -2148,6 +2148,7 @@ html.is-schedule-locked #root {
 
 .ops-shell.is-schedule-lock .ops-topbar,
 .ops-shell.is-schedule-lock .gcal-head,
+.ops-shell.is-schedule-lock .sched-live-preview,
 .ops-shell.is-schedule-lock .sched-chat-composer,
 .ops-shell.is-schedule-lock .ops-bottom-nav {
   touch-action: none;
@@ -2298,10 +2299,85 @@ html.is-schedule-locked #root {
   to { transform: scale(1); opacity: 1; }
 }
 
-/* Flash for events just added from chat */
-.gcal-ev.is-flash {
+/* Flash for events & reminders just added from chat */
+.gcal-ev.is-flash,
+.gcal-rem.is-flash {
   z-index: 4;
   animation: evFlash 0.9s ease-in-out 3;
+}
+
+/* Calendar reminder pins */
+.gcal-rem {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  z-index: 2;
+  min-height: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(180, 105, 14, 0.38);
+  background: #FFF8EB;
+  color: #8A4B08;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(20, 20, 19, 0.06);
+  transition: transform var(--duration-fast) var(--ease-calm), filter var(--duration-fast) var(--ease-calm);
+}
+
+.gcal-rem:hover {
+  filter: brightness(0.97);
+}
+
+.gcal-rem:active {
+  transform: scale(0.985);
+}
+
+.gcal-rem svg {
+  flex-shrink: 0;
+}
+
+.gcal-rem-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.gcal-rem-time {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 500;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
+.gcal-rem.is-compact {
+  left: 1px;
+  right: 1px;
+  min-height: 18px;
+  padding: 1px 4px;
+  gap: 3px;
+  font-size: 10px;
+}
+
+.gcal-rem.is-done {
+  opacity: 0.55;
+}
+
+.gcal-rem.is-done .gcal-rem-title {
+  text-decoration: line-through;
+}
+
+.gcal-swatch-rem {
+  background: #D97706;
 }
 
 @keyframes evFlash {
@@ -2379,14 +2455,78 @@ html.is-schedule-locked #root {
   cursor: pointer;
 }
 
+.sched-live-preview {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+.sched-preview-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary);
+}
+
+.sched-preview-tag.is-fill-slot,
+.sched-preview-tag.is-empty-zone {
+  background: rgba(46, 158, 107, 0.14);
+  color: var(--zone-text);
+}
+
+.sched-preview-tag.is-reminder {
+  background: #FEF3C7;
+  color: #92400E;
+}
+
+.sched-preview-body {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.sched-preview-body strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.sched-preview-hint {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
 .sched-chat-composer {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-pill);
   padding: 4px 4px 4px 14px;
+}
+
+.sched-chat-composer.is-listening {
+  border-color: #DC2626;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.14);
 }
 
 .sched-chat-composer:focus-within {

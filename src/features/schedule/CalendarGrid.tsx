@@ -90,6 +90,7 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
   const hourHeight = isWeek ? 44 : 56;
 
   const [openBlockId, setOpenBlockId] = useState<string | null>(null);
+  const [openReminderId, setOpenReminderId] = useState<string | null>(null);
   const [slideDir, setSlideDir] = useState<'next' | 'prev' | null>(null);
   const [dragOffsetX, setDragOffsetX] = useState(0);
   const [isDraggingX, setIsDraggingX] = useState(false);
@@ -114,7 +115,12 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
     [state.blocks, columns]
   );
 
-  // Hour range adapts to the visible events (Google Calendar-style compact day)
+  const visibleReminders = useMemo(
+    () => state.reminders.filter((r) => columns.includes(r.date)),
+    [state.reminders, columns]
+  );
+
+  // Hour range adapts to the visible events & reminders (Google Calendar-style compact day)
   const { startHour, endHour } = useMemo(() => {
     let lo = 7;
     let hi = 21;
@@ -122,8 +128,13 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
       lo = Math.min(lo, Math.floor(toMin(b.startTime) / 60));
       hi = Math.max(hi, Math.ceil(toMin(b.endTime) / 60));
     });
+    visibleReminders.forEach((r) => {
+      const m = toMin(r.time);
+      lo = Math.min(lo, Math.floor(m / 60));
+      hi = Math.max(hi, Math.ceil((m + 30) / 60));
+    });
     return { startHour: Math.max(0, lo), endHour: Math.min(24, hi + 1) };
-  }, [visibleBlocks]);
+  }, [visibleBlocks, visibleReminders]);
 
   const hours = Array.from({ length: endHour - startHour }, (_, i) => startHour + i);
   const gridHeight = hours.length * hourHeight;
@@ -149,17 +160,20 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
   const dayIdx = Math.max(0, weekDates.indexOf(state.selectedDate));
   const zoomOrigin = `${((dayIdx + 0.5) / 7) * 100}% 0`;
 
-  // Scroll a newly added (chat) event into view
+  // Scroll a newly added (chat) event or reminder into view
   useEffect(() => {
     if (!highlightId || !scrollRef.current) return;
     const b = state.blocks.find((x) => x.id === highlightId);
-    if (!b) return;
-    const y = ((toMin(b.startTime) - startHour * 60) / 60) * hourHeight - 40;
+    const rem = !b ? state.reminders.find((x) => x.id === highlightId) : undefined;
+    const targetTime = b ? b.startTime : rem?.time;
+    if (!targetTime) return;
+    const y = ((toMin(targetTime) - startHour * 60) / 60) * hourHeight - 40;
     scrollRef.current.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightId]);
 
   const openBlock = openBlockId ? state.blocks.find((b) => b.id === openBlockId) ?? null : null;
+  const openReminder = openReminderId ? state.reminders.find((r) => r.id === openReminderId) ?? null : null;
 
   const activeIdeas = useMemo(
     () =>
@@ -271,7 +285,9 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
           {weekDates.map((iso, idx) => {
             const isSelected = iso === state.selectedDate;
             const isToday = iso === TODAY_ANCHOR;
-            const count = state.blocks.filter((b) => b.date === iso).length;
+            const count =
+              state.blocks.filter((b) => b.date === iso).length +
+              state.reminders.filter((r) => r.date === iso).length;
             const dimmed = isWeek ? false : !isSelected;
             return (
               <button
@@ -338,6 +354,7 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
 
             {columns.map((iso) => {
               const laid = layoutColumn(visibleBlocks.filter((b) => b.date === iso));
+              const dayReminders = visibleReminders.filter((r) => r.date === iso);
               const showNow = iso === TODAY_ANCHOR && nowMin >= startHour * 60 && nowMin <= endHour * 60;
               return (
                 <div
@@ -388,6 +405,30 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                         {roomy && !isWeek && block.startingStepHint && height >= 64 && (
                           <span className="gcal-ev-sub">{block.startingStepHint}</span>
                         )}
+                      </button>
+                    );
+                  })}
+
+                  {dayReminders.map((rem, idx) => {
+                    const m = toMin(rem.time);
+                    const sameTimeIdx = dayReminders
+                      .slice(0, idx)
+                      .filter((prev) => Math.abs(toMin(prev.time) - m) < 20).length;
+                    const top = ((m - startHour * 60) / 60) * hourHeight + sameTimeIdx * (isWeek ? 20 : 24);
+                    return (
+                      <button
+                        key={rem.id}
+                        type="button"
+                        className={`gcal-rem ${rem.completed ? 'is-done' : ''} ${
+                          isWeek ? 'is-compact' : ''
+                        } ${rem.id === highlightId ? 'is-flash' : ''}`.trim()}
+                        style={{ top }}
+                        onClick={() => setOpenReminderId(rem.id)}
+                        title={`Reminder: ${rem.title} (${fmtTime(rem.time)})`}
+                      >
+                        {rem.completed ? <Check size={10} strokeWidth={3} /> : <Bell size={10} />}
+                        <span className="gcal-rem-title">{rem.title}</span>
+                        {!isWeek && <span className="gcal-rem-time">{fmtTime(rem.time)}</span>}
                       </button>
                     );
                   })}
@@ -546,6 +587,67 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                   onClick={() => {
                     actions.deleteCalendarBlock(openBlock.id);
                     setOpenBlockId(null);
+                  }}
+                >
+                  Delete
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reminder detail bottom sheet */}
+      {openReminder && (
+        <div
+          className="gcal-sheet-scrim"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setOpenReminderId(null);
+          }}
+        >
+          <div className="gcal-sheet" role="dialog" aria-label={openReminder.title}>
+            <div className="gcal-sheet-grip" />
+            <div className="ops-row-between" style={{ alignItems: 'flex-start' }}>
+              <div className="ops-row" style={{ alignItems: 'flex-start', gap: 12, minWidth: 0 }}>
+                <span className="gcal-swatch gcal-swatch-rem" />
+                <div className="ops-stack-xs" style={{ minWidth: 0 }}>
+                  <h3 className="gcal-sheet-title">{openReminder.title}</h3>
+                  <span className="gcal-sheet-meta">
+                    Reminder · {formatShortDate(openReminder.date)} at {fmtTime(openReminder.time)}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="ui-command-mic"
+                aria-label="Close"
+                onClick={() => setOpenReminderId(null)}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="gcal-sheet-actions">
+              <div className="ops-row" style={{ gap: 8 }}>
+                <Button
+                  variant={openReminder.completed ? 'secondary' : 'primary'}
+                  size="md"
+                  style={{ flex: 1 }}
+                  iconLeft={<Check size={14} />}
+                  onClick={() => {
+                    actions.toggleReminder(openReminder.id);
+                    setOpenReminderId(null);
+                  }}
+                >
+                  {openReminder.completed ? 'Mark not done' : 'Mark done'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="md"
+                  iconLeft={<Trash2 size={14} />}
+                  onClick={() => {
+                    actions.deleteReminder(openReminder.id);
+                    setOpenReminderId(null);
                   }}
                 >
                   Delete
