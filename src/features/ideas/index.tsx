@@ -47,7 +47,7 @@ function responsibilityLabel(type?: IdeaResponsibilityType): string {
   if (type === 'paid') return 'Paid';
   if (type === 'cost') return 'Cost';
   if (type === 'time-saving') return 'Time-Saving';
-  return 'Responsibility: None';
+  return 'None';
 }
 
 function isOpenEmptyZone(b: CalendarBlock): boolean {
