@@ -18,13 +18,21 @@ import type {
 import {
   AIRBNB710_STR_PRESET,
   DEFAULT_SITE_CONFIG,
+  getTodayISO,
   INITIAL_OPS_STATE,
   REFLECTION_PROMPTS,
-  TODAY_ISO,
 } from './seedData';
 import { interpretScheduleInput, parseProgressiveVoiceDraft } from './scheduleAi';
 
+export { getTodayISO };
+
 const STORAGE_KEY = 'clearops_state_v1';
+const CLEAN_SLATE_VERSION = 2;
+
+type PersistedOpsEnvelope = Partial<OpsState> & {
+  _cleanSlateVersion?: number;
+  _lastSavedToday?: string;
+};
 
 /* ==========================================================================
    Date & Time Utility Helpers (Exported for Subagents)
@@ -98,11 +106,12 @@ export function parseNaturalLanguageInput(
   const trimmed = rawText.trim();
   if (!trimmed) return null;
 
+  const liveToday = getTodayISO();
   let targetDate = baseDate;
   if (/\btomorrow\b/i.test(trimmed)) {
-    targetDate = addDaysISO(TODAY_ISO, 1);
+    targetDate = addDaysISO(liveToday, 1);
   } else if (/\btoday\b/i.test(trimmed)) {
-    targetDate = TODAY_ISO;
+    targetDate = liveToday;
   }
 
   const isEmptyZone = /\b(empty\s+zone|focus\s+zone|focus\s+slot)\b/i.test(trimmed);
@@ -237,16 +246,22 @@ interface OpsStoreValue {
   state: OpsState;
   actions: OpsActions;
   reflectionPrompts: string[];
+  todayIso: string;
 }
 
 const OpsStoreContext = createContext<OpsStoreValue | null>(null);
 
 export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [todayIso, setTodayIso] = useState<string>(() => getTodayISO());
+
+  // IMPORTANT: Keep useState initializer 100% pure (read-only) so React 18 <StrictMode>
+  // double-invocation returns the exact same migrated state on both passes before useEffect commits.
   const [state, setState] = useState<OpsState>(() => {
+    const liveToday = getTodayISO();
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<OpsState>;
+        const parsed = JSON.parse(raw) as PersistedOpsEnvelope;
         if (parsed && Array.isArray(parsed.blocks) && Array.isArray(parsed.ideas)) {
           const mergedProjects = parsed.projects ?? INITIAL_OPS_STATE.projects;
           const savedName = parsed.siteConfig?.workspaceName;
@@ -254,9 +269,52 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             !savedName || savedName === 'ClearOps' || savedName === 'Airbnb 710 Operations'
               ? 'Intuition'
               : savedName;
+
+          if (parsed._cleanSlateVersion !== CLEAN_SLATE_VERSION) {
+            return {
+              ...INITIAL_OPS_STATE,
+              selectedDate: liveToday,
+              scheduleViewMode: parsed.scheduleViewMode ?? 'week',
+              activeTab: parsed.activeTab ?? 'schedule',
+              siteConfig: {
+                ...DEFAULT_SITE_CONFIG,
+                ...(parsed.siteConfig ?? {}),
+                workspaceName: migratedName,
+              },
+              whyStatements: parsed.whyStatements
+                ? { ...INITIAL_OPS_STATE.whyStatements, ...parsed.whyStatements }
+                : INITIAL_OPS_STATE.whyStatements,
+              hourlyRateDollars:
+                typeof parsed.hourlyRateDollars === 'number'
+                  ? parsed.hourlyRateDollars
+                  : INITIAL_OPS_STATE.hourlyRateDollars,
+              projects: mergedProjects,
+              ideas: normalizeAllProjectsRanks(parsed.ideas, mergedProjects),
+              blocks: [],
+              reminders: [],
+              checkups: [],
+              pacedGoals: [],
+              pacingLogs: [],
+              offloadedTasks: [],
+              reflections: [],
+              draftDailyNote: '',
+              draftReflectionText: '',
+              streak: {
+                currentDays: 0,
+                bestDays: 0,
+                lastLockedDate: '',
+                completedDates: [],
+                protectionRuleNote: INITIAL_OPS_STATE.streak.protectionRuleNote,
+              },
+              toastMessage: null,
+            };
+          }
+
+          const shouldRollToToday = parsed._lastSavedToday !== liveToday;
           return {
             ...INITIAL_OPS_STATE,
             ...parsed,
+            selectedDate: shouldRollToToday ? liveToday : parsed.selectedDate || liveToday,
             siteConfig: {
               ...DEFAULT_SITE_CONFIG,
               ...(parsed.siteConfig ?? {}),
@@ -267,10 +325,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           };
         }
       }
+
       if (window.location.hostname.toLowerCase().includes('airbnb710')) {
         return {
           ...INITIAL_OPS_STATE,
           ...AIRBNB710_STR_PRESET,
+          selectedDate: liveToday,
           ideas: normalizeAllProjectsRanks(
             AIRBNB710_STR_PRESET.ideas,
             AIRBNB710_STR_PRESET.projects
@@ -281,19 +341,57 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     } catch {
       // Ignore storage read errors
     }
-    return INITIAL_OPS_STATE;
+    return {
+      ...INITIAL_OPS_STATE,
+      selectedDate: liveToday,
+    };
   });
+
+  // Automatically follow the real-world calendar across midnight or when waking the phone on a new day
+  useEffect(() => {
+    const syncRealWorldToday = () => {
+      const nextToday = getTodayISO();
+      setTodayIso((prevToday) => {
+        if (prevToday === nextToday) return prevToday;
+        setState((prev) => ({
+          ...prev,
+          selectedDate: nextToday,
+        }));
+        return nextToday;
+      });
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        syncRealWorldToday();
+      }
+    };
+
+    const intervalId = window.setInterval(syncRealWorldToday, 30_000);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', syncRealWorldToday);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', syncRealWorldToday);
+    };
+  }, []);
 
   const toastTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
       const { toastMessage: _omit, ...persisted } = state;
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+      const envelope: PersistedOpsEnvelope = {
+        ...persisted,
+        _cleanSlateVersion: CLEAN_SLATE_VERSION,
+        _lastSavedToday: todayIso,
+      };
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(envelope));
     } catch {
       // Ignore storage write errors
     }
-  }, [state]);
+  }, [state, todayIso]);
 
   useEffect(() => {
     document.documentElement.dataset.accent = state.siteConfig.accentTheme || 'cobalt';
@@ -571,7 +669,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       parseLiveCommand: (rawText: string) => {
         return interpretScheduleInput(rawText, {
-          todayIso: TODAY_ISO,
+          todayIso: getTodayISO(),
           selectedDate: state.selectedDate,
           blocks: state.blocks,
           ideas: state.ideas,
@@ -580,7 +678,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       submitLiveCommand: (rawText: string) => {
         const parsed = interpretScheduleInput(rawText, {
-          todayIso: TODAY_ISO,
+          todayIso: getTodayISO(),
           selectedDate: state.selectedDate,
           blocks: state.blocks,
           ideas: state.ideas,
@@ -658,7 +756,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       parseVoiceDraft: (rawText: string) => {
         return parseProgressiveVoiceDraft(rawText, {
-          todayIso: TODAY_ISO,
+          todayIso: getTodayISO(),
           selectedDate: state.selectedDate,
           blocks: state.blocks,
           ideas: state.ideas,
@@ -1521,7 +1619,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
           return {
             ...prev,
-            selectedDate: TODAY_ISO,
+            selectedDate: getTodayISO(),
             siteConfig: {
               ...source.siteConfig,
               accentTheme: prev.siteConfig.accentTheme,
@@ -1618,8 +1716,8 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [state]);
 
   const value = useMemo(
-    () => ({ state, actions, reflectionPrompts: REFLECTION_PROMPTS }),
-    [state, actions]
+    () => ({ state, actions, reflectionPrompts: REFLECTION_PROMPTS, todayIso }),
+    [state, actions, todayIso]
   );
 
   return <OpsStoreContext.Provider value={value}>{children}</OpsStoreContext.Provider>;

@@ -86,7 +86,7 @@ function extractFirstStepHint(body: string): string {
 }
 
 export const IdeasHubView: React.FC = () => {
-  const { state, actions } = useOpsStore();
+  const { state, actions, todayIso } = useOpsStore();
 
   const [selectedFolder, setSelectedFolder] = useState<SmartFolderId>(
     () => state.projects[0] || '__BOTTLENECKS__'
@@ -176,11 +176,11 @@ export const IdeasHubView: React.FC = () => {
   const openEmptyZones = useMemo(
     () =>
       state.blocks
-        .filter((b) => isOpenEmptyZone(b) && b.date >= '2026-11-17')
+        .filter((b) => isOpenEmptyZone(b) && b.date >= todayIso)
         .sort((a, b) =>
           a.date !== b.date ? a.date.localeCompare(b.date) : a.startTime.localeCompare(b.startTime)
         ),
-    [state.blocks]
+    [state.blocks, todayIso]
   );
 
   const folderDisplayName =
@@ -510,7 +510,7 @@ export const IdeasHubView: React.FC = () => {
               <span>
                 {scheduledBlock
                   ? `${
-                      scheduledBlock.date === '2026-11-17'
+                      scheduledBlock.date === todayIso
                         ? 'Today'
                         : formatShortDate(scheduledBlock.date)
                     } · ${formatFriendlyTime(scheduledBlock.startTime)}`
@@ -618,7 +618,7 @@ export const IdeasHubView: React.FC = () => {
                     }}
                   >
                     <span className="notes-zone-day">
-                      {z.date === '2026-11-17' ? 'Today' : formatShortDate(z.date)}
+                      {z.date === todayIso ? 'Today' : formatShortDate(z.date)}
                     </span>
                     <span className="notes-zone-time">
                       {formatFriendlyTime(z.startTime)} – {formatFriendlyTime(z.endTime)}
@@ -635,7 +635,7 @@ export const IdeasHubView: React.FC = () => {
                         title: extractFirstStepHint(bodyValue) || 'Focus Work',
                       });
                     }
-                    actions.assignIdeaToNextEmptyZone(note.id);
+                    actions.assignIdeaToNextEmptyZone(note.id, todayIso);
                     setZonePickerOpen(false);
                   }}
                 >
@@ -934,7 +934,7 @@ export const IdeasHubView: React.FC = () => {
                     )}
                     {!reordering && scheduled && (
                       <span className="notes-mini-badge is-scheduled">
-                        {scheduled.date === '2026-11-17'
+                        {scheduled.date === todayIso
                           ? 'Today'
                           : formatShortDate(scheduled.date)}
                       </span>

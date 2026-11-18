@@ -29,7 +29,6 @@ import type {
   WhyCategory,
 } from '../../types/schema';
 
-const TODAY_ANCHOR = '2026-11-17';
 const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const WHY_CATEGORIES: WhyCategory[] = ['Organization', 'School', 'Health', 'Family'];
 const SWIPE_MS = 260;
@@ -177,6 +176,7 @@ interface CreateSheetDraft {
 
 interface CalendarPaneProps {
   columns: string[];
+  todayIso: string;
   isWeek: boolean;
   startHour: number;
   endHour: number;
@@ -204,6 +204,7 @@ interface CalendarPaneProps {
 const CalendarPane = memo<CalendarPaneProps>(
   ({
     columns,
+    todayIso,
     isWeek,
     startHour,
     endHour,
@@ -235,7 +236,7 @@ const CalendarPane = memo<CalendarPaneProps>(
         {columns.map((iso) => {
           const laid = layoutColumn(blocks.filter((b) => b.date === iso));
           const dayReminders = reminders.filter((r) => r.date === iso);
-          const showNow = iso === TODAY_ANCHOR && nowMin >= startHour * 60 && nowMin <= endHour * 60;
+          const showNow = iso === todayIso && nowMin >= startHour * 60 && nowMin <= endHour * 60;
           const targetDraftIso = liveDraft ? liveDraft.date ?? fallbackDraftIso : null;
           const draftOnThisDay = liveDraft && targetDraftIso === iso ? liveDraft : null;
 
@@ -274,7 +275,7 @@ const CalendarPane = memo<CalendarPaneProps>(
             <div
               key={iso}
               data-iso={iso}
-              className={`gcal-col ${iso === TODAY_ANCHOR && isWeek ? 'is-today' : ''}`.trim()}
+              className={`gcal-col ${iso === todayIso && isWeek ? 'is-today' : ''}`.trim()}
             >
               {laid.map(({ block, col, cols }) => {
                 const isBeingDragged = interactive && draggedBlockId === block.id;
@@ -574,7 +575,7 @@ export const CalendarGrid: React.FC<{
   highlightId?: string | null;
   liveDraft?: VoiceScheduleDraft | null;
 }> = ({ highlightId, liveDraft }) => {
-  const { state, actions } = useOpsStore();
+  const { state, actions, todayIso } = useOpsStore();
   const isWeek = state.scheduleViewMode === 'week';
   const stepDays = isWeek ? 7 : 1;
   const hourHeight = isWeek ? 44 : 56;
@@ -711,13 +712,16 @@ export const CalendarGrid: React.FC<{
   );
   const gridHeight = (endHour - startHour) * hourHeight;
 
+  const todayIsoRef = useRef(todayIso);
+  todayIsoRef.current = todayIso;
+
   /** Maps viewport `(clientX, clientY)` to exact `(date, rawMinutes)` on the active calendar pane. */
   const resolveGridPoint = useCallback((clientX: number, clientY: number) => {
     const stageEl = stageRef.current;
     const cols = currColumnsRef.current;
     const hh = hourHeightRef.current;
     if (!stageEl || cols.length === 0) {
-      return { date: cols[0] || TODAY_ANCHOR, rawMins: 9 * 60 };
+      return { date: cols[0] || todayIsoRef.current, rawMins: 9 * 60 };
     }
     const rect = stageEl.getBoundingClientRect();
     const relX = clientX - rect.left;
@@ -1576,6 +1580,18 @@ export const CalendarGrid: React.FC<{
             </>
           )}
           <div className="gcal-toolbar-right">
+            {(isWeek ? !headerWeekDates.includes(todayIso) : headerIso !== todayIso) && (
+              <button
+                type="button"
+                className="gcal-today-btn"
+                onClick={() => {
+                  finalizePendingGlide();
+                  actions.setSelectedDate(todayIso);
+                }}
+              >
+                Today
+              </button>
+            )}
             <button
               type="button"
               className="gcal-icon-btn"
@@ -1591,7 +1607,7 @@ export const CalendarGrid: React.FC<{
           <div className="gcal-gutter" />
           {headerWeekDates.map((iso, idx) => {
             const isSelected = iso === headerIso;
-            const isToday = iso === TODAY_ANCHOR;
+            const isToday = iso === todayIso;
             const count =
               state.blocks.filter((b) => b.date === iso).length +
               state.reminders.filter((r) => r.date === iso).length;
@@ -1675,6 +1691,7 @@ export const CalendarGrid: React.FC<{
                 <div ref={prevPaneRef} className="gcal-pane" aria-hidden="true">
                   <CalendarPane
                     columns={prevColumns}
+                    todayIso={todayIso}
                     isWeek={isWeek}
                     startHour={startHour}
                     endHour={endHour}
@@ -1693,6 +1710,7 @@ export const CalendarGrid: React.FC<{
                 <div ref={centerPaneRef} className="gcal-pane">
                   <CalendarPane
                     columns={currColumns}
+                    todayIso={todayIso}
                     isWeek={isWeek}
                     startHour={startHour}
                     endHour={endHour}
@@ -1717,6 +1735,7 @@ export const CalendarGrid: React.FC<{
                 <div ref={nextPaneRef} className="gcal-pane" aria-hidden="true">
                   <CalendarPane
                     columns={nextColumns}
+                    todayIso={todayIso}
                     isWeek={isWeek}
                     startHour={startHour}
                     endHour={endHour}

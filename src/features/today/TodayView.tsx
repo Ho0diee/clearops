@@ -3,8 +3,6 @@ import { AlertTriangle, ArrowRight, CalendarPlus, Clock } from 'lucide-react';
 import { Badge, Button, Card, CardBody, CardHeader, CheckboxRow, EmptyState } from '../../components/ui';
 import { formatShortDate, useOpsStore } from '../../store/opsStore';
 
-const TODAY_ANCHOR = '2026-11-17';
-
 function fmt(t: string): string {
   const [h, m] = t.split(':').map(Number);
   const s = h % 12 === 0 ? 12 : h % 12;
@@ -13,13 +11,13 @@ function fmt(t: string): string {
 
 /** Daily Reminder / Briefing page — links straight back into today's schedule. */
 export const TodayView: React.FC = () => {
-  const { state, actions } = useOpsStore();
+  const { state, actions, todayIso } = useOpsStore();
   const [remTitle, setRemTitle] = useState('');
   const [remTime, setRemTime] = useState('17:00');
 
   const todayBlocks = useMemo(
-    () => state.blocks.filter((b) => b.date === TODAY_ANCHOR).sort((a, b) => a.startTime.localeCompare(b.startTime)),
-    [state.blocks]
+    () => state.blocks.filter((b) => b.date === todayIso).sort((a, b) => a.startTime.localeCompare(b.startTime)),
+    [state.blocks, todayIso]
   );
   const baselines = todayBlocks.filter((b) => b.kind === 'baseline');
   const remaining = baselines.filter((b) => !b.completed);
@@ -31,12 +29,12 @@ export const TodayView: React.FC = () => {
   const bottlenecks = activeIdeas.filter((i) => i.isBottleneck);
   const waitingCount = state.ideas.filter((i) => i.status === 'waiting-on').length;
   const reminders = state.reminders
-    .filter((r) => r.date === TODAY_ANCHOR)
+    .filter((r) => r.date === todayIso)
     .sort((a, b) => a.time.localeCompare(b.time));
   const nextUp = todayBlocks.find((b) => !b.completed);
 
   const openSchedule = () => {
-    actions.setSelectedDate(TODAY_ANCHOR);
+    actions.setSelectedDate(todayIso);
     actions.setScheduleViewMode('day');
     actions.setActiveTab('schedule');
   };
@@ -47,7 +45,7 @@ export const TodayView: React.FC = () => {
         <h1 className="ui-section-title" style={{ fontSize: 'var(--text-xl)' }}>
           Today
         </h1>
-        <span className="ui-section-meta">{formatShortDate(TODAY_ANCHOR)} · Daily briefing</span>
+        <span className="ui-section-meta">{formatShortDate(todayIso)} · Daily briefing</span>
       </div>
 
       {/* Daily Briefing → sends you into the schedule */}
@@ -125,7 +123,7 @@ export const TodayView: React.FC = () => {
                     variant="secondary"
                     size="sm"
                     iconLeft={<CalendarPlus size={13} />}
-                    onClick={() => actions.assignIdeaToNextEmptyZone(idea.id, TODAY_ANCHOR)}
+                    onClick={() => actions.assignIdeaToNextEmptyZone(idea.id, todayIso)}
                   >
                     Schedule
                   </Button>
@@ -159,7 +157,7 @@ export const TodayView: React.FC = () => {
             onSubmit={(e) => {
               e.preventDefault();
               if (!remTitle.trim()) return;
-              actions.addReminder({ date: TODAY_ANCHOR, time: remTime, title: remTitle.trim(), completed: false });
+              actions.addReminder({ date: todayIso, time: remTime, title: remTitle.trim(), completed: false });
               setRemTitle('');
             }}
           >
