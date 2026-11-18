@@ -12,7 +12,6 @@ import {
   mergeUniversalPayload,
   type UniversalSyncPayload,
 } from '../store/universalMerge.js';
-import { DEFAULT_SITE_CONFIG, INITIAL_OPS_STATE } from '../store/seedData.js';
 import { fetchLiveAudiobookTracks } from './audiobookCatalog.js';
 import {
   addDays,
@@ -549,10 +548,23 @@ export async function runAutomatedSchoolworkPipeline(options?: {
       schemaVersion: 1,
       updatedAtMs: Date.now(),
       metaUpdatedAtMs: Date.now(),
-      siteConfig: DEFAULT_SITE_CONFIG,
-      whyStatements: INITIAL_OPS_STATE.whyStatements,
-      hourlyRateDollars: INITIAL_OPS_STATE.hourlyRateDollars,
-      projects: INITIAL_OPS_STATE.projects,
+      siteConfig: {
+        targetDomain: 'https://airbnb710.com',
+        domainLabel: 'airbnb710.com',
+        workspaceName: 'Intuition',
+        accentTheme: 'cobalt',
+        activeTemplate: 'personal-cbs-ohcr',
+        hostingProvider: 'Vercel',
+        pwaInstallEnabled: true,
+      },
+      whyStatements: {
+        School: 'Master core technical foundations cleanly so long-term capability compounds.',
+        Health: 'Protect daily strength, mobility, and sleep so energy never becomes the bottleneck.',
+        Family: 'Be fully present at the table every evening with zero work bleed.',
+        Organization: 'Keep personal and financial systems frictionless so profitable work runs calm.',
+      },
+      hourlyRateDollars: 85,
+      projects: ['School'],
       ideas: [],
       userBlocks: [],
       ohchsDelayedDates: {},
@@ -563,9 +575,17 @@ export async function runAutomatedSchoolworkPipeline(options?: {
       offloadedTasks: [],
       reflections: [],
       draftDailyNote: '',
-      draftReflectionPrompt: INITIAL_OPS_STATE.draftReflectionPrompt,
+      draftReflectionPrompt:
+        'How do you think this week went? Which baseline commitments felt effortless, and where did friction appear?',
       draftReflectionText: '',
-      streak: INITIAL_OPS_STATE.streak,
+      streak: {
+        currentDays: 0,
+        bestDays: 0,
+        lastLockedDate: '',
+        completedDates: [],
+        protectionRuleNote:
+          'Counts strictly Baseline Obligations + Daily Self-Reflection.',
+      },
       tombstones: createEmptyTombstones(),
     };
 
