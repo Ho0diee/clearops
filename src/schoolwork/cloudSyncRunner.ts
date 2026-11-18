@@ -571,7 +571,9 @@ export async function runAutomatedSchoolworkPipeline(options?: {
     : await fetchLiveAudiobookTracks(accessToken);
 
   // Atomically read, reconcile/schedule, and write Vercel Blob workspace
-  const commitOnce = async (): Promise<{
+  const commitOnce = async (
+    useIfMatch: boolean
+  ): Promise<{
     addedCount: number;
     updatedCount: number;
     rolloverChanged: boolean;
@@ -691,7 +693,7 @@ export async function runAutomatedSchoolworkPipeline(options?: {
       addRandomSuffix: false,
       allowOverwrite: true,
       contentType: 'application/json',
-      ...(current.etag ? { ifMatch: current.etag } : {}),
+      ...(useIfMatch && current.etag ? { ifMatch: current.etag } : {}),
     });
 
     return { addedCount, updatedCount, rolloverChanged };
@@ -699,10 +701,15 @@ export async function runAutomatedSchoolworkPipeline(options?: {
 
   let writeRes: { addedCount: number; updatedCount: number; rolloverChanged: boolean };
   try {
-    writeRes = await commitOnce();
+    writeRes = await commitOnce(true);
   } catch (err) {
-    if (err instanceof BlobPreconditionFailedError) {
-      writeRes = await commitOnce();
+    const msg = err instanceof Error ? err.message : String(err);
+    if (
+      err instanceof BlobPreconditionFailedError ||
+      /etag|precondition|412/i.test(msg)
+    ) {
+      // Re-read latest workspace, re-merge atomically, and save without ifMatch (same as api/sync.ts)
+      writeRes = await commitOnce(false);
     } else {
       throw err;
     }
