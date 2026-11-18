@@ -60,6 +60,8 @@ export interface IdeaItem {
   startingStep: string;
   notes?: string; // Freeform multi-line note body (Apple Notes style)
   isBottleneck: boolean;
+  /** When a bottleneck, it covers (blocks) every lower-priority task below it in the same folder */
+  blocksBelow?: boolean;
   responsibilityType?: IdeaResponsibilityType;
   status: IdeaStatus;
   waitingReason?: string;

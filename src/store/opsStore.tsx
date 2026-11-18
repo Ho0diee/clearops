@@ -211,7 +211,7 @@ function sortBlocks(blocks: CalendarBlock[]): CalendarBlock[] {
 
 function normalizeProjectRanks(ideas: IdeaItem[], project: string): IdeaItem[] {
   const projectActive = ideas
-    .filter((i) => i.project === project && i.status === 'active')
+    .filter((i) => i.project === project && i.status !== 'completed')
     .sort((a, b) => a.priorityRank - b.priorityRank);
 
   const rankMap = new Map<string, number>();
@@ -866,7 +866,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const target = prev.ideas.find((i) => i.id === ideaId);
           if (!target) return prev;
           const siblings = prev.ideas
-            .filter((i) => i.project === target.project && i.status === 'active')
+            .filter((i) => i.project === target.project && i.status !== 'completed')
             .sort((a, b) => a.priorityRank - b.priorityRank);
           const idx = siblings.findIndex((s) => s.id === ideaId);
           if (idx === -1) return prev;
@@ -896,7 +896,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const target = prev.ideas.find((i) => i.id === ideaId);
           if (!target) return prev;
           const siblings = prev.ideas
-            .filter((i) => i.project === target.project && i.status === 'active')
+            .filter((i) => i.project === target.project && i.status !== 'completed')
             .sort((a, b) => a.priorityRank - b.priorityRank);
           const currentIdx = siblings.findIndex((s) => s.id === ideaId);
           if (currentIdx === -1) return prev;

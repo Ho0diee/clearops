@@ -21,6 +21,7 @@ import {
 import { Badge, Button } from '../../components/ui';
 import { addDaysISO, formatShortDate, getWeekDatesISO, useOpsStore } from '../../store/opsStore';
 import { inferWhyFromTitle } from '../../store/scheduleAi';
+import { getBlockingBottleneck } from '../../store/ideaBlocking';
 import type {
   CalendarBlock,
   ReminderItem,
@@ -983,7 +984,7 @@ export const CalendarGrid: React.FC<{
   const activeIdeas = useMemo(
     () =>
       state.ideas
-        .filter((i) => i.status === 'active')
+        .filter((i) => i.status === 'active' && !getBlockingBottleneck(i, state.ideas))
         .sort((a, b) => a.priorityRank - b.priorityRank),
     [state.ideas]
   );

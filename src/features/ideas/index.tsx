@@ -10,7 +10,10 @@ import {
   DollarSign,
   Folder,
   FolderPlus,
+  GripVertical,
+  Layers,
   Lightbulb,
+  Lock,
   Receipt,
   Search,
   SquarePen,
@@ -19,6 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { formatShortDate, useOpsStore } from '../../store/opsStore';
+import { countCoveredTasks, getBlockingBottleneck } from '../../store/ideaBlocking';
 import { formatFriendlyTime } from '../../store/scheduleAi';
 import type { CalendarBlock, IdeaItem, IdeaResponsibilityType } from '../../types/schema';
 
@@ -95,6 +99,17 @@ export const IdeasHubView: React.FC = () => {
   const [newFolderName, setNewFolderName] = useState('');
   const [editingFolders, setEditingFolders] = useState(false);
   const [zonePickerOpen, setZonePickerOpen] = useState(false);
+  const [reordering, setReordering] = useState(false);
+  const [dragState, setDragState] = useState<{
+    id: string;
+    pointerId: number;
+    startY: number;
+    dy: number;
+    fromIdx: number;
+    overIdx: number;
+    rowH: number;
+  } | null>(null);
+  const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const bodyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -112,11 +127,19 @@ export const IdeasHubView: React.FC = () => {
   );
 
   const folderNotes = useMemo(() => {
-    let base = allNotes;
+    let base: IdeaItem[];
     if (selectedFolder === '__BOTTLENECKS__') {
-      base = allNotes.filter((i) => i.isBottleneck);
+      base = allNotes
+        .filter((i) => i.isBottleneck)
+        .sort((a, b) =>
+          a.project !== b.project
+            ? a.project.localeCompare(b.project)
+            : a.priorityRank - b.priorityRank
+        );
     } else {
-      base = allNotes.filter((i) => i.project === selectedFolder);
+      base = allNotes
+        .filter((i) => i.project === selectedFolder)
+        .sort((a, b) => a.priorityRank - b.priorityRank);
     }
 
     const q = searchQuery.trim().toLowerCase();
@@ -126,6 +149,18 @@ export const IdeasHubView: React.FC = () => {
       return hay.includes(q);
     });
   }, [allNotes, selectedFolder, searchQuery]);
+
+  const canReorder = selectedFolder !== '__BOTTLENECKS__' && !searchQuery.trim();
+
+  // Which notes are covered by a higher-priority blocking bottleneck
+  const blockedByMap = useMemo(() => {
+    const map = new Map<string, IdeaItem>();
+    allNotes.forEach((n) => {
+      const blocker = getBlockingBottleneck(n, allNotes);
+      if (blocker) map.set(n.id, blocker);
+    });
+    return map;
+  }, [allNotes]);
 
   const activeNote = useMemo(
     () => allNotes.find((n) => n.id === selectedNoteId) ?? folderNotes[0] ?? null,
@@ -165,6 +200,8 @@ export const IdeasHubView: React.FC = () => {
     setSelectedFolder(folderId);
     setSearchQuery('');
     setZonePickerOpen(false);
+    setReordering(false);
+    setDragState(null);
     setMobilePane('list');
     const firstInFolder =
       folderId === '__BOTTLENECKS__'
@@ -180,6 +217,73 @@ export const IdeasHubView: React.FC = () => {
     setSelectedNoteId(noteId);
     setZonePickerOpen(false);
     setMobilePane('note');
+  };
+
+  /* ---------- Priority drag-to-reorder (grip handle, iPhone friendly) ---------- */
+  const onGripPointerDown = (e: React.PointerEvent<HTMLSpanElement>, id: string, idx: number) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rowEl = rowRefs.current.get(id);
+    const rowH = rowEl?.getBoundingClientRect().height || 64;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    try {
+      navigator.vibrate?.(8);
+    } catch {
+      /* ignore */
+    }
+    setDragState({
+      id,
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      dy: 0,
+      fromIdx: idx,
+      overIdx: idx,
+      rowH,
+    });
+  };
+
+  const onGripPointerMove = (e: React.PointerEvent<HTMLSpanElement>) => {
+    if (!dragState || e.pointerId !== dragState.pointerId) return;
+    e.preventDefault();
+    const maxIdx = folderNotes.length - 1;
+    const minDy = -dragState.fromIdx * dragState.rowH;
+    const maxDy = (maxIdx - dragState.fromIdx) * dragState.rowH;
+    const dy = Math.max(minDy, Math.min(maxDy, e.clientY - dragState.startY));
+    const overIdx = Math.max(
+      0,
+      Math.min(maxIdx, dragState.fromIdx + Math.round(dy / dragState.rowH))
+    );
+    if (overIdx !== dragState.overIdx) {
+      try {
+        navigator.vibrate?.(4);
+      } catch {
+        /* ignore */
+      }
+    }
+    setDragState({ ...dragState, dy, overIdx });
+  };
+
+  const onGripPointerUp = (e: React.PointerEvent<HTMLSpanElement>) => {
+    if (!dragState || e.pointerId !== dragState.pointerId) return;
+    const { id, fromIdx, overIdx } = dragState;
+    setDragState(null);
+    if (overIdx !== fromIdx) {
+      actions.setIdeaRank(id, overIdx + 1);
+    }
+  };
+
+  const rowShiftFor = (idx: number, id: string): number => {
+    if (!dragState) return 0;
+    if (id === dragState.id) return dragState.dy;
+    const { fromIdx, overIdx, rowH } = dragState;
+    if (fromIdx < overIdx && idx > fromIdx && idx <= overIdx) return -rowH;
+    if (fromIdx > overIdx && idx < fromIdx && idx >= overIdx) return rowH;
+    return 0;
   };
 
   const createNewNote = () => {
@@ -413,7 +517,43 @@ export const IdeasHubView: React.FC = () => {
                   : 'Empty Zone'}
               </span>
             </button>
+
+            {note.isBottleneck && (
+              <button
+                type="button"
+                className={`notes-cover-toggle ${note.blocksBelow ? 'is-on' : ''}`.trim()}
+                onClick={() =>
+                  actions.updateIdea(note.id, {
+                    blocksBelow: !note.blocksBelow,
+                    updatedAt: new Date().toISOString(),
+                  })
+                }
+                title="Make this bottleneck cover (block) every lower-priority task in this folder"
+              >
+                <Layers size={12} />
+                <span>
+                  {note.blocksBelow
+                    ? `Covers ${countCoveredTasks(note, allNotes)} below`
+                    : 'Cover tasks below'}
+                </span>
+              </button>
+            )}
           </div>
+
+          {blockedByMap.get(note.id) && (
+            <button
+              type="button"
+              className="notes-blocked-strip"
+              onClick={() => openNote(blockedByMap.get(note.id)!.id)}
+              title="Open the bottleneck covering this task"
+            >
+              <Lock size={13} />
+              <span>
+                Blocked by “{blockedByMap.get(note.id)!.title.trim() || 'Untitled bottleneck'}”
+              </span>
+              <ChevronRight size={14} />
+            </button>
+          )}
 
           {/* Inline Empty Zone Picker Popover */}
           {zonePickerOpen && (
@@ -673,46 +813,71 @@ export const IdeasHubView: React.FC = () => {
           <button
             type="button"
             className="notes-back-btn notes-mobile-only"
-            onClick={() => setMobilePane('folders')}
+            onClick={() => {
+              setReordering(false);
+              setDragState(null);
+              setMobilePane('folders');
+            }}
           >
             <ChevronLeft size={19} />
             <span>Folders</span>
           </button>
-          <button
-            type="button"
-            className="notes-icon-btn"
-            aria-label="Compose new note"
-            title="New Note"
-            onClick={createNewNote}
-            style={{ marginLeft: 'auto' }}
-          >
-            <SquarePen size={19} />
-          </button>
+          <div className="ops-row" style={{ gap: 2, marginLeft: 'auto' }}>
+            {canReorder && folderNotes.length > 1 && (
+              <button
+                type="button"
+                className="notes-text-btn"
+                onClick={() => {
+                  setDragState(null);
+                  setReordering((prev) => !prev);
+                }}
+              >
+                {reordering ? 'Done' : 'Prioritize'}
+              </button>
+            )}
+            {!reordering && (
+              <button
+                type="button"
+                className="notes-icon-btn"
+                aria-label="Compose new note"
+                title="New Note"
+                onClick={createNewNote}
+              >
+                <SquarePen size={19} />
+              </button>
+            )}
+          </div>
         </div>
 
         <h2 className="notes-folder-heading">{folderDisplayName}</h2>
 
-        <div className="notes-search-pill">
-          <Search size={15} />
-          <input
-            type="search"
-            className="notes-search-input"
-            placeholder="Search"
-            aria-label="Search notes"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              className="notes-search-clear"
-              aria-label="Clear search"
-              onClick={() => setSearchQuery('')}
-            >
-              <X size={13} />
-            </button>
-          )}
-        </div>
+        {reordering ? (
+          <div className="notes-reorder-hint">
+            Drag <GripVertical size={13} /> to set priority — top is most important.
+          </div>
+        ) : (
+          <div className="notes-search-pill">
+            <Search size={15} />
+            <input
+              type="search"
+              className="notes-search-input"
+              placeholder="Search"
+              aria-label="Search notes"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="notes-search-clear"
+                aria-label="Clear search"
+                onClick={() => setSearchQuery('')}
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        )}
 
         {folderNotes.length === 0 ? (
           <div className="notes-empty-list">
@@ -729,32 +894,45 @@ export const IdeasHubView: React.FC = () => {
             )}
           </div>
         ) : (
-          <div className="notes-group-card notes-items-card">
-            {folderNotes.map((item) => {
+          <div
+            className={`notes-group-card notes-items-card ${dragState ? 'is-dragging' : ''}`.trim()}
+          >
+            {folderNotes.map((item, idx) => {
               const isSelected = activeNote?.id === item.id;
               const scheduled = state.blocks.find(
                 (b) => b.assignedIdeaId === item.id && !b.completed
               );
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`notes-item-row ${isSelected ? 'is-selected' : ''}`.trim()}
-                  onClick={() => openNote(item.id)}
-                >
+              const blocker = blockedByMap.get(item.id);
+              const covering = item.isBottleneck && item.blocksBelow;
+              const isDragged = dragState?.id === item.id;
+              const shift = rowShiftFor(idx, item.id);
+
+              const rowContent = (
+                <>
                   <div className="notes-item-top">
+                    {reordering && <span className="notes-rank-num">{idx + 1}</span>}
                     <span className="notes-item-title">
                       {item.title.trim() || 'New Note'}
                     </span>
-                    {item.responsibilityType && (
+                    {blocker && (
+                      <span className="notes-mini-badge is-blocked">
+                        <Lock size={10} /> Blocked
+                      </span>
+                    )}
+                    {covering && (
+                      <span className="notes-mini-badge is-covering">
+                        <Layers size={10} /> Covers below
+                      </span>
+                    )}
+                    {!covering && item.isBottleneck && (
+                      <span className="notes-mini-badge is-bottleneck">Bottleneck</span>
+                    )}
+                    {!reordering && item.responsibilityType && (
                       <span className={`notes-mini-badge is-${item.responsibilityType}`}>
                         {responsibilityLabel(item.responsibilityType)}
                       </span>
                     )}
-                    {item.isBottleneck && (
-                      <span className="notes-mini-badge is-bottleneck">Bottleneck</span>
-                    )}
-                    {scheduled && (
+                    {!reordering && scheduled && (
                       <span className="notes-mini-badge is-scheduled">
                         {scheduled.date === '2026-11-17'
                           ? 'Today'
@@ -768,7 +946,58 @@ export const IdeasHubView: React.FC = () => {
                     ) : null}
                     <span>{getPreviewSnippet(item)}</span>
                   </div>
-                </button>
+                </>
+              );
+
+              const rowClass = `notes-item-row ${isSelected && !reordering ? 'is-selected' : ''} ${
+                blocker ? 'is-blocked' : ''
+              } ${covering ? 'is-covering' : ''} ${isDragged ? 'is-dragged' : ''}`
+                .replace(/\s+/g, ' ')
+                .trim();
+
+              return (
+                <div
+                  key={item.id}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(item.id, el);
+                    else rowRefs.current.delete(item.id);
+                  }}
+                  className={`notes-item-slot ${reordering ? 'is-reordering' : ''}`.trim()}
+                  style={
+                    dragState
+                      ? {
+                          transform: `translate3d(0, ${shift}px, 0)`,
+                          transition: isDragged ? 'none' : 'transform 160ms ease',
+                          zIndex: isDragged ? 5 : 1,
+                        }
+                      : undefined
+                  }
+                >
+                  {reordering ? (
+                    <div className={rowClass}>
+                      <div className="notes-item-main">{rowContent}</div>
+                      <span
+                        className="notes-grip"
+                        role="button"
+                        aria-label={`Drag to reprioritize ${item.title || 'note'}`}
+                        onPointerDown={(e) => onGripPointerDown(e, item.id, idx)}
+                        onPointerMove={onGripPointerMove}
+                        onPointerUp={onGripPointerUp}
+                        onPointerCancel={onGripPointerUp}
+                      >
+                        <GripVertical size={18} />
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className={rowClass}
+                      onClick={() => openNote(item.id)}
+                    >
+                      <div className="notes-item-main">{rowContent}</div>
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
