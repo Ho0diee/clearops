@@ -106,6 +106,8 @@ export async function POST(request: Request): Promise<Response> {
         manualCourseId: courseId,
         manualRawSlideText: rawSlideText,
         manualSlideTitle: slideTitle,
+        manualAudiobookCsv:
+          typeof body.audiobookSheetCsv === 'string' ? body.audiobookSheetCsv : undefined,
         forceExtract: true,
       });
       return Response.json(res, { status: 200, headers });

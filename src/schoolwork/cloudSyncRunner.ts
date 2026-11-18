@@ -12,7 +12,10 @@ import {
   mergeUniversalPayload,
   type UniversalSyncPayload,
 } from '../store/universalMerge.js';
-import { fetchLiveAudiobookTracks } from './audiobookCatalog.js';
+import {
+  fetchLiveAudiobookTracks,
+  parseAudiobookTracksFromCsv,
+} from './audiobookCatalog.js';
 import {
   addDays,
   applyExtractedAssignmentsToSchedule,
@@ -468,6 +471,7 @@ export async function runAutomatedSchoolworkPipeline(options?: {
   manualCourseId?: SchoolCourseId;
   manualRawSlideText?: string;
   manualSlideTitle?: string;
+  manualAudiobookCsv?: string;
   forceExtract?: boolean;
 }): Promise<{
   ok: boolean;
@@ -535,7 +539,9 @@ export async function runAutomatedSchoolworkPipeline(options?: {
     }
   }
 
-  const audiobookTracks = await fetchLiveAudiobookTracks(accessToken);
+  const audiobookTracks = options?.manualAudiobookCsv?.trim()
+    ? parseAudiobookTracksFromCsv(options.manualAudiobookCsv)
+    : await fetchLiveAudiobookTracks(accessToken);
 
   // Atomically read, reconcile/schedule, and write Vercel Blob workspace
   const commitOnce = async (): Promise<{

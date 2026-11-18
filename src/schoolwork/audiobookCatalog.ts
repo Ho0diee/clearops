@@ -953,6 +953,66 @@ export function computeEcoModulesDurationWithBuffer(
   };
 }
 
+export function parseAudiobookTracksFromCsv(csvText: string): ApesAudiobookTrack[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < csvText.length; i++) {
+    const ch = csvText[i];
+    if (inQuotes) {
+      if (ch === '"' && csvText[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(cell);
+      cell = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && csvText[i + 1] === '\n') i++;
+      row.push(cell);
+      if (row.some((v) => v.trim() !== '')) rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+  if (cell.length > 0 || row.length > 0) {
+    row.push(cell);
+    if (row.some((v) => v.trim() !== '')) rows.push(row);
+  }
+
+  if (rows.length < 2) return APES_AUDIOBOOK_TRACKS;
+
+  const parsed: ApesAudiobookTrack[] = [];
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const trackNum = Number(r[0]);
+    if (!Number.isFinite(trackNum) || trackNum <= 0) continue;
+    parsed.push({
+      trackNumber: trackNum,
+      unitNumber: Number(r[1] || 0),
+      unitTitle: r[2] || '',
+      segmentType: r[3] || 'module',
+      moduleNumber: r[4] !== undefined && r[4].trim() !== '' ? Number(r[4]) : null,
+      title: r[5] || '',
+      estLengthFormatted: r[8] || '',
+      estMinutes: Number(r[9] || 0),
+      actualMinutes: parseSheetDurationMinutes(r[13]),
+    });
+  }
+
+  return parsed.length > 0 ? parsed : APES_AUDIOBOOK_TRACKS;
+}
+
 /**
  * Optionally fetches live rows from Google Sheets API (when OAuth token or API key is present)
  * so newly recorded Actual Audio Lengths on the spreadsheet override static estimates automatically.

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Intuition 1-Click Sync Options</title>
+    <style>
+      body {
+        font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+        background: #faf9f5;
+        color: #18181b;
+        max-width: 560px;
+        margin: 32px auto;
+        padding: 0 20px;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #e5e2d9;
+        border-radius: 12px;
+        padding: 20px;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 6px;
+      }
+      p.sub {
+        font-size: 13px;
+        color: #57534e;
+        margin: 0 0 18px;
+        line-height: 1.45;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        color: #44403c;
+        margin-bottom: 5px;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 9px 11px;
+        border-radius: 8px;
+        border: 1px solid #d6d3d1;
+        font-size: 13px;
+        margin-bottom: 14px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      button {
+        padding: 9px 16px;
+        border-radius: 8px;
+        border: none;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .primary {
+        background: #15803d;
+        color: #fff;
+      }
+      .secondary {
+        background: #e7e5e4;
+        color: #18181b;
+      }
+      #status {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: #f4f2ec;
+        font-size: 12.5px;
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Intuition — 1-Click Eco &amp; Audiobook Sheet Sync</h1>
+      <p class="sub">
+        Click the extension icon in your Chrome toolbar anytime to pull Ms. Fox's Eco Google Slide
+        + live APES Audiobook Sheet durations and push straight to <strong>airbnb710.com</strong>.
+      </p>
+
+      <label for="ecoSlideId">Eco (Ms. Fox) Google Slide ID</label>
+      <input id="ecoSlideId" />
+
+      <label for="audiobookSheetId">APES Audiobook Lengths Google Sheet ID</label>
+      <input id="audiobookSheetId" />
+
+      <label for="litSlideId">Lit (Mr. Lauby) Google Slide ID (Optional)</label>
+      <input id="litSlideId" placeholder="Paste Slide ID when ready" />
+
+      <label for="precalcSlideId">Pre-Calc (Ms. Grover) Google Slide ID (Optional)</label>
+      <input id="precalcSlideId" placeholder="Paste Slide ID when ready" />
+
+      <div class="row">
+        <button id="saveBtn" class="primary">Save IDs</button>
+        <button id="syncBtn" class="secondary">Run Sync Now</button>
+      </div>
+
+      <div id="status">Ready. Click the extension toolbar icon anytime to sync.</div>
+    </div>
+    <script src="options.js"></script>
+  </body>
+</html>
