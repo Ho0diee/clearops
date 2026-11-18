@@ -3272,6 +3272,24 @@ html.is-schedule-locked #root {
   border: 1px solid var(--amber-border);
 }
 
+.notes-mini-badge.is-paid {
+  background: var(--streak-bg);
+  color: var(--streak-text);
+  border: 1px solid var(--streak-border);
+}
+
+.notes-mini-badge.is-cost {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border: 1px solid var(--danger-border);
+}
+
+.notes-mini-badge.is-time-saving {
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary);
+  border: 1px solid var(--accent-primary-border);
+}
+
 .notes-mini-badge.is-scheduled {
   background: var(--zone-bg);
   color: var(--zone-text);
@@ -3400,6 +3418,46 @@ html.is-schedule-locked #root {
   opacity: 0;
   font-size: 16px; /* prevents iOS zoom-on-focus without inflating pill size */
   cursor: pointer;
+}
+
+.notes-resp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-pill);
+  border: 1px solid #E5E2D8;
+  background: #F5F4EE;
+  color: var(--text-secondary);
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 140ms var(--ease-calm);
+}
+
+.notes-resp-toggle:hover {
+  background: #ECEAE0;
+  color: var(--text-primary);
+}
+
+.notes-resp-toggle.is-paid {
+  background: var(--streak-bg);
+  border-color: var(--streak-border);
+  color: var(--streak-text);
+}
+
+.notes-resp-toggle.is-cost {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
+.notes-resp-toggle.is-time-saving {
+  background: var(--accent-primary-soft);
+  border-color: var(--accent-primary-border);
+  color: var(--accent-primary);
 }
 
 .notes-tag-toggle {

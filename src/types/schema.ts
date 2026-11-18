@@ -50,6 +50,8 @@ export interface ReminderItem {
 
 export type IdeaStatus = 'active' | 'waiting-on' | 'completed';
 
+export type IdeaResponsibilityType = 'paid' | 'cost' | 'time-saving';
+
 export interface IdeaItem {
   id: string;
   project: string; // Folder / Category name (e.g., 'OHCR', 'CBS', 'Personal')
@@ -58,6 +60,7 @@ export interface IdeaItem {
   startingStep: string;
   notes?: string; // Freeform multi-line note body (Apple Notes style)
   isBottleneck: boolean;
+  responsibilityType?: IdeaResponsibilityType;
   status: IdeaStatus;
   waitingReason?: string;
   estimatedMinutes?: number;

@@ -6,20 +6,45 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Clock,
+  DollarSign,
   Folder,
   FolderPlus,
   Lightbulb,
+  Receipt,
   Search,
   SquarePen,
+  Tag,
   Trash2,
   X,
 } from 'lucide-react';
 import { formatShortDate, useOpsStore } from '../../store/opsStore';
 import { formatFriendlyTime } from '../../store/scheduleAi';
-import type { CalendarBlock, IdeaItem } from '../../types/schema';
+import type { CalendarBlock, IdeaItem, IdeaResponsibilityType } from '../../types/schema';
 
 type SmartFolderId = '__ALL__' | '__BOTTLENECKS__' | string;
 type MobileNotesPane = 'folders' | 'list' | 'note';
+
+const RESPONSIBILITY_CYCLE: (IdeaResponsibilityType | undefined)[] = [
+  'paid',
+  'cost',
+  'time-saving',
+  undefined,
+];
+
+function nextResponsibilityType(
+  current?: IdeaResponsibilityType
+): IdeaResponsibilityType | undefined {
+  const idx = RESPONSIBILITY_CYCLE.indexOf(current);
+  return RESPONSIBILITY_CYCLE[(idx + 1) % RESPONSIBILITY_CYCLE.length];
+}
+
+function responsibilityLabel(type?: IdeaResponsibilityType): string {
+  if (type === 'paid') return 'Paid';
+  if (type === 'cost') return 'Cost';
+  if (type === 'time-saving') return 'Time-Saving';
+  return 'Responsibility';
+}
 
 function isOpenEmptyZone(b: CalendarBlock): boolean {
   if (b.kind !== 'empty-zone' || b.completed) return false;
@@ -329,8 +354,33 @@ export const IdeasHubView: React.FC = () => {
 
         {/* Pure Apple Notes Paper Canvas */}
         <div className="notes-paper">
-          {/* Lightweight Pill Strip: Idea/Bottleneck · Empty Zone */}
+          {/* Lightweight Pill Strip: Responsibility (Paid/Cost/Time-Saving) · Idea/Bottleneck · Empty Zone */}
           <div className="notes-chip-row">
+            <button
+              type="button"
+              className={`notes-resp-toggle ${
+                note.responsibilityType ? `is-${note.responsibilityType}` : ''
+              }`.trim()}
+              onClick={() =>
+                actions.updateIdea(note.id, {
+                  responsibilityType: nextResponsibilityType(note.responsibilityType),
+                  updatedAt: new Date().toISOString(),
+                })
+              }
+              title="Tap to cycle: Paid, Cost, or Time-Saving responsibility"
+            >
+              {note.responsibilityType === 'paid' ? (
+                <DollarSign size={12} />
+              ) : note.responsibilityType === 'cost' ? (
+                <Receipt size={12} />
+              ) : note.responsibilityType === 'time-saving' ? (
+                <Clock size={12} />
+              ) : (
+                <Tag size={12} />
+              )}
+              <span>{responsibilityLabel(note.responsibilityType)}</span>
+            </button>
+
             <button
               type="button"
               className={`notes-tag-toggle ${note.isBottleneck ? 'is-bottleneck' : ''}`.trim()}
@@ -724,6 +774,11 @@ export const IdeasHubView: React.FC = () => {
                     <span className="notes-item-title">
                       {item.title.trim() || 'New Note'}
                     </span>
+                    {item.responsibilityType && (
+                      <span className={`notes-mini-badge is-${item.responsibilityType}`}>
+                        {responsibilityLabel(item.responsibilityType)}
+                      </span>
+                    )}
                     {item.isBottleneck && (
                       <span className="notes-mini-badge is-bottleneck">Bottleneck</span>
                     )}
