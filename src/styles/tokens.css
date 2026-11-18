@@ -2058,11 +2058,57 @@ textarea {
   background: var(--bg-surface-hover);
 }
 
-.sched-page {
+/* Hard viewport lock when Schedule tab is active (prevents iOS rubber-band / page drop) */
+html.is-schedule-locked,
+html.is-schedule-locked body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: var(--app-vvh, 100dvh);
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html.is-schedule-locked #root {
+  height: var(--app-vvh, 100dvh);
+  overflow: hidden;
+}
+
+.ops-shell.is-schedule-lock {
+  height: var(--app-vvh, 100dvh);
+  min-height: 0;
+  max-height: var(--app-vvh, 100dvh);
+  overflow: hidden;
+}
+
+.ops-shell.is-schedule-lock .ops-topbar,
+.ops-shell.is-schedule-lock .gcal-head,
+.ops-shell.is-schedule-lock .sched-chat-composer,
+.ops-shell.is-schedule-lock .ops-bottom-nav {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ops-shell.is-schedule-lock .sched-chat-input {
+  touch-action: manipulation;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.ops-shell.is-schedule-lock .ops-main.is-schedule {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  height: calc(100dvh - 60px - 48px);
-  min-height: 520px;
+  overflow: hidden;
+}
+
+.sched-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   overflow: hidden;
@@ -2212,6 +2258,7 @@ textarea {
 .sched-chat-log {
   max-height: 104px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2313,13 +2360,26 @@ textarea {
 }
 
 @media (max-width: 768px) {
-  /* Schedule fills exactly the space between header and bottom tab bar */
+  /* Schedule fills exact flex space between header and bottom tab bar with zero document scroll */
+  .ops-shell.is-schedule-lock {
+    padding-bottom: 0;
+  }
+
+  .ops-shell.is-schedule-lock .ops-bottom-nav {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  html.is-kb-open .ops-shell.is-schedule-lock .ops-bottom-nav {
+    display: none;
+  }
+
   .ops-main.is-schedule {
     padding: 0;
   }
 
   .sched-page {
-    height: calc(100dvh - 52px - 74px - env(safe-area-inset-bottom, 0px));
+    height: auto;
     min-height: 0;
     border: none;
     border-radius: 0;

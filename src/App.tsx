@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   Activity,
   Calendar,
@@ -22,6 +22,67 @@ import { SiteConfigView } from './features/config';
 
 const ClearOpsWorkspace: React.FC = () => {
   const { state, actions } = useOpsStore();
+  const isScheduleLocked = state.activeTab === 'schedule';
+
+  // Hard-lock viewport on iPhone/iOS Safari when on Schedule so touching/dragging
+  // outside the calendar grid (e.g. voice button, chat bar, header) never drops/bounces the page.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!isScheduleLocked) {
+      root.classList.remove('is-schedule-locked', 'is-kb-open');
+      root.style.removeProperty('--app-vvh');
+      return;
+    }
+
+    root.classList.add('is-schedule-locked');
+    window.scrollTo(0, 0);
+
+    const vv = window.visualViewport;
+    const syncViewport = () => {
+      const h = vv ? Math.round(vv.height) : window.innerHeight;
+      root.style.setProperty('--app-vvh', `${h}px`);
+      const kbOpen = vv ? vv.height < window.innerHeight - 110 : false;
+      root.classList.toggle('is-kb-open', kbOpen);
+      if (window.scrollY !== 0 || window.scrollX !== 0) {
+        window.scrollTo(0, 0);
+      }
+    };
+
+    syncViewport();
+    vv?.addEventListener('resize', syncViewport);
+    vv?.addEventListener('scroll', syncViewport);
+    window.addEventListener('resize', syncViewport);
+
+    const preventRubberBand = (e: TouchEvent) => {
+      if (state.isReflectionOpen) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+
+      // Allow scrolling inside the calendar time grid or open event detail sheet
+      if (target.closest('.gcal-scroll') || target.closest('.gcal-sheet')) {
+        return;
+      }
+
+      // Allow scrolling inside chat log only when it actually overflows vertically
+      const chatLog = target.closest('.sched-chat-log') as HTMLElement | null;
+      if (chatLog && chatLog.scrollHeight > chatLog.clientHeight) {
+        return;
+      }
+
+      e.preventDefault();
+    };
+
+    document.addEventListener('touchmove', preventRubberBand, { passive: false });
+
+    return () => {
+      vv?.removeEventListener('resize', syncViewport);
+      vv?.removeEventListener('scroll', syncViewport);
+      window.removeEventListener('resize', syncViewport);
+      document.removeEventListener('touchmove', preventRubberBand);
+      root.classList.remove('is-schedule-locked', 'is-kb-open');
+      root.style.removeProperty('--app-vvh');
+    };
+  }, [isScheduleLocked, state.isReflectionOpen]);
 
   const activeIdeasCount = state.ideas.filter((i) => i.status === 'active').length;
   const activeGoalsCount = state.pacedGoals.filter((g) => g.status === 'active').length;
@@ -35,7 +96,7 @@ const ClearOpsWorkspace: React.FC = () => {
   ];
 
   return (
-    <div className="ops-shell">
+    <div className={`ops-shell ${isScheduleLocked ? 'is-schedule-lock' : ''}`.trim()}>
       <header className="ops-topbar">
         <div className="ops-topbar-left">
           <button
