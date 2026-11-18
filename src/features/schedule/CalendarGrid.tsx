@@ -100,6 +100,7 @@ interface CalendarPaneProps {
   reminders: ReminderItem[];
   highlightId?: string | null;
   liveDraft?: VoiceScheduleDraft | null;
+  fallbackDraftIso?: string;
   onOpenBlock: (id: string) => void;
   onOpenReminder: (id: string) => void;
 }
@@ -116,6 +117,7 @@ const CalendarPane = memo<CalendarPaneProps>(
     reminders,
     highlightId,
     liveDraft,
+    fallbackDraftIso,
     onOpenBlock,
     onOpenReminder,
   }) => {
@@ -125,7 +127,8 @@ const CalendarPane = memo<CalendarPaneProps>(
           const laid = layoutColumn(blocks.filter((b) => b.date === iso));
           const dayReminders = reminders.filter((r) => r.date === iso);
           const showNow = iso === TODAY_ANCHOR && nowMin >= startHour * 60 && nowMin <= endHour * 60;
-          const draftOnThisDay = liveDraft && liveDraft.date === iso ? liveDraft : null;
+          const targetDraftIso = liveDraft ? liveDraft.date ?? fallbackDraftIso : null;
+          const draftOnThisDay = liveDraft && targetDraftIso === iso ? liveDraft : null;
 
           return (
             <div
@@ -139,12 +142,12 @@ const CalendarPane = memo<CalendarPaneProps>(
                 const height = Math.max(isWeek ? 18 : 22, ((e - s) / 60) * hourHeight - 2);
                 const roomy = !isWeek && height >= 40;
                 const clampLines = isWeek ? Math.max(1, Math.floor((height - 6) / 12.5)) : undefined;
-                const isSlotDraftTarget =
+                    const isSlotDraftTarget =
                   draftOnThisDay?.mode === 'fill-slot' && draftOnThisDay.targetBlockId === block.id;
                 const displayTitle = isSlotDraftTarget
                   ? draftOnThisDay.title
                     ? `Empty Zone — ${draftOnThisDay.title}`
-                    : 'Empty Zone — Speak task to place here…'
+                    : 'Empty Zone — ?'
                   : isWeek
                   ? shortTitle(block)
                   : block.title;
@@ -220,14 +223,15 @@ const CalendarPane = memo<CalendarPaneProps>(
                       }}
                     >
                       <span className="gcal-ev-title">
-                        {draftOnThisDay.title || 'Say event title…'}
+                        {draftOnThisDay.title || '?'}
                       </span>
                       <span className="gcal-ev-time">
+                        {!draftOnThisDay.date ? 'Day ? · ' : ''}
                         {hasEnd
                           ? `${fmtTime(draftOnThisDay.startTime)} – ${fmtTime(
                               draftOnThisDay.endTime!
                             )}`
-                          : `${fmtTime(draftOnThisDay.startTime)} – ?  ·  Say end time`}
+                          : `${fmtTime(draftOnThisDay.startTime)} – ?`}
                       </span>
                     </div>
                   );
@@ -272,7 +276,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                   >
                     <Bell size={10} />
                     <span className="gcal-rem-title">
-                      {draftOnThisDay.title || 'Say what reminder is about…'}
+                      {draftOnThisDay.title || '?'}
                     </span>
                     {!isWeek && (
                       <span className="gcal-rem-time">{fmtTime(draftOnThisDay.startTime)}</span>
@@ -846,6 +850,23 @@ export const CalendarGrid: React.FC<{
         onPointerCancel={(e) => finishPointerGesture(e, true)}
         onWheel={onWheel}
       >
+        {liveDraft && !liveDraft.startTime && (
+          <div
+            className={`gcal-floating-draft ${
+              liveDraft.mode === 'reminder'
+                ? 'is-reminder'
+                : liveDraft.mode === 'empty-zone'
+                ? 'gcal-ev-zone'
+                : `gcal-ev-${(liveDraft.whyCategory || 'Organization').toLowerCase()}`
+            }`.trim()}
+          >
+            <span className="gcal-ev-title">{liveDraft.title || '?'}</span>
+            <span className="gcal-ev-time">
+              {liveDraft.date ? formatShortDate(liveDraft.date) : 'Day ?'} ·{' '}
+              {liveDraft.mode === 'reminder' ? 'Time ?' : '? – ?'}
+            </span>
+          </div>
+        )}
         <div className="gcal-body" style={{ height: gridHeight }}>
           {/* Protected fixed-width time gutter — never covered by horizontal swipes or zooms */}
           <div className="gcal-gutter gcal-hours">
@@ -882,6 +903,7 @@ export const CalendarGrid: React.FC<{
                     reminders={windowReminders}
                     highlightId={null}
                     liveDraft={liveDraft}
+                    fallbackDraftIso={state.selectedDate}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />
@@ -899,6 +921,7 @@ export const CalendarGrid: React.FC<{
                     reminders={windowReminders}
                     highlightId={highlightId}
                     liveDraft={liveDraft}
+                    fallbackDraftIso={state.selectedDate}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />
@@ -916,6 +939,7 @@ export const CalendarGrid: React.FC<{
                     reminders={windowReminders}
                     highlightId={null}
                     liveDraft={liveDraft}
+                    fallbackDraftIso={state.selectedDate}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />

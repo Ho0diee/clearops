@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Mic, Sparkles, X } from 'lucide-react';
-import { formatShortDate, useOpsStore } from '../../store/opsStore';
-import { formatFriendlyTime } from '../../store/scheduleAi';
+import { Check, Mic, X } from 'lucide-react';
+import { useOpsStore } from '../../store/opsStore';
 import type { ParsedLiveInput, VoiceScheduleDraft } from '../../types/schema';
 
 interface SpeechRecResultItem {
@@ -19,29 +18,6 @@ interface SpeechRec {
   start: () => void;
   stop: () => void;
 }
-
-interface SlotPillProps {
-  label: string;
-  value?: string;
-  emphasizedMissing?: boolean;
-}
-
-const SlotPill: React.FC<SlotPillProps> = ({ label, value, emphasizedMissing }) => {
-  const filled = Boolean(value);
-  return (
-    <div
-      className={`voice-slot ${filled ? 'is-filled' : 'is-missing'} ${
-        !filled && emphasizedMissing ? 'is-next-needed' : ''
-      }`.trim()}
-    >
-      <span className="voice-slot-label">
-        {filled ? <Check size={10} strokeWidth={3} /> : <span className="voice-slot-q">?</span>}
-        {label}
-      </span>
-      <span className="voice-slot-value">{value || 'Needed'}</span>
-    </div>
-  );
-};
 
 export const ScheduleChat: React.FC<{
   onDraftChange: (draft: VoiceScheduleDraft | null) => void;
@@ -63,7 +39,6 @@ export const ScheduleChat: React.FC<{
   });
 
   const [listening, setListening] = useState(false);
-  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   const recRef = useRef<SpeechRec | null>(null);
   const wantListeningRef = useRef(false);
@@ -119,7 +94,6 @@ export const ScheduleChat: React.FC<{
     baseTextRef.current = '';
     sessionTextRef.current = '';
     setTranscript('');
-    setVoiceError(null);
     onDraftChange(null);
     if (window.location.search.includes('voiceDraft=')) {
       window.history.replaceState({}, '', window.location.pathname + window.location.hash);
@@ -134,7 +108,6 @@ export const ScheduleChat: React.FC<{
     baseTextRef.current = '';
     sessionTextRef.current = '';
     setTranscript('');
-    setVoiceError(null);
     if (window.location.search.includes('voiceDraft=')) {
       window.history.replaceState({}, '', window.location.pathname + window.location.hash);
     }
@@ -143,7 +116,6 @@ export const ScheduleChat: React.FC<{
     }
   }, [actions, onAdded, stopMicSession]);
 
-  // Allow pressing Enter to finish & commit once all required slots are spoken
   useEffect(() => {
     if (!draft && !listening) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -170,7 +142,6 @@ export const ScheduleChat: React.FC<{
     if (!Ctor) {
       wantListeningRef.current = false;
       setListening(false);
-      setVoiceError('Speech recognition is not supported in this browser.');
       return;
     }
 
@@ -205,24 +176,10 @@ export const ScheduleChat: React.FC<{
 
       rec.onerror = (ev) => {
         const errCode = ev?.error || '';
-        if (
-          errCode === 'not-allowed' ||
-          errCode === 'service-not-allowed' ||
-          errCode === 'audio-capture'
-        ) {
-          wantListeningRef.current = false;
-          setListening(false);
-          recRef.current = null;
-          setVoiceError('Microphone access is needed to speak events.');
-          return;
-        }
         if (errCode !== 'no-speech' && errCode !== 'aborted') {
           wantListeningRef.current = false;
           setListening(false);
           recRef.current = null;
-          if (errCode === 'network') {
-            setVoiceError('Speech service unavailable in this window — use Chrome or iPhone Safari.');
-          }
         }
       };
 
@@ -236,8 +193,6 @@ export const ScheduleChat: React.FC<{
         }
         recRef.current = null;
 
-        // Keep mic open across natural thinking pauses while user reads what's missing,
-        // unless recognition exited immediately without audio (e.g. headless browser).
         const elapsed = Date.now() - startedAt;
         if (wantListeningRef.current && (heardAnything || elapsed > 650)) {
           try {
@@ -260,7 +215,6 @@ export const ScheduleChat: React.FC<{
   }, []);
 
   const toggleMic = () => {
-    setVoiceError(null);
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
@@ -275,105 +229,16 @@ export const ScheduleChat: React.FC<{
     startRecognitionPass();
   };
 
-  const showCard = listening || Boolean(draft) || Boolean(voiceError);
-  const firstMissing = draft?.missingFields[0];
+  const hasActiveSession = listening || Boolean(draft);
 
   return (
-    <div className={`voice-dock ${showCard ? 'is-expanded' : ''}`.trim()}>
-      {showCard && (
-        <div className="voice-builder-card" aria-live="polite">
-          <div className="voice-transcript-row">
-            <span className={`voice-live-dot ${listening ? 'is-active' : ''}`.trim()} />
-            <span className="voice-transcript-text">
-              {transcript.trim()
-                ? `“${transcript.trim()}”`
-                : voiceError || 'Listening… say what you want to schedule'}
-            </span>
-          </div>
-
-          {draft && (
-            <>
-              {draft.mode === 'fill-slot' ? (
-                <div className="voice-slots-grid is-two">
-                  <SlotPill
-                    label="Focus Task"
-                    value={draft.title}
-                    emphasizedMissing={firstMissing === 'title'}
-                  />
-                  <SlotPill
-                    label="Open Slot"
-                    value={
-                      draft.date && draft.startTime
-                        ? `${formatShortDate(draft.date)} · ${formatFriendlyTime(draft.startTime)}${
-                            draft.endTime ? `–${formatFriendlyTime(draft.endTime)}` : ''
-                          }`
-                        : undefined
-                    }
-                  />
-                </div>
-              ) : draft.mode === 'reminder' ? (
-                <div className="voice-slots-grid is-three">
-                  <SlotPill
-                    label="Reminder"
-                    value={draft.title}
-                    emphasizedMissing={firstMissing === 'title'}
-                  />
-                  <SlotPill
-                    label="Day"
-                    value={draft.date ? formatShortDate(draft.date) : undefined}
-                    emphasizedMissing={firstMissing === 'date'}
-                  />
-                  <SlotPill
-                    label="Time"
-                    value={draft.startTime ? formatFriendlyTime(draft.startTime) : undefined}
-                    emphasizedMissing={firstMissing === 'startTime'}
-                  />
-                </div>
-              ) : (
-                <div className="voice-slots-grid is-four">
-                  <SlotPill
-                    label="Event"
-                    value={draft.title?.replace(/^Empty Zone\s*[—-]\s*/i, '')}
-                    emphasizedMissing={firstMissing === 'title'}
-                  />
-                  <SlotPill
-                    label="Day"
-                    value={draft.date ? formatShortDate(draft.date) : undefined}
-                    emphasizedMissing={firstMissing === 'date'}
-                  />
-                  <SlotPill
-                    label="Start"
-                    value={draft.startTime ? formatFriendlyTime(draft.startTime) : undefined}
-                    emphasizedMissing={firstMissing === 'startTime'}
-                  />
-                  <SlotPill
-                    label="End"
-                    value={draft.endTime ? formatFriendlyTime(draft.endTime) : undefined}
-                    emphasizedMissing={firstMissing === 'endTime'}
-                  />
-                </div>
-              )}
-
-              <div
-                className={`voice-prompt-bar ${
-                  draft.isComplete ? 'is-complete' : 'is-incomplete'
-                }`.trim()}
-              >
-                {draft.isComplete ? <Check size={13} strokeWidth={2.6} /> : <Sparkles size={13} />}
-                <span>{draft.nextPrompt}</span>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
+    <div className="voice-dock">
       <div className="voice-controls-row">
-        {showCard && (
+        {hasActiveSession && (
           <button
             type="button"
             className="voice-side-btn is-cancel"
             aria-label="Cancel voice input"
-            title="Clear"
             onPointerDown={(e) => e.preventDefault()}
             onMouseDown={(e) => e.preventDefault()}
             onClick={clearDraft}
@@ -386,7 +251,6 @@ export const ScheduleChat: React.FC<{
           type="button"
           className={`voice-orb-btn ${listening ? 'is-listening' : ''}`.trim()}
           aria-label={listening ? 'Pause microphone' : 'Tap to speak to schedule'}
-          title={listening ? 'Pause microphone' : 'Speak to schedule'}
           onPointerDown={(e) => e.preventDefault()}
           onMouseDown={(e) => e.preventDefault()}
           onClick={toggleMic}
@@ -394,12 +258,11 @@ export const ScheduleChat: React.FC<{
           <Mic size={22} />
         </button>
 
-        {showCard && (
+        {hasActiveSession && (
           <button
             type="button"
             className={`voice-side-btn is-confirm ${draft?.isComplete ? 'is-ready' : ''}`.trim()}
-            aria-label={draft?.isComplete ? 'Confirm and add to schedule' : 'Speak remaining details to finish'}
-            title={draft?.isComplete ? 'Add to schedule (Enter)' : draft?.nextPrompt || 'Keep speaking to finish'}
+            aria-label={draft?.isComplete ? 'Confirm and add to schedule' : 'Incomplete schedule item'}
             disabled={!draft?.isComplete}
             onPointerDown={(e) => e.preventDefault()}
             onMouseDown={(e) => e.preventDefault()}
