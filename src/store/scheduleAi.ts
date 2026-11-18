@@ -44,23 +44,27 @@ function isOpenFocusBlock(b: CalendarBlock): boolean {
   return /open focus slot|reclaimed focus slot|^empty zone$/i.test(b.title.trim());
 }
 
-export function inferWhyFromTitle(title: string): WhyCategory {
-  const lower = title.toLowerCase();
+export function inferWhyFromTitle(title: string, rawContext = ''): WhyCategory {
+  const lower = `${title} ${rawContext}`.toLowerCase();
   if (
-    /(class|lecture|seminar|lab|study|exam|homework|problem set|school|quiz|thesis|course|cs\b)/.test(
+    /(class|lecture|seminar|lab|study|exam|homework|problem set|school|quiz|thesis|course|calculus|chemistry|cs\b)/.test(
       lower
     )
   ) {
     return 'School';
   }
   if (
-    /(gym|run|workout|strength|mobility|dentist|doctor|therapy|sleep|walk|yoga|lift|health)/.test(
+    /(gym|run|workout|strength|mobility|dentist|doctor|therapy|sleep|walk|yoga|lift|health|haircut|vet|pt\b)/.test(
       lower
     )
   ) {
     return 'Health';
   }
-  if (/(family|dinner|lunch with|mom|dad|sister|brother|kids|parents|call home|date night)/.test(lower)) {
+  if (
+    /(family|dinner|lunch with|mom|mum|dad|mother|father|sister|brother|grandma|grandpa|aunt|uncle|cousin|kids|parents|call home|date night|birthday|anniversary|wedding)/.test(
+      lower
+    )
+  ) {
     return 'Family';
   }
   return 'Organization';
@@ -150,11 +154,15 @@ function normalizeSpokenTranscript(raw: string): string {
 type DayPeriodHint = 'morning' | 'afternoon' | 'evening' | null;
 
 function detectPeriodHint(text: string): DayPeriodHint {
-  if (/\b(this\s+morning|in\s+the\s+morning|morning|early)\b/i.test(text)) return 'morning';
-  if (/\b(tonight|this\s+evening|in\s+the\s+evening|evening|night|dinner)\b/i.test(text)) {
+  if (/\b(this\s+morning|in\s+the\s+morning|morning|early|breakfast)\b/i.test(text)) return 'morning';
+  if (
+    /\b(tonight|this\s+evening|in\s+the\s+evening|evening|night|dinner|birthday|party|anniversary|drinks|date\s+night)\b/i.test(
+      text
+    )
+  ) {
     return 'evening';
   }
-  if (/\b(this\s+afternoon|in\s+the\s+afternoon|afternoon)\b/i.test(text)) return 'afternoon';
+  if (/\b(this\s+afternoon|in\s+the\s+afternoon|afternoon|lunch)\b/i.test(text)) return 'afternoon';
   return null;
 }
 
@@ -324,38 +332,188 @@ function findOpenScheduleGap(
   return { startTime: '16:00', endTime: fromMinutes(16 * 60 + durationMins) };
 }
 
-function cleanExtractedTitle(raw: string): string {
-  let t = raw
+function formatPossessiveNoun(ownerRaw: string): string {
+  const clean = ownerRaw.trim().replace(/'s$/i, '');
+  // Speech-to-text often transcribes "mom's" as "moms", "dad's" as "dads", "grandma's" as "grandmas"
+  const singularized = clean.replace(
+    /^(mom|mum|dad|mother|father|sister|brother|grandma|grandpa|nana|papa|aunt|uncle|cousin|wife|husband|partner|boss|friend|doctor|dentist)s$/i,
+    '$1'
+  );
+  const cap = singularized.charAt(0).toUpperCase() + singularized.slice(1).toLowerCase();
+  return /s$/i.test(cap) ? `${cap}'` : `${cap}'s`;
+}
+
+const SMALL_TITLE_WORDS = new Set(['w/', 'to', 'for', 'of', 'in', 'on', 'at', '&', 'vs']);
+
+function toPunchyTitleCase(phrase: string): string {
+  const words = phrase.split(/\s+/).filter(Boolean);
+  return words
+    .map((w, idx) => {
+      if (w.toLowerCase() === 'w/') return 'w/';
+      if (idx > 0 && SMALL_TITLE_WORDS.has(w.toLowerCase())) {
+        return w.toLowerCase();
+      }
+      // Preserve intentional acronyms like OHCR, CBS, Q4, AI, CS
+      if (/^[A-Z0-9]{2,5}$/.test(w)) return w;
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .join(' ');
+}
+
+/**
+ * Distills rambling, conversational, or self-clarifying speech into a short, punchy 1–4 word calendar title.
+ * e.g. "can you add a family mebers birthday, my moms" -> "Mom's Birthday"
+ *      "remind me that I need to send the guest lockbox code" -> "Send Guest Lockbox Code"
+ */
+function summarizePunchyTitle(raw: string): string {
+  let t = raw.trim();
+  if (!t) return '';
+
+  // 1. Peel stacked conversational, polite, and scheduling wrappers
+  for (let pass = 0; pass < 5; pass += 1) {
+    const before = t;
+    t = t
+      .replace(
+        /^(?:hey|hi|yo|ok|okay|um|uh|er|ah|like|so|well|basically|actually|intuition|please|real\s+quick)+[, ]*/i,
+        ''
+      )
+      .replace(
+        /^(?:can\s+you|could\s+you|would\s+you|will\s+you|do\s+me\s+a\s+favor\s+and|i\s+was\s+wondering\s+if\s+you\s+could|make\s+sure\s+(?:to|i)|don'?t\s+let\s+me\s+forget\s+to|let'?s)(?:\s+please)?(?:\s+|$)/i,
+        ''
+      )
+      .replace(
+        /^(?:go\s+ahead\s+and|put\s+down(?:\s+that)?|write\s+down(?:\s+that)?|jot\s+down(?:\s+that)?|note\s+that|add\s+on\s+here(?:\s+that)?|mark\s+down(?:\s+that)?)(?:\s+|$)/i,
+        ''
+      )
+      .replace(
+        /^(?:i\s+am\s+going\s+to\s+be|i'?m\s+going\s+to\s+be|i'?m\s+gonna\s+be|i\s+am\s+going\s+to|i'?m\s+going\s+to|i'?m\s+gonna|we\s+are\s+going\s+to|we'?re\s+going\s+to|we'?re\s+gonna|i\s+have\s+got\s+to|i'?ve\s+got\s+to|i\s+got\s+to|i\s+gotta|i\s+need\s+to|i\s+have\s+to|i\s+want\s+to|i\s+wanna|i\s+should|i\s+have(?:\s+got)?|i'?ve\s+got|i\s+got|we\s+have|there'?s\s+going\s+to\s+be|there\s+is\s+going\s+to\s+be|there'?s|there\s+is|add|create|schedule|put|set\s+up|set|book|block\s+out|block|fit\s+in|drop\s+in|open\s+up|open|make|log|record)(?:\s+|$)/i,
+        ''
+      )
+      .replace(
+        /^(?:a\s+|an\s+|the\s+|my\s+|some\s+)?(?:reminder|scheduled\s+event|calendar\s+event|event|time\s+block|block)\s*(?:for\s+me\s+)?(?:(?:to|for|about|on|that)(?:\s+|$))?\s*/i,
+        ''
+      )
+      .replace(/^remind(?:\s+me)?\s*(?:(?:to|about|for|that)(?:\s+|$))?\s*/i, '')
+      .replace(/^(?:a|an|the|some)(?:\s+|$)/i, '')
+      .replace(/^(?:to|for|about|that|on|at|in|into|from|until|til)(?:\s+|$)/i, '')
+      .trim();
+    if (t === before) break;
+  }
+
+  // 2. Strip trailing location/polite/purpose fluff
+  t = t
     .replace(
-      /^(?:hey|hi|yo|ok|okay|um|uh|so|please|can you|could you|would you|will you|let'?s)+[, ]*/gi,
+      /\s+(?:on\s+my\s+(?:schedule|calendar)|to\s+my\s+(?:schedule|calendar)|on\s+the\s+(?:schedule|calendar)|in\s+my\s+(?:schedule|calendar)|for\s+me|right\s+here|in\s+here|here|please|thanks|thank\s+you|if\s+you\s+can|if\s+possible)\s*$/gi,
       ''
     )
-    .replace(/^(?:can you|could you|would you|please)(?:\s+|$)/gi, '')
-    .replace(
-      /^(?:i\s+have(?:\s+got)?|i'?ve\s+got|i\s+got|i\s+need\s+to|i\s+have\s+to|i\s+gotta|we\s+have|there'?s|there\s+is|add|create|schedule|put|set\s+up|set|book|block\s+out|block|fit\s+in|drop\s+in|open\s+up|open|make)(?:\s+|$)/i,
-      ''
-    )
-    .replace(
-      /^(?:a\s+|an\s+|my\s+|some\s+)?(?:reminder|scheduled\s+event|calendar\s+event|event|appointment|time\s+block|block)\s*(?:for\s+me\s+)?(?:(?:to|for|about|on|that)(?:\s+|$))?\s*/i,
-      ''
-    )
-    .replace(/^remind(?:\s+me)?\s*(?:(?:to|about|for|that)(?:\s+|$))?\s*/i, '')
-    // Strip leading bare articles ("add a family dinner" -> "Family dinner", "add a" -> "")
-    .replace(/^(?:a|an|the|my|some)(?:\s+|$)/i, '')
-    .replace(/^(?:to|for|about|that|on|at|in|into|from|until|til)(?:\s+|$)/i, '')
-    .replace(
-      /\s+(?:on\s+my\s+(?:schedule|calendar)|to\s+my\s+(?:schedule|calendar)|on\s+the\s+(?:schedule|calendar)|in\s+my\s+(?:schedule|calendar)|right\s+here|in\s+here|here|please|thanks|thank\s+you)\s*$/gi,
-      ''
-    )
+    .replace(/\s+(?:because|since|so\s+that\s+i\s+can|so\s+i\s+can)\s+.+$/i, '')
     .replace(/\s+(?:at|for|from|between|on|in|into|to|by|around|about|until|til|end|ending|ends)\s*$/gi, '')
     .replace(/^[\s,.:;-]+|[\s,.:;-]+$/g, '')
-    .replace(/\s{2,}/g, ' ')
     .trim();
 
-  if (t) {
-    t = t.charAt(0).toUpperCase() + t.slice(1);
+  if (!t) return '';
+
+  // 3. Handle self-corrections ("dentist, wait no haircut", "gym, I mean yoga")
+  const correctionParts = t.split(
+    /\b(?:wait\s+no|no\s+wait|actually\s+make\s+it|actually\s+no|i\s+mean|sorry)\b[, ]*/i
+  );
+  if (correctionParts.length > 1) {
+    const corrected = correctionParts[correctionParts.length - 1].trim();
+    const headFromFirst = correctionParts[0].match(
+      /\b(birthday|anniversary|party|wedding|dinner|lunch|appointment|game|recital|shower)\b/i
+    );
+    // If correction is just a person/possessive ("my moms") refining an earlier event noun ("birthday"), combine them!
+    if (
+      headFromFirst &&
+      corrected &&
+      !/\b(birthday|anniversary|party|wedding|dinner|lunch|appointment|game|recital|shower)\b/i.test(
+        corrected
+      ) &&
+      /^(?:my\s+|our\s+)?[a-z]+(?:'s|s)?$/i.test(corrected)
+    ) {
+      const owner = corrected.replace(/^(?:my|our)\s+/i, '');
+      return toPunchyTitleCase(`${formatPossessiveNoun(owner)} ${headFromFirst[1]}`);
+    }
+    if (corrected.length >= 2) {
+      t = corrected;
+    }
   }
-  return t;
+
+  // 4. Generic-to-Specific Possessive Clarification (with OR without comma, handles typos like "mebers")!
+  //    e.g. "family mebers birthday, my moms" / "family member's birthday my mom's" / "friend's party, Jake's"
+  const genericOwnerClarify = t.match(
+    /^(?:(?:a|an|the|my|our|some|one\s+of\s+my)\s+)?(?:family\s+me[a-z]*'?s?|relative'?s?|friend'?s?|coworker'?s?|colleague'?s?|somebody'?s?|someone'?s?|person'?s?|kid'?s?|child'?s?|parent'?s?|sibling'?s?)\s+(birthday(?:\s+party|\s+dinner)?|anniversary(?:\s+dinner|\s+party)?|wedding|graduation|baby\s+shower|bridal\s+shower|shower|party|dinner|lunch|brunch|game|recital|visit|appointment|checkup)(?:\s*[,;:-]\s*|\s+)(?:it'?s\s+|specifically\s+|namely\s+|which\s+is\s+|for\s+)?(?:my\s+|our\s+)?([a-z]{2,18})(?:'s)?(?:\s+(?:birthday|party|dinner|anniversary|wedding|appointment))?\s*$/i
+  );
+  if (genericOwnerClarify) {
+    const eventHead = genericOwnerClarify[1];
+    const specificOwner = genericOwnerClarify[2];
+    return toPunchyTitleCase(`${formatPossessiveNoun(specificOwner)} ${eventHead}`);
+  }
+
+  // 4b. "[EventHead] for [my/our] [Person]" -> "Mom's Birthday"
+  const eventForPerson = t.match(
+    /^(?:(?:a|an|the|my)\s+)?(birthday(?:\s+party|\s+dinner)?|anniversary(?:\s+dinner|\s+party)?|party|baby\s+shower|graduation)\s+for\s+(?:my\s+|our\s+)?([a-z]{2,16})\s*$/i
+  );
+  if (eventForPerson) {
+    return toPunchyTitleCase(`${formatPossessiveNoun(eventForPerson[2])} ${eventForPerson[1]}`);
+  }
+
+  // 4c. Generic Category + Specific Appositive ("appointment, haircut" / "workout, leg day" / "meeting: Q4 review")
+  const genericShellAppositive = t.match(
+    /^(?:(?:a|an|the|my|our)\s+)?(?:appointment|meeting|workout|exercise|session|class|errand|task|chore|thing|something)\s*(?:[,;:-]|\b(?:called|named|which\s+is|it'?s)\b)\s*(.+)$/i
+  );
+  if (genericShellAppositive && genericShellAppositive[1].trim().length >= 2) {
+    t = genericShellAppositive[1].trim();
+  }
+
+  // 5. Everyday Phrase Compression into crisp calendar shorthand
+  t = t
+    .replace(/^(?:going\s+to\s+the\s+gym|go\s+to\s+the\s+gym|hit\s+the\s+gym|working\s+out)$/i, 'Gym')
+    .replace(
+      /^(?:going\s+grocery\s+shopping|go\s+grocery\s+shopping|go\s+to\s+the\s+grocery\s+store|going\s+to\s+the\s+grocery\s+store|pick\s+up\s+groceries|get\s+groceries)$/i,
+      'Groceries'
+    )
+    .replace(/^(?:working|my\s+work\s+shift|work\s+shift)$/i, 'Work')
+    .replace(/^(?:working\s+on|work\s+on)\s+(.+)$/i, '$1')
+    .replace(/^(?:studying\s+for|study\s+for)\s+(?:my\s+|the\s+|a\s+|an\s+)?(.+)$/i, 'Study $1')
+    .replace(
+      /^(?:going\s+to\s+(?:a\s+|my\s+|the\s+)?)?(dentist|doctor|haircut|barber|therapy|therapist|optometrist|eye\s+doctor|vet|chiropractor|dermatologist)(?:'?s)?\s+appointment$/i,
+      '$1'
+    )
+    .replace(
+      /^(dinner|lunch|brunch|breakfast|coffee|drinks)\s+with\s+(?:my\s+|our\s+)?(.+)$/i,
+      '$1 w/ $2'
+    )
+    .replace(
+      /^(?:meeting(?:\s+up)?|meet(?:\s+up)?|sync(?:ing)?|catching\s+up|catch\s+up|check[- ]?in)\s+with\s+(?:my\s+|our\s+)?(.+)$/i,
+      'Sync w/ $1'
+    )
+    .replace(/^calling\s+(?:my\s+|the\s+)?(.+)$/i, 'Call $1')
+    .replace(/^picking\s+up\s+(?:my\s+|the\s+)?(.+)$/i, 'Pick Up $1')
+    .replace(/^dropping\s+off\s+(?:my\s+|the\s+)?(.+)$/i, 'Drop Off $1');
+
+  // 6. Strip leading self-possessives ("my mom's birthday" -> "mom's birthday") & restore spoken apostrophes
+  t = t.replace(/^(?:my|our|the|a|an)\s+/i, '');
+  t = t.replace(
+    /\b(mom|mum|dad|mother|father|sister|brother|grandma|grandpa|nana|papa|aunt|uncle|cousin|wife|husband|partner)s\s+(birthday|party|dinner|lunch|brunch|anniversary|wedding|visit|appointment|house|game|recital|graduation)\b/gi,
+    (_, rel: string, ev: string) => `${formatPossessiveNoun(rel)} ${ev}`
+  );
+
+  // 7. Trim interior filler articles on multi-word phrases & cap length to 5 punchy words max
+  let words = t.split(/\s+/).filter(Boolean);
+  if (words.length > 3) {
+    const DropInterior = new Set(['a', 'an', 'the', 'my', 'our', 'some', 'that', 'just', 'really']);
+    words = words.filter((w, i) => i === 0 || !DropInterior.has(w.toLowerCase()));
+  }
+  if (words.length > 5) {
+    words = words.slice(0, 5);
+  }
+
+  return toPunchyTitleCase(words.join(' '));
+}
+
+function cleanExtractedTitle(raw: string): string {
+  return summarizePunchyTitle(raw);
 }
 
 function matchExistingIdea(title: string, ideas: IdeaItem[]): IdeaItem | undefined {
@@ -678,7 +836,7 @@ export function parseProgressiveVoiceDraft(
     startTime: knownStart,
     endTime: knownEnd,
     whyCategory:
-      mode === 'event' && effectiveTitle ? inferWhyFromTitle(effectiveTitle) : undefined,
+      mode === 'event' && effectiveTitle ? inferWhyFromTitle(effectiveTitle, rawTrimmed) : undefined,
     missingFields: missing,
     nextPrompt: buildMissingPrompt(mode, missing, knownStart),
     isComplete: missing.length === 0,
