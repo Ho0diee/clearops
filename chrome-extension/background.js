@@ -237,9 +237,17 @@ function buildClassroomViewUrl(classId, slot, view) {
   return view === 'w' ? `${prefix}/w/${classId}/t/all` : `${prefix}/c/${classId}`;
 }
 
-function waitForTabComplete(tabId, timeoutMs = 22000) {
+const MAX_DETAIL_PAGES_PER_COURSE = 8;
+
+async function navigateAndWait(tabId, url, timeoutMs = 18000) {
+  const existingTab = await chrome.tabs.get(tabId).catch(() => null);
+  if (existingTab?.url === url && existingTab?.status === 'complete') {
+    return true;
+  }
+
   return new Promise((resolve) => {
     let settled = false;
+    let sawLoading = false;
     const finish = (ok) => {
       if (settled) return;
       settled = true;
@@ -249,7 +257,9 @@ function waitForTabComplete(tabId, timeoutMs = 22000) {
     };
 
     const onUpdated = (updatedId, changeInfo) => {
-      if (updatedId === tabId && changeInfo.status === 'complete') {
+      if (updatedId !== tabId) return;
+      if (changeInfo.status === 'loading') sawLoading = true;
+      if (changeInfo.status === 'complete' && sawLoading) {
         finish(true);
       }
     };
@@ -257,169 +267,134 @@ function waitForTabComplete(tabId, timeoutMs = 22000) {
     const timer = setTimeout(() => finish(false), timeoutMs);
     chrome.tabs.onUpdated.addListener(onUpdated);
 
-    chrome.tabs
-      .get(tabId)
-      .then((t) => {
-        if (t?.status === 'complete') finish(true);
-      })
-      .catch(() => finish(false));
+    chrome.tabs.update(tabId, { url }).catch(() => finish(false));
   });
 }
 
 /**
- * Opens ONE temporary background tab for a Google Classroom page, waits for the SPA to render,
- * expands recent assignment items so full homework instructions & due dates are visible,
- * extracts structured text, and immediately closes the tab (zero leftover RAM usage!).
+ * Reads a Classroom overview page (Classwork or Stream) inside an existing background tab:
+ * - Never drops full <main> text (so Stream announcements like "Test is tomorrow" are always captured!).
+ * - Expands collapsed Classwork rows so preview text + /details links render.
+ * - Collects unique assignment/question/material /details URLs in top-down (newest-first) order.
  */
-async function scrapeSingleClassroomUrl(url) {
-  let tab = null;
+async function readClassroomOverviewInTab(tabId, url) {
   try {
-    tab = await chrome.tabs.create({ url, active: false });
-    if (!tab?.id) {
-      return { ok: false, error: 'Could not open background tab', finalUrl: url };
-    }
+    await navigateAndWait(tabId, url, 20000);
 
-    await waitForTabComplete(tab.id, 22000);
-
-    const refreshed = await chrome.tabs.get(tab.id).catch(() => null);
+    const refreshed = await chrome.tabs.get(tabId).catch(() => null);
     const currentUrl = refreshed?.url || url;
     if (
       currentUrl.includes('accounts.google.com') ||
       currentUrl.includes('ServiceLogin')
     ) {
-      return { ok: false, needsSignIn: true, finalUrl: currentUrl, error: 'Not signed in to Google' };
+      return {
+        ok: false,
+        needsSignIn: true,
+        finalUrl: currentUrl,
+        error: 'Not signed in to Google',
+        detailLinks: [],
+      };
     }
 
     const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId },
       func: async () => {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-        // 1. Wait for Classroom SPA content to finish hydrating
         const start = Date.now();
         while (Date.now() - start < 10000) {
           const txt = (document.body?.innerText || '').trim();
-          const hasCards =
-            document.querySelectorAll('[data-stream-item-id], [role="listitem"], main').length > 0;
-          if (txt.length > 220 && hasCards) break;
-          await sleep(350);
+          const hasMain = Boolean(document.querySelector('main'));
+          if (txt.length > 180 && hasMain) break;
+          await sleep(300);
         }
-        await sleep(1200);
+        await sleep(1400);
 
         const bodyCheck = (document.body?.innerText || '').trim();
-        if (
+        const streamItemsCount = document.querySelectorAll('[data-stream-item-id]').length;
+        const looksLikeErrorPage =
+          streamItemsCount === 0 &&
+          bodyCheck.length < 1500 &&
           /class not found|look for it in|you don'?t have access|sign in to continue|choose an account/i.test(
             bodyCheck
-          )
-        ) {
+          );
+
+        if (looksLikeErrorPage) {
           return {
             ok: false,
             wrongAccountOrMissing: true,
             finalUrl: window.location.href,
             title: document.title,
             snippet: bodyCheck.slice(0, 300),
+            detailLinks: [],
           };
         }
 
-        // 2. Expand top 14 collapsed assignment rows inside <main> so full instructions appear
         const mainRoot = document.querySelector('main') || document.body;
+
+        // Expand top 12 collapsed Classwork rows so hidden descriptions & "View instructions" links appear
         const expandCandidates = Array.from(
           mainRoot.querySelectorAll(
-            'li [role="button"][aria-expanded="false"], [data-stream-item-id] [role="button"][aria-expanded="false"]'
+            'li [role="button"][aria-expanded="false"], [data-stream-item-id] [role="button"][aria-expanded="false"], [role="listitem"] [role="button"][aria-expanded="false"]'
           )
-        ).slice(0, 14);
+        ).slice(0, 12);
 
         for (const btn of expandCandidates) {
           try {
             btn.click();
             await sleep(140);
-          } catch {
-            // ignore
-          }
+          } catch {}
         }
 
-        // Also click any "Read more" / "View more" text toggles on top stream announcements
+        // Click any "Read more" / "Show more" buttons on Stream posts
         const moreBtns = Array.from(mainRoot.querySelectorAll('button, [role="button"]'))
-          .filter((el) => /^(read more|show more)$/i.test((el.textContent || '').trim()))
+          .filter((el) => /^(read more|show more|view more)$/i.test((el.textContent || '').trim()))
           .slice(0, 8);
         for (const btn of moreBtns) {
           try {
             btn.click();
             await sleep(120);
-          } catch {
-            // ignore
-          }
+          } catch {}
         }
 
         if (expandCandidates.length > 0 || moreBtns.length > 0) {
-          await sleep(700);
+          await sleep(800);
         }
 
-        // 3. Extract structured items (preserving titles, due dates, turned-in status, and links)
-        const streamItems = Array.from(mainRoot.querySelectorAll('[data-stream-item-id]'));
-        const sections = [];
-        const seenTexts = new Set();
+        // Collect all unique assignment / question / material / post /details links in top-down visual order
+        const detailLinks = [];
+        const seenLinks = new Set();
+        const detailRegex =
+          /^https:\/\/classroom\.google\.com\/(?:u\/\d+\/)?c\/[A-Za-z0-9_-]+\/(?:a|sa|m|p)\/[A-Za-z0-9_-]+\/details/i;
 
-        const collectItemText = (el) => {
-          const text = (el.innerText || '')
-            .replace(/\r/g, '')
-            .split('\n')
-            .map((l) => l.trim())
-            .filter(
-              (l) =>
-                l &&
-                !/^(More options|Options|Add class comment|Send|Post|Class comments)$/i.test(l)
-            )
-            .join('\n');
-          if (!text || text.length < 8) return null;
-
-          const links = Array.from(el.querySelectorAll('a[href]'))
-            .map((a) => {
-              const href = a.href || '';
-              const label = (a.textContent || a.getAttribute('aria-label') || '').trim();
-              if (
-                !href ||
-                href.startsWith('javascript:') ||
-                href.includes('classroom.google.com/u/') && !href.includes('/details') && !href.includes('/a/')
-              ) {
-                return null;
-              }
-              return label ? `${label} (${href})` : href;
-            })
-            .filter(Boolean)
-            .slice(0, 5);
-
-          return links.length ? `${text}\nLinks: ${links.join(' | ')}` : text;
-        };
-
-        if (streamItems.length > 0) {
-          for (const item of streamItems.slice(0, 25)) {
-            const block = collectItemText(item);
-            if (block && !seenTexts.has(block)) {
-              seenTexts.add(block);
-              sections.push(block);
-            }
+        for (const a of Array.from(mainRoot.querySelectorAll('a[href]'))) {
+          const cleanHref = (a.href || '').split('?')[0].split('#')[0];
+          if (detailRegex.test(cleanHref) && !seenLinks.has(cleanHref)) {
+            seenLinks.add(cleanHref);
+            detailLinks.push(cleanHref);
           }
         }
 
-        // Always include main innerText fallback if structured list was small/empty
-        const mainText = (mainRoot.innerText || '')
+        // Always keep FULL cleaned <main> text so Stream announcements ("test is tomorrow!") are NEVER dropped!
+        const mainText = (mainRoot.innerText || document.body?.innerText || '')
           .replace(/\r/g, '')
           .split('\n')
           .map((l) => l.trim())
-          .filter(Boolean)
+          .filter(
+            (l) =>
+              l &&
+              !/^(More options|Options|Add class comment|Send|Post|Skip to main content|Google apps|Main menu)$/i.test(
+                l
+              )
+          )
           .join('\n');
 
-        const combined =
-          sections.length >= 2
-            ? sections.join('\n\n---\n\n')
-            : mainText;
-
         return {
-          ok: combined.length > 40,
+          ok: mainText.length > 30,
           finalUrl: window.location.href,
           title: document.title || 'Google Classroom',
-          text: combined.slice(0, 45000),
+          text: mainText.slice(0, 32000),
+          detailLinks,
         };
       },
     });
@@ -428,7 +403,8 @@ async function scrapeSingleClassroomUrl(url) {
       results?.[0]?.result || {
         ok: false,
         finalUrl: currentUrl,
-        error: 'No script result returned from Classroom page',
+        error: 'No script result returned from Classroom overview',
+        detailLinks: [],
       }
     );
   } catch (err) {
@@ -436,99 +412,199 @@ async function scrapeSingleClassroomUrl(url) {
       ok: false,
       finalUrl: url,
       error: err instanceof Error ? err.message : String(err),
+      detailLinks: [],
+    };
+  }
+}
+
+/**
+ * Opens an individual Google Classroom assignment / material /details page inside the reused tab
+ * and reads its COMPLETE description, due date/time, "Your work" status (Turned in / Assigned / Graded),
+ * attachments, and class comments verbatim.
+ */
+async function readClassroomDetailInTab(tabId, detailUrl) {
+  try {
+    await navigateAndWait(tabId, detailUrl, 16000);
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const start = Date.now();
+        while (Date.now() - start < 7000) {
+          const mainEl = document.querySelector('main');
+          const txt = (mainEl?.innerText || '').trim();
+          if (txt.length > 80) break;
+          await sleep(250);
+        }
+        await sleep(800);
+
+        const mainRoot = document.querySelector('main') || document.body;
+
+        // Expand any collapsed class comments or "Read more" text
+        const expanders = Array.from(mainRoot.querySelectorAll('button, [role="button"]'))
+          .filter((el) =>
+            /^(read more|show more|\d+\s+class comments?)$/i.test((el.textContent || '').trim())
+          )
+          .slice(0, 4);
+        for (const btn of expanders) {
+          try {
+            btn.click();
+            await sleep(150);
+          } catch {}
+        }
+        if (expanders.length > 0) await sleep(400);
+
+        const text = (mainRoot.innerText || '')
+          .replace(/\r/g, '')
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(
+            (l) =>
+              l &&
+              !/^(More options|Add or create|Mark as done|Unsubmit|Add private comment|Add class comment|Send|Skip to main content|Google apps|Main menu)$/i.test(
+                l
+              )
+          )
+          .join('\n');
+
+        return {
+          ok: text.length > 25,
+          finalUrl: window.location.href,
+          text: text.slice(0, 6500),
+        };
+      },
+    });
+
+    return results?.[0]?.result || { ok: false, finalUrl: detailUrl, text: '' };
+  } catch {
+    return { ok: false, finalUrl: detailUrl, text: '' };
+  }
+}
+
+/**
+ * Deep-scrapes a configured Google Classroom course using ONE reused background tab:
+ * 1. Reads the exact configured page URL (e.g. /w/.../t/all or /c/...), auto-detecting /u/0/ vs /u/1/.
+ * 2. Reads the companion Classroom tab (Stream + Classwork) so announcements AND assignments are both seen.
+ * 3. Visits the top 8 recent individual assignment /details pages so FULL teacher descriptions
+ *    ("meant for in class", "test is tomorrow", exact math problems, due dates, turned-in status)
+ *    are captured verbatim.
+ */
+async function scrapeClassroomCourse(rawUrl, preferredSlotOverride = null) {
+  const parsed = parseClassroomUrl(rawUrl);
+  if (!parsed) return { ok: false, error: 'Empty Classroom URL' };
+
+  let tab = null;
+  try {
+    tab = await chrome.tabs.create({ url: 'about:blank', active: false });
+    if (!tab?.id) {
+      return { ok: false, error: 'Could not open background tab' };
+    }
+
+    if (!parsed.classId) {
+      const single = await readClassroomOverviewInTab(tab.id, parsed.rawUrl);
+      return {
+        ...single,
+        primarySourceUrl: single.finalUrl || parsed.rawUrl,
+        sourceUrls: [single.finalUrl || parsed.rawUrl],
+        detailCount: 0,
+        resolvedSlot: preferredSlotOverride,
+      };
+    }
+
+    const slotCandidates = Array.from(
+      new Set([
+        ...(preferredSlotOverride !== null ? [preferredSlotOverride] : []),
+        parsed.slot ?? 1,
+        0,
+        1,
+        2,
+      ])
+    );
+
+    const primaryView = parsed.view === 'w' ? 'w' : 'c';
+    const secondaryView = primaryView === 'w' ? 'c' : 'w';
+
+    let primaryRes = null;
+    let workingSlot = parsed.slot ?? 1;
+
+    for (const slot of slotCandidates) {
+      const tryUrl = buildClassroomViewUrl(parsed.classId, slot, primaryView);
+      const res = await readClassroomOverviewInTab(tab.id, tryUrl);
+      if (res.ok) {
+        primaryRes = res;
+        workingSlot = slot;
+        break;
+      }
+      if (!res.wrongAccountOrMissing && !res.needsSignIn) {
+        primaryRes = res;
+        break;
+      }
+    }
+
+    if (!primaryRes?.ok) {
+      return {
+        ok: false,
+        error:
+          primaryRes?.error ||
+          'Could not read Classroom page — make sure your school Google account is signed in.',
+        sourceUrls: [parsed.rawUrl],
+        detailCount: 0,
+        resolvedSlot: preferredSlotOverride,
+      };
+    }
+
+    const secondaryUrl = buildClassroomViewUrl(parsed.classId, workingSlot, secondaryView);
+    const secondaryRes = await readClassroomOverviewInTab(tab.id, secondaryUrl);
+
+    const parts = [
+      `=== SPECIFIED SOURCE PAGE (${primaryView === 'w' ? 'Classwork' : 'Stream'}): ${primaryRes.finalUrl} ===\n${primaryRes.text}`,
+    ];
+    const sourceUrls = [primaryRes.finalUrl];
+
+    if (secondaryRes?.ok && secondaryRes.text) {
+      parts.push(
+        `=== COMPANION CLASSROOM PAGE (${secondaryView === 'w' ? 'Classwork' : 'Stream'}): ${secondaryRes.finalUrl} ===\n${secondaryRes.text}`
+      );
+      sourceUrls.push(secondaryRes.finalUrl);
+    }
+
+    // Collect top unique /details pages (Stream first because Stream is strictly newest-first, then Classwork)
+    const rawLinkOrder =
+      primaryView === 'c'
+        ? [...(primaryRes.detailLinks || []), ...(secondaryRes?.detailLinks || [])]
+        : [...(secondaryRes?.detailLinks || []), ...(primaryRes.detailLinks || [])];
+
+    const uniqueDetailLinks = Array.from(new Set(rawLinkOrder)).slice(
+      0,
+      MAX_DETAIL_PAGES_PER_COURSE
+    );
+
+    let detailCount = 0;
+    for (const dUrl of uniqueDetailLinks) {
+      const detailRes = await readClassroomDetailInTab(tab.id, dUrl);
+      if (detailRes?.ok && detailRes.text) {
+        parts.push(
+          `=== ASSIGNMENT DETAIL PAGE: ${detailRes.finalUrl} ===\n${detailRes.text}`
+        );
+        detailCount += 1;
+      }
+    }
+
+    return {
+      ok: true,
+      title: primaryRes.title || 'Google Classroom',
+      primarySourceUrl: primaryRes.finalUrl,
+      sourceUrls,
+      detailCount,
+      resolvedSlot: workingSlot,
+      text: parts.join('\n\n').slice(0, 145000),
     };
   } finally {
     if (tab?.id) {
       await chrome.tabs.remove(tab.id).catch(() => {});
     }
   }
-}
-
-/**
- * Scrapes a configured Google Classroom course:
- * - Reads the exact configured page URL first (e.g. /w/.../t/all or /c/...).
- * - Automatically detects if the school account is on /u/0/ instead of /u/1/ (or vice versa).
- * - Also pulls the companion Classroom tab (Classwork + Stream) for that exact class ID so both
- *   Stream announcements ("due in class") and Classwork due dates + instructions are captured!
- */
-async function scrapeClassroomCourse(rawUrl, preferredSlotOverride = null) {
-  const parsed = parseClassroomUrl(rawUrl);
-  if (!parsed) return { ok: false, error: 'Empty Classroom URL' };
-
-  if (!parsed.classId) {
-    const single = await scrapeSingleClassroomUrl(parsed.rawUrl);
-    return {
-      ...single,
-      sourceUrls: [single.finalUrl || parsed.rawUrl],
-      resolvedSlot: preferredSlotOverride,
-    };
-  }
-
-  const slotCandidates = Array.from(
-    new Set([
-      ...(preferredSlotOverride !== null ? [preferredSlotOverride] : []),
-      parsed.slot ?? 1,
-      0,
-      1,
-      2,
-    ])
-  );
-
-  const primaryView = parsed.view === 'w' ? 'w' : 'c';
-  const secondaryView = primaryView === 'w' ? 'c' : 'w';
-
-  let primaryRes = null;
-  let workingSlot = parsed.slot ?? 1;
-
-  for (const slot of slotCandidates) {
-    const tryUrl = buildClassroomViewUrl(parsed.classId, slot, primaryView);
-    const res = await scrapeSingleClassroomUrl(tryUrl);
-    if (res.ok) {
-      primaryRes = res;
-      workingSlot = slot;
-      break;
-    }
-    if (!res.wrongAccountOrMissing && !res.needsSignIn) {
-      primaryRes = res;
-      break;
-    }
-  }
-
-  if (!primaryRes?.ok) {
-    return {
-      ok: false,
-      error:
-        primaryRes?.error ||
-        'Could not read Classroom page — make sure you are signed into your school Google account.',
-      sourceUrls: [parsed.rawUrl],
-      resolvedSlot: preferredSlotOverride,
-    };
-  }
-
-  // Pull the companion tab (Classwork if configured as Stream, or Stream if configured as Classwork)
-  const secondaryUrl = buildClassroomViewUrl(parsed.classId, workingSlot, secondaryView);
-  const secondaryRes = await scrapeSingleClassroomUrl(secondaryUrl);
-
-  const parts = [
-    `=== SPECIFIED SOURCE PAGE (${primaryView === 'w' ? 'Classwork' : 'Stream'}): ${primaryRes.finalUrl} ===\n${primaryRes.text}`,
-  ];
-  const sourceUrls = [primaryRes.finalUrl];
-
-  if (secondaryRes?.ok && secondaryRes.text) {
-    parts.push(
-      `=== COMPANION CLASSROOM PAGE (${secondaryView === 'w' ? 'Classwork' : 'Stream'}): ${secondaryRes.finalUrl} ===\n${secondaryRes.text}`
-    );
-    sourceUrls.push(secondaryRes.finalUrl);
-  }
-
-  return {
-    ok: true,
-    title: primaryRes.title || 'Google Classroom',
-    primarySourceUrl: primaryRes.finalUrl,
-    sourceUrls,
-    resolvedSlot: workingSlot,
-    text: parts.join('\n\n').slice(0, 95000),
-  };
 }
 
 let isSyncing = false;
@@ -718,13 +794,16 @@ async function runFullSync(activeTab) {
 
         totalAdded += data.addedCount || 0;
         totalUpdated += data.updatedCount || 0;
-        const sum = `${target.label}: +${data.addedCount || 0} new, ${data.updatedCount || 0} upd`;
+        const detailBadge = scraped.detailCount
+          ? ` (${scraped.detailCount} detail pages read)`
+          : ' (overview only)';
+        const sum = `${target.label}: +${data.addedCount || 0} new, ${data.updatedCount || 0} upd${detailBadge}`;
         summaries.push(sum);
         sourceLog.push({
           course: target.label,
           sourceUrl: (scraped.sourceUrls || [target.url]).join(' + '),
           ok: true,
-          detail: data.summary || sum,
+          detail: `${detailBadge.trim()} — ${data.summary || sum}`,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

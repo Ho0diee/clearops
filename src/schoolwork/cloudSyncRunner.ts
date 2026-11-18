@@ -249,7 +249,7 @@ export async function fetchGooglePresentationText(
 
 function buildOhchsRotationPrompt(todayIso: string, daysAhead = 40): string {
   const lines: string[] = [];
-  for (let offset = -5; offset <= daysAhead; offset++) {
+  for (let offset = -16; offset <= daysAhead; offset++) {
     const d = addDays(todayIso, offset);
     const entry = OHCHS_BY_DATE.get(d);
     if (!entry) {
@@ -278,32 +278,33 @@ export async function extractAssignmentsWithGeminiHydrogen(params: {
   const courseSpecificRules =
     courseId === 'precalc'
       ? `MATH (AP PRE-CALCULUS — MS. GROVER) RULES:
-- Every assignment specifies the exact homework part/problems/pages to complete. Capture the EXACT problems, section, or worksheet part in "startingStep" and "contextDetails".
+- Read EVERY Stream announcement AND EVERY ASSIGNMENT DETAIL PAGE description carefully!
+- Every homework assignment tells you the exact part/problems/pages to do. Capture the EXACT problems, pages, or worksheet section in "startingStep" and "contextDetails".
+- If ANY description or Stream post mentions an upcoming TEST, QUIZ, or EXAM (e.g. "test is tomorrow", "Unit test Thursday", "quiz next class"), you MUST extract a separate item with category = "test" (or "quiz"), dueTiming = "in-class", workLocation = "homework" (so a study block is scheduled beforehand!), and resolve "tomorrow" relative to the post date (or today ${todayIso} if posted today)!
 - Set fallbackMinutes = 60 (1 hour).
-- Default dueTiming = "before-class" (due before Period 1 Pre-Calc on the due date) unless explicitly stated as end-of-day (11:59 PM).
-- Skip any Classroom item explicitly marked "Turned in" or "Graded" or missing a current/upcoming assignment task.`
+- Default dueTiming = "before-class" and workLocation = "homework" unless explicitly done solely in class.`
       : courseId === 'lit'
       ? `LIT (AP LITERATURE — MR. LAUBY) RULES:
-- Mr. Lauby normally specifies when something is due IN CLASS (set dueTiming = "in-class").
-- If he does NOT specify in-class or 11:59 PM, treat it as due FOR THE LIT CLASS ON THE DUE DATE (set dueTiming = "before-class").
-- Capture reading chapters/pages, essay/writing prompt, and whether it is due in class inside "startingStep" and "contextDetails".
-- Set fallbackMinutes = 60 (1 hour).
-- Skip any Classroom item explicitly marked "Turned in" or "Graded".`
+- Read EVERY Stream announcement AND EVERY ASSIGNMENT DETAIL PAGE description carefully!
+- CRITICAL IN-CLASS RULE: Mr. Lauby explicitly specifies when an assignment/essay/activity is meant to be done IN CLASS (e.g. "in class", "timed write in class", "we will complete this during class", "do not work on outside class", "due at the end of class"). For those items (when NOT a test/quiz needing home study), set BOTH dueTiming = "in-class" AND workLocation = "in-class" so it attaches to the Lit class block instead of scheduling evening homework!
+- If he does NOT specify in-class or 11:59 PM, treat it as homework due FOR THE LIT CLASS ON THE DUE DATE: set dueTiming = "before-class" AND workLocation = "homework".
+- If ANY description or Stream post mentions a TEST, QUIZ, or EXAM (e.g. "test is tomorrow"), extract it with category = "test" (or "quiz"), dueTiming = "in-class", workLocation = "homework" so a 60m study block is scheduled beforehand!
+- Set fallbackMinutes = 60 (1 hour).`
       : courseId === 'physics'
       ? `PHYSICS (PHYSICS HONORS — MR. OTTERSON) RULES:
 - Physics Honors meets ONLY on GREEN days (Period 2).
-- Capture the exact problem set, lab, worksheet, or reading details in "startingStep" and "contextDetails".
-- Set fallbackMinutes = 60 (1 hour).
-- Default dueTiming = "before-class" unless explicitly stated as in-class or 11:59 PM end-of-day.
-- Skip any Classroom item explicitly marked "Turned in" or "Graded".`
+- Read EVERY Stream announcement AND EVERY ASSIGNMENT DETAIL PAGE description carefully!
+- If ANY post/description mentions a TEST, QUIZ, or EXAM (e.g. "test is tomorrow", "quiz Thursday"), extract it with category = "test" or "quiz", dueTiming = "in-class", workLocation = "homework", resolving "tomorrow" relative to the post date!
+- Capture exact problem sets, labs, worksheets, or readings in "startingStep" and "contextDetails".
+- Set fallbackMinutes = 60 (1 hour). Default dueTiming = "before-class", workLocation = "homework" (or "in-class" if strictly an in-class lab/activity with no outside homework).`
       : `ECO (AP ENVIRONMENTAL SCIENCE — MS. FOX) RULES:
-- When textbook/audiobook Modules are assigned (e.g. "Modules 15 & 16", "Mod 20", "Modules 22-23"), set category = "module" and populate "moduleNumbers" with EVERY integer module number assigned. Do NOT guess minutes for Eco modules — our Audiobook Sheet engine computes the exact length + 20% buffer!
-- When a Lab or Lab Report is assigned, set category = "lab" and set "assignedDate" (YYYY-MM-DD) to the exact class date introduced plus "dueDate".`;
+- When textbook/audiobook Modules are assigned (e.g. "Modules 15 & 16", "Mod 20", "Modules 22-23"), set category = "module", workLocation = "homework", and populate "moduleNumbers" with EVERY integer module number assigned. Do NOT guess minutes for Eco modules — our Audiobook Sheet engine computes the exact length + 20% buffer!
+- When a Lab or Lab Report is assigned, set category = "lab", workLocation = "homework", and set "assignedDate" (YYYY-MM-DD) to the exact class date introduced plus "dueDate".`;
 
   const prompt = `You are the automated Academic Extractor for Oxford Hills Comprehensive High School (OHCHS).
 Target Course: ${course.fullName} (${course.shortName}) — Teacher: ${course.teacher}
 Today's Date (America/New_York): ${todayIso}
-${sourceUrl ? `Source Page URL: ${sourceUrl}` : ''}
+${sourceUrl ? `Primary Source Page URL: ${sourceUrl}` : ''}
 
 OHCHS 2026-2027 GREEN / GOLD ROTATION CALENDAR:
 - AP Pre-Calculus (Pre-Calc / Math) meets ONLY on GREEN days (Period 1).
@@ -316,14 +317,16 @@ COURSE-SPECIFIC RULES:
 ${courseSpecificRules}
 
 STRICT EXTRACTION RULES:
-1. Extract ONLY current or upcoming assignments, modules, labs, quizzes, projects, or exams whose dueDate is >= ${addDays(
+1. Extract BOTH recent PAST assignments from the last 14 days (dueDate >= ${addDays(
     todayIso,
-    -1
-  )}. Ignore old completed units from weeks ago and skip items marked "Turned in" or "Graded".
-2. If an assignment on Google Classroom has NO explicit due date written on it, infer the next class meeting date for ${course.shortName} AFTER its posted date (only if posted within the last 7 days); ignore undated reference materials / syllabi / generic links.
-3. Resolve shorthand dates ("Fri 11/20", "Due Tomorrow", "Due Nov 20", "next Gold day", "Tuesday after break") into exact YYYY-MM-DD dates using the OHCHS calendar above (current school year is 2026-2027).
-4. Set "dueTiming" to "before-class" (due at/before start of class), "in-class" (explicitly due/done in class, quiz, or test), or "end-of-day" (explicitly 11:59 PM).
-5. Write a crisp actionable "startingStep" and put helpful details (exact homework problems, pages, rubric notes, or Classroom instructions) into "contextDetails".
+    -14
+  )}) AND all current/upcoming assignments, tests, quizzes, labs, and in-class work! Ignore ancient units older than 14 days.
+2. NEVER miss tests, quizzes, or deadlines written inside an assignment's DESCRIPTION or a Stream ANNOUNCEMENT! When a post says "tomorrow", "Thursday", or "next class", resolve the exact YYYY-MM-DD using the post's timestamp/date and the OHCHS calendar above (school year 2026-2027).
+3. If an assignment on Google Classroom has NO explicit due date written, infer the next ${course.shortName} class meeting date on or after its posted date (only for real assignments/tests/in-class tasks from the last 14 days; skip generic reference links/syllabi).
+4. Set "isCompleted" = true if the Classroom page explicitly shows "Turned in" or "Graded", OR if dueDate < ${todayIso}. Otherwise false.
+5. Set "workLocation" = "in-class" ONLY when the work is done strictly during class (no outside homework needed, and NOT a test/quiz you must study for). Otherwise set "workLocation" = "homework".
+6. Set "sourceUrl" to the exact === ASSIGNMENT DETAIL PAGE: https://... === URL for that specific assignment if present in the content; otherwise use "${sourceUrl || ''}".
+7. Write a crisp actionable "startingStep" and include the teacher's key instructions/details verbatim in "contextDetails".
 
 SOURCE: ${slideTitle}
 CONTENT:
@@ -390,9 +393,17 @@ ${rawSlideText.slice(0, 160000)}`;
                       type: Type.STRING,
                       enum: ['before-class', 'in-class', 'end-of-day'],
                     },
+                    workLocation: {
+                      type: Type.STRING,
+                      enum: ['homework', 'in-class'],
+                    },
+                    isCompleted: {
+                      type: Type.BOOLEAN,
+                    },
                     fallbackMinutes: { type: Type.INTEGER },
                     startingStep: { type: Type.STRING },
                     contextDetails: { type: Type.STRING },
+                    sourceUrl: { type: Type.STRING },
                   },
                   required: [
                     'slug',
@@ -401,6 +412,8 @@ ${rawSlideText.slice(0, 160000)}`;
                     'moduleNumbers',
                     'dueDate',
                     'dueTiming',
+                    'workLocation',
+                    'isCompleted',
                     'fallbackMinutes',
                     'startingStep',
                     'contextDetails',
@@ -460,10 +473,15 @@ ${rawSlideText.slice(0, 160000)}`;
           : null,
       dueDate: a.dueDate,
       dueTiming: a.dueTiming || 'before-class',
+      workLocation: a.workLocation === 'in-class' ? 'in-class' : 'homework',
+      isCompleted: Boolean(a.isCompleted),
       fallbackMinutes: Number(a.fallbackMinutes) || 60,
       startingStep: a.startingStep?.trim() || `Start ${course.shortName} assignment`,
       contextDetails: a.contextDetails?.trim() || '',
-      sourceUrl: sourceUrl?.trim() || undefined,
+      sourceUrl:
+        (a.sourceUrl && /^https?:\/\//i.test(a.sourceUrl.trim())
+          ? a.sourceUrl.trim()
+          : sourceUrl?.trim()) || undefined,
     }));
 
   return {
@@ -662,6 +680,7 @@ export async function runAutomatedSchoolworkPipeline(options?: {
     let addedCount = 0;
     let updatedCount = 0;
     let rolloverChanged = false;
+    let removedBlockIds: string[] = [];
 
     if (extractedAll.length > 0) {
       const applied = applyExtractedAssignmentsToSchedule({
@@ -677,6 +696,7 @@ export async function runAutomatedSchoolworkPipeline(options?: {
       nextBlocks = applied.blocks;
       nextIdeas = applied.ideas;
       nextProjects = applied.projects;
+      removedBlockIds = applied.removedBlockIds;
       addedCount = applied.addedCount;
       updatedCount = applied.updatedCount;
     } else {
@@ -699,6 +719,10 @@ export async function runAutomatedSchoolworkPipeline(options?: {
     );
     for (const blk of nextUserBlocks) {
       if (blk.id.startsWith('sch-hw-')) delete nextTombstones.blocks[blk.id];
+    }
+    const delNowMs = Date.now() + 1000;
+    for (const remId of removedBlockIds) {
+      nextTombstones.blocks[remId] = delNowMs;
     }
     for (const idea of nextIdeas) {
       if (idea.id.startsWith('sch-idea-')) delete nextTombstones.ideas[idea.id];

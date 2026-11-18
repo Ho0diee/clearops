@@ -17,6 +17,8 @@ export type SchoolTaskCategory = 'module' | 'homework' | 'lab' | 'test' | 'quiz'
 
 export type SchoolDueTiming = 'before-class' | 'in-class' | 'end-of-day';
 
+export type SchoolWorkLocation = 'homework' | 'in-class';
+
 export interface StandardizedExtractedAssignment {
   slug: string;
   courseId: SchoolCourseId;
@@ -29,6 +31,10 @@ export interface StandardizedExtractedAssignment {
   /** YYYY-MM-DD when due or exam occurs */
   dueDate: string;
   dueTiming: SchoolDueTiming;
+  /** 'in-class' for work done strictly in class (no home HW block); 'homework' for work/studying done outside class */
+  workLocation?: SchoolWorkLocation;
+  /** True if already turned in / graded on Classroom or already past due */
+  isCompleted?: boolean;
   /** Fallback estimate if not an Eco module and not a 1-hr lab */
   fallbackMinutes: number;
   startingStep: string;
@@ -86,6 +92,7 @@ export const SCHOOL_COURSES: Record<SchoolCourseId, CourseScheduleSpec> = {
   },
 };
 
+const AUTO_INCLASS_SECTION_HEADER = '--- In-Class Work ---';
 const AUTO_DUE_SECTION_HEADER = '--- Homework & Deadlines ---';
 const META_TAG_REGEX = /\[Meta:\s*course=(eco|lit|precalc|physics)\s*\|\s*due=(\d{4}-\d{2}-\d{2})\s*\|\s*timing=(before-class|in-class|end-of-day)\s*\|\s*slug=([a-z0-9-]+)\]/i;
 
@@ -311,6 +318,21 @@ function stripAutoDueSection(notes: string | undefined): string {
   return notes.slice(0, idx).trim();
 }
 
+function upsertInClassSection(notes: string | undefined, lines: string[]): string | undefined {
+  const withoutDue = stripAutoDueSection(notes);
+  const dueIdx = notes ? notes.indexOf(AUTO_DUE_SECTION_HEADER) : -1;
+  const dueTail = dueIdx >= 0 && notes ? notes.slice(dueIdx).trim() : '';
+
+  const inClassIdx = withoutDue.indexOf(AUTO_INCLASS_SECTION_HEADER);
+  const userBase = inClassIdx >= 0 ? withoutDue.slice(0, inClassIdx).trim() : withoutDue.trim();
+
+  const inClassBlock =
+    lines.length > 0 ? `${AUTO_INCLASS_SECTION_HEADER}\n${lines.join('\n')}` : '';
+
+  const combined = [userBase, inClassBlock, dueTail].filter(Boolean).join('\n\n').trim();
+  return combined || undefined;
+}
+
 /**
  * Pure, idempotent reconciler that enforces:
  * 1. Class Entry Description + 6:00 PM Night-Before Alarm (`360 + classStartMins`),
@@ -452,9 +474,11 @@ export function reconcileSchoolworkLifecycle(params: {
     const anyUnfinished = dueItems.some((entry) => !entry.block.completed);
     const bulletLines = dueItems.map((entry) => {
       const cleanTitle = entry.block.title.replace(/^\[(Eco|Lit|Pre-Calc|Physics)\]\s*/i, '');
-      return entry.block.completed
-        ? `• ✓ DONE: ${cleanTitle}`
-        : `• DUE TODAY: ${cleanTitle}`;
+      const isExam = /\b(test|exam|quiz)\b/i.test(cleanTitle);
+      if (entry.block.completed) {
+        return `• ✓ DONE: ${cleanTitle}`;
+      }
+      return isExam ? `• TEST/QUIZ TODAY: ${cleanTitle}` : `• DUE TODAY: ${cleanTitle}`;
     });
 
     const nextNotes = [
@@ -465,11 +489,11 @@ export function reconcileSchoolworkLifecycle(params: {
       .join('\n\n');
 
     // Exact 6:00 PM (18:00) Night-Before Alarm calculation:
-    // Minutes from 18:00 the night before to midnight = 360 mins + class startTime minutes!
-    // Disabled automatically (`undefined`) when all due HW items for this class are marked done!
-    const nightBefore6pmOffset = anyUnfinished
-      ? 360 + toMins(blk.startTime)
-      : undefined;
+    // Only set for today/future classes with unfinished items; never alarm on past days!
+    const nightBefore6pmOffset =
+      anyUnfinished && blockDate >= todayIso
+        ? 360 + toMins(blk.startTime)
+        : undefined;
 
     if (
       blk.notes !== nextNotes ||
@@ -620,6 +644,7 @@ export function applyExtractedAssignmentsToSchedule(params: {
   blocks: CalendarBlock[];
   ideas: IdeaItem[];
   projects: string[];
+  removedBlockIds: string[];
   addedCount: number;
   updatedCount: number;
 } {
@@ -637,6 +662,8 @@ export function applyExtractedAssignmentsToSchedule(params: {
   const workingBlocks = existingBlocks.map((b) => ({ ...b }));
   const workingIdeas = existingIdeas.map((i) => ({ ...i }));
   const neededProjects = new Set<string>(existingProjects);
+  const removedBlockIds: string[] = [];
+  const inClassLinesByClassKey = new Map<string, string[]>();
 
   let addedCount = 0;
   let updatedCount = 0;
@@ -650,22 +677,98 @@ export function applyExtractedAssignmentsToSchedule(params: {
     const course = SCHOOL_COURSES[item.courseId];
     if (!course || !item.dueDate) continue;
 
-    // Skip ancient assignments whose due dates passed more than 2 days ago
-    if (item.dueDate < addDays(todayIso, -2)) continue;
+    // Keep last 14 days of past data + all upcoming items so history is visible on the calendar
+    if (item.dueDate < addDays(todayIso, -14)) continue;
 
     const blockId = `sch-hw-${item.courseId}-${item.slug}`;
     const ideaId = `sch-idea-${item.courseId}-${item.slug}`;
+    const isPastItem = item.dueDate < todayIso;
+    const isAlreadyDone = Boolean(item.isCompleted) || isPastItem;
+    const isTestOrQuiz = item.category === 'test' || item.category === 'quiz';
+    const isStrictlyInClass =
+      !isTestOrQuiz &&
+      (item.workLocation === 'in-class' || item.dueTiming === 'in-class');
 
-    // 1. Compute Exact Duration & Breakdown per Standardized Rules:
+    const sourceLine = item.sourceUrl ? `Source: ${item.sourceUrl}` : '';
+
+    // ------------------------------------------------------------------
+    // CASE 1: Strictly IN-CLASS work (e.g., Lit in-class essay/activity)
+    // Attach directly onto the OHCHS class entry — DO NOT create a home HW block!
+    // ------------------------------------------------------------------
+    if (isStrictlyInClass) {
+      // Remove any previously created home HW block if an earlier sync misclassified it
+      const staleIdx = workingBlocks.findIndex((b) => b.id === blockId);
+      if (staleIdx >= 0) {
+        workingBlocks.splice(staleIdx, 1);
+        removedBlockIds.push(blockId);
+        updatedCount++;
+      }
+
+      const key = `${item.courseId}|${item.dueDate}`;
+      const list = inClassLinesByClassKey.get(key) ?? [];
+      const snippet = item.contextDetails
+        ? ` — ${item.contextDetails.slice(0, 140)}`
+        : '';
+      const prefix = isAlreadyDone ? '• ✓ IN CLASS (Past):' : '• IN CLASS:';
+      const line = `${prefix} ${item.title}${snippet}${item.sourceUrl ? ` (${item.sourceUrl})` : ''}`;
+      if (!list.includes(line)) {
+        list.push(line);
+        inClassLinesByClassKey.set(key, list);
+      }
+
+      // Also keep a clean reference note in the course folder
+      neededProjects.add(course.projectFolder);
+      const inClassTitle = `[${course.shortName} · In Class] ${item.title}`;
+      const inClassNotes = [
+        `In-Class Work on ${item.dueDate} · ${course.teacher}`,
+        item.contextDetails,
+        sourceLine,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const existingIdeaIdx = workingIdeas.findIndex((i) => i.id === ideaId);
+      if (existingIdeaIdx >= 0) {
+        workingIdeas[existingIdeaIdx] = {
+          ...workingIdeas[existingIdeaIdx],
+          title: inClassTitle,
+          startingStep: item.startingStep,
+          notes: inClassNotes,
+          status: isAlreadyDone ? 'completed' : workingIdeas[existingIdeaIdx].status,
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
+        const folderCount = workingIdeas.filter(
+          (i) => i.project === course.projectFolder && i.status !== 'completed'
+        ).length;
+        workingIdeas.push({
+          id: ideaId,
+          project: course.projectFolder,
+          priorityRank: folderCount + 1,
+          title: inClassTitle,
+          startingStep: item.startingStep,
+          notes: inClassNotes,
+          isBottleneck: false,
+          status: isAlreadyDone ? 'completed' : 'active',
+          estimatedMinutes: 0,
+          createdAt: item.assignedDate || todayIso,
+          updatedAt: new Date().toISOString(),
+        });
+        addedCount++;
+      }
+      continue;
+    }
+
+    // ------------------------------------------------------------------
+    // CASE 2: Homework, Labs, Eco Modules, or Study Prep for a Test/Quiz
+    // ------------------------------------------------------------------
     let durationMinutes = Math.max(20, Math.min(180, item.fallbackMinutes || 60));
     let durationOriginNote = '';
 
     if (item.category === 'lab') {
-      // Standardized Lab Rule: always assume 1 hour (60 min) on assigned date (user can edit if needed)
       durationMinutes = 60;
       durationOriginNote = 'Standardized Lab Block: 60m on assigned day (edit duration anytime)';
     } else if (item.courseId === 'eco' && item.moduleNumbers.length > 0) {
-      // Standardized Module Rule: Audiobook Sheet duration + 20% margin buffer
       const audioCalc = computeEcoModulesDurationWithBuffer(
         item.moduleNumbers,
         audiobookTracks,
@@ -675,12 +778,14 @@ export function applyExtractedAssignmentsToSchedule(params: {
         durationMinutes = audioCalc.bufferedMinutes;
         durationOriginNote = audioCalc.breakdownLabel;
       }
+    } else if (isTestOrQuiz) {
+      durationMinutes = 60;
+      durationOriginNote = `Study Prep Block: 60m before ${item.category} on ${item.dueDate}`;
     } else if (
       item.courseId === 'precalc' ||
       item.courseId === 'lit' ||
       item.courseId === 'physics'
     ) {
-      // Standardized Classroom HW Rule: ~1 hour (60 min) soonest available non-overlapping block
       durationMinutes = 60;
       durationOriginNote =
         item.courseId === 'precalc'
@@ -690,12 +795,21 @@ export function applyExtractedAssignmentsToSchedule(params: {
           : 'Physics Assignment Block: 60m soonest available non-overlapping slot';
     }
 
-    // 2. Compute Earliest Eligible Start Date per Standardized Rules:
-    // - Math (precalc), Lit, Physics: soonest available open slot starting today (or assignedDate if future)
-    // - Eco Labs: assignedDate (or closest prior Eco class date)
-    // - Eco Modules/HW: closest prior Eco class date before dueDate (clamped >= today if still upcoming)
+    // Compute Earliest Eligible Start Date:
+    // - Past items (last 14 days): place on their real historical class/assigned day before dueDate
+    // - Current/upcoming Math, Lit, Physics (or any Test/Quiz study prep): soonest available starting today
+    // - Eco Labs: assignedDate (or closest prior Eco class)
+    // - Eco Modules/HW: closest prior Eco class date before dueDate
     let searchStartDate: string;
-    if (
+    if (isPastItem) {
+      searchStartDate =
+        item.assignedDate &&
+        /^\d{4}-\d{2}-\d{2}$/.test(item.assignedDate) &&
+        item.assignedDate <= item.dueDate
+          ? item.assignedDate
+          : findClosestPriorCourseClassDate(item.dueDate, item.courseId);
+    } else if (
+      isTestOrQuiz ||
       item.courseId === 'precalc' ||
       item.courseId === 'lit' ||
       item.courseId === 'physics'
@@ -715,9 +829,11 @@ export function applyExtractedAssignmentsToSchedule(params: {
     }
 
     const metaFooter = `[Meta: course=${item.courseId} | due=${item.dueDate} | timing=${item.dueTiming} | slug=${item.slug}]`;
-    const sourceLine = item.sourceUrl ? `Source: ${item.sourceUrl}` : '';
+    const dueLabel = isTestOrQuiz
+      ? `${item.category.toUpperCase()} on ${item.dueDate} (${item.dueTiming.replace('-', ' ')}) · ${course.teacher}`
+      : `Due ${item.dueDate} (${item.dueTiming.replace('-', ' ')}) · ${course.teacher}`;
     const richNotes = [
-      `Due ${item.dueDate} (${item.dueTiming.replace('-', ' ')}) · ${course.teacher}`,
+      dueLabel,
       durationOriginNote,
       item.contextDetails,
       sourceLine,
@@ -726,16 +842,23 @@ export function applyExtractedAssignmentsToSchedule(params: {
       .filter(Boolean)
       .join('\n\n');
 
-    const blockTitle = `[${course.shortName}] ${item.title}`;
+    const titlePrefix = isTestOrQuiz && !/^study\b/i.test(item.title) ? 'Study: ' : '';
+    const blockTitle = `[${course.shortName}] ${titlePrefix}${item.title}`;
 
-    // 3. Upsert Block (preserving user manual edits to date/startTime/endTime/completed!)
+    // Upsert Block (preserving user manual edits to date/startTime/endTime/completed!)
     const existingIdx = workingBlocks.findIndex((b) => b.id === blockId);
     if (existingIdx >= 0) {
       const prev = workingBlocks[existingIdx];
-      if (prev.title !== blockTitle || prev.notes !== richNotes) {
+      const nextCompleted = prev.completed || isAlreadyDone;
+      if (
+        prev.title !== blockTitle ||
+        prev.notes !== richNotes ||
+        prev.completed !== nextCompleted
+      ) {
         workingBlocks[existingIdx] = {
           ...prev,
           title: blockTitle,
+          completed: nextCompleted,
           startingStepHint: item.startingStep,
           notes: richNotes,
           updatedAt: new Date().toISOString(),
@@ -756,9 +879,11 @@ export function applyExtractedAssignmentsToSchedule(params: {
       });
 
       const promptAtStart =
-        item.courseId === 'precalc' ||
-        item.courseId === 'lit' ||
-        item.courseId === 'physics';
+        !isAlreadyDone &&
+        (isTestOrQuiz ||
+          item.courseId === 'precalc' ||
+          item.courseId === 'lit' ||
+          item.courseId === 'physics');
 
       workingBlocks.push({
         id: blockId,
@@ -767,7 +892,7 @@ export function applyExtractedAssignmentsToSchedule(params: {
         endTime: placed.endTime,
         title: blockTitle,
         kind: 'goal-session',
-        completed: false,
+        completed: isAlreadyDone,
         whyCategory: 'School',
         customColor: course.color,
         ...(promptAtStart ? { alertOffsetMinutes: 0 } : {}),
@@ -779,7 +904,7 @@ export function applyExtractedAssignmentsToSchedule(params: {
       addedCount++;
     }
 
-    // 4. Upsert Idea in Course Folder
+    // Upsert Idea in Course Folder
     neededProjects.add(course.projectFolder);
     const existingIdeaIdx = workingIdeas.findIndex((i) => i.id === ideaId);
     const linkedBlock = workingBlocks.find((b) => b.id === blockId);
@@ -806,16 +931,44 @@ export function applyExtractedAssignmentsToSchedule(params: {
         title: blockTitle,
         startingStep: item.startingStep,
         notes: richNotes.replace(META_TAG_REGEX, '').trim(),
-        isBottleneck: item.category === 'lab' || item.category === 'test',
+        isBottleneck: item.category === 'lab' || isTestOrQuiz,
         status: isDone ? 'completed' : 'active',
         estimatedMinutes: durationMinutes,
-        createdAt: todayIso,
+        createdAt: item.assignedDate || todayIso,
         updatedAt: new Date().toISOString(),
       });
     }
   }
 
-  // 5. Run Lifecycle Reconciler (handles past assignedDate rollover + Class Entry 6pm Night-Before Alarm!)
+  // Attach any strictly IN-CLASS work directly onto the matching OHCHS class blocks
+  if (inClassLinesByClassKey.size > 0) {
+    for (let i = 0; i < workingBlocks.length; i++) {
+      const blk = workingBlocks[i];
+      if (!blk.id.startsWith('ohchs-')) continue;
+      const idMatch = blk.id.match(/^ohchs-(\d{4}-\d{2}-\d{2})-([a-z0-9]+)$/i);
+      if (!idMatch) continue;
+      const [, blockDate, periodKey] = idMatch;
+      const matchedCourse = (Object.values(SCHOOL_COURSES) as CourseScheduleSpec[]).find((c) =>
+        c.periodKeys.includes(periodKey)
+      );
+      if (!matchedCourse) continue;
+
+      const lines = inClassLinesByClassKey.get(`${matchedCourse.id}|${blockDate}`);
+      if (!lines || lines.length === 0) continue;
+
+      const nextNotes = upsertInClassSection(blk.notes, lines);
+      if (blk.notes !== nextNotes) {
+        workingBlocks[i] = {
+          ...blk,
+          notes: nextNotes,
+          updatedAt: new Date().toISOString(),
+        };
+        updatedCount++;
+      }
+    }
+  }
+
+  // Run Lifecycle Reconciler (handles past assignedDate rollover + Class Entry 6pm Night-Before Alarm!)
   const reconciled = reconcileSchoolworkLifecycle({
     blocks: workingBlocks,
     todayIso,
@@ -827,6 +980,7 @@ export function applyExtractedAssignmentsToSchedule(params: {
     blocks: reconciled.blocks,
     ideas: workingIdeas,
     projects: Array.from(neededProjects),
+    removedBlockIds,
     addedCount,
     updatedCount,
   };
