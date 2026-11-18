@@ -90,12 +90,16 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
   const hourHeight = isWeek ? 44 : 56;
 
   const [openBlockId, setOpenBlockId] = useState<string | null>(null);
+  const [slideDir, setSlideDir] = useState<'next' | 'prev' | null>(null);
+  const [dragOffsetX, setDragOffsetX] = useState(0);
+  const [isDraggingX, setIsDraggingX] = useState(false);
   const [nowMin, setNowMin] = useState(() => {
     const d = new Date();
     return d.getHours() * 60 + d.getMinutes();
   });
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const touchRef = useRef<{ x: number; y: number } | null>(null);
+  const touchRef = useRef<{ x: number; y: number; axis: 'none' | 'x' | 'y' } | null>(null);
+  const prevModeRef = useRef(state.scheduleViewMode);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -124,16 +128,22 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
   const hours = Array.from({ length: endHour - startHour }, (_, i) => startHour + i);
   const gridHeight = hours.length * hourHeight;
 
-  // Auto-scroll to the first event of the view (or 8am) like Google Calendar
+  // Auto-scroll on initial mount or when zooming between Week and Day (keep vertical scroll steady on horizontal swipes)
+  const didInitialScrollRef = useRef(false);
   useEffect(() => {
     if (!scrollRef.current) return;
+    if (didInitialScrollRef.current && prevModeRef.current === state.scheduleViewMode) {
+      return;
+    }
+    didInitialScrollRef.current = true;
+    prevModeRef.current = state.scheduleViewMode;
     const firstMin = visibleBlocks.length
       ? Math.min(...visibleBlocks.map((b) => toMin(b.startTime)))
       : 8 * 60;
     const target = ((firstMin - startHour * 60) / 60) * hourHeight - 12;
     scrollRef.current.scrollTop = Math.max(0, target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.selectedDate, state.scheduleViewMode]);
+  }, [state.scheduleViewMode]);
 
   // Zoom from the tapped day's column (week → day) like pinching into Google Calendar
   const dayIdx = Math.max(0, weekDates.indexOf(state.selectedDate));
@@ -161,18 +171,56 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
   const assignedIds = new Set(state.blocks.filter((b) => b.assignedIdeaId && !b.completed).map((b) => b.assignedIdeaId));
   const topIdea = activeIdeas.find((i) => !assignedIds.has(i.id)) ?? activeIdeas[0];
 
-  const shiftDate = (dir: 1 | -1) =>
+  const shiftDate = (dir: 1 | -1) => {
+    setSlideDir(dir === 1 ? 'next' : 'prev');
     actions.setSelectedDate(addDaysISO(state.selectedDate, dir * (isWeek ? 7 : 1)));
+  };
+
+  const selectDay = (iso: string) => {
+    if (!isWeek && iso !== state.selectedDate) {
+      setSlideDir(iso > state.selectedDate ? 'next' : 'prev');
+    } else {
+      setSlideDir(null);
+    }
+    actions.setSelectedDate(iso);
+    actions.setScheduleViewMode('day');
+  };
 
   const onTouchStart = (e: React.TouchEvent) => {
-    touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, axis: 'none' };
+    setIsDraggingX(false);
   };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    const t = touchRef.current;
+    if (!t) return;
+    const dx = e.touches[0].clientX - t.x;
+    const dy = e.touches[0].clientY - t.y;
+
+    if (t.axis === 'none') {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      t.axis = Math.abs(dx) > Math.abs(dy) * 1.15 ? 'x' : 'y';
+      if (t.axis === 'x') setIsDraggingX(true);
+    }
+
+    if (t.axis === 'x') {
+      // Rubber-band follow along X while keeping the hour labels anchored
+      const damped = dx * 0.48;
+      setDragOffsetX(Math.max(-140, Math.min(140, damped)));
+    }
+  };
+
   const onTouchEnd = (e: React.TouchEvent) => {
-    if (!touchRef.current) return;
-    const dx = e.changedTouches[0].clientX - touchRef.current.x;
-    const dy = e.changedTouches[0].clientY - touchRef.current.y;
+    const t = touchRef.current;
     touchRef.current = null;
-    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) shiftDate(dx < 0 ? 1 : -1);
+    setIsDraggingX(false);
+    setDragOffsetX(0);
+    if (!t) return;
+    const dx = e.changedTouches[0].clientX - t.x;
+    const dy = e.changedTouches[0].clientY - t.y;
+    if (t.axis === 'x' && Math.abs(dx) > 52 && Math.abs(dx) > Math.abs(dy)) {
+      shiftDate(dx < 0 ? 1 : -1);
+    }
   };
 
   const monthLabel = new Date(`${state.selectedDate}T12:00:00Z`).toLocaleDateString('en-US', {
@@ -190,11 +238,20 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
             <span className="gcal-title">{monthLabel}</span>
           ) : (
             <>
-              <button type="button" className="gcal-back" onClick={() => actions.setScheduleViewMode('week')}>
+              <button
+                type="button"
+                className="gcal-back"
+                onClick={() => {
+                  setSlideDir(null);
+                  actions.setScheduleViewMode('week');
+                }}
+              >
                 <ChevronLeft size={18} />
                 <span>Week</span>
               </button>
-              <span className="gcal-title gcal-title-day">{formatShortDate(state.selectedDate)}</span>
+              <span key={state.selectedDate} className={`gcal-title gcal-title-day ${slideDir ? `is-slide-${slideDir}` : ''}`.trim()}>
+                {formatShortDate(state.selectedDate)}
+              </span>
             </>
           )}
           <div className="gcal-toolbar-right">
@@ -221,10 +278,7 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                 key={iso}
                 type="button"
                 className={`gcal-strip-day ${dimmed ? 'is-dim' : ''}`.trim()}
-                onClick={() => {
-                  actions.setSelectedDate(iso);
-                  actions.setScheduleViewMode('day');
-                }}
+                onClick={() => selectDay(iso)}
                 aria-label={`Open ${formatShortDate(iso)}`}
               >
                 <span className={`gcal-dow ${isToday ? 'is-today' : ''}`.trim()}>{WEEKDAY_LETTERS[idx]}</span>
@@ -246,8 +300,15 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
       <div
         ref={scrollRef}
         className="gcal-scroll"
+        style={isDraggingX ? { overflowY: 'hidden' } : undefined}
         onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
+        onTouchCancel={() => {
+          touchRef.current = null;
+          setIsDraggingX(false);
+          setDragOffsetX(0);
+        }}
       >
         <div
           key={state.scheduleViewMode}
@@ -262,7 +323,15 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
             ))}
           </div>
 
-          <div className="gcal-cols">
+          <div
+            key={isWeek ? weekDates[0] : state.selectedDate}
+            className={`gcal-cols ${!isDraggingX && slideDir ? `is-slide-${slideDir}` : ''}`.trim()}
+            style={
+              isDraggingX
+                ? { transform: `translate3d(${dragOffsetX}px, 0, 0)`, transition: 'none' }
+                : undefined
+            }
+          >
             {hours.map((h, i) => (
               <div key={h} className="gcal-hline" style={{ top: i * hourHeight }} />
             ))}
@@ -276,8 +345,7 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                   className={`gcal-col ${iso === TODAY_ANCHOR && isWeek ? 'is-today' : ''}`.trim()}
                   onClick={(e) => {
                     if (isWeek && e.target === e.currentTarget) {
-                      actions.setSelectedDate(iso);
-                      actions.setScheduleViewMode('day');
+                      selectDay(iso);
                     }
                   }}
                 >
