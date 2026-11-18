@@ -1897,17 +1897,33 @@ textarea {
   z-index: 1;
   border: none;
   border-radius: 6px;
-  padding: 4px 8px;
+  padding: 3px 8px;
   text-align: left;
   display: flex;
   flex-direction: column;
+  justify-content: flex-start;
   gap: 1px;
-  overflow: hidden;
+  overflow: visible;
   cursor: pointer;
   color: #fff;
   box-shadow: 0 0 0 1px var(--bg-surface);
   transition: filter var(--duration-fast) var(--ease-calm), transform var(--duration-fast) var(--ease-calm);
   font-family: inherit;
+}
+
+.gcal-ev-content {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 1px;
+}
+
+.gcal-ev.is-single-line .gcal-ev-content {
+  justify-content: center;
 }
 
 .gcal-ev:hover {
@@ -1921,12 +1937,37 @@ textarea {
 .gcal-ev-title {
   font-size: 12.5px;
   font-weight: 600;
-  line-height: 1.25;
-  display: flex;
-  align-items: center;
-  gap: 3px;
+  line-height: 15px;
+  display: block;
   overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gcal-ev-title.is-clamp-1 {
+  display: block !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.gcal-ev-title.is-clamp-multi {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  white-space: normal !important;
+  overflow: hidden !important;
+  overflow-wrap: break-word;
   word-break: break-word;
+}
+
+.gcal-ev-inline-icon {
+  display: inline;
+  vertical-align: -1.5px;
+  margin-right: 3px;
+}
+
+.gcal-ev-title .gcal-ev-alert-pill {
+  vertical-align: 0.5px;
+  margin-right: 4px;
 }
 
 .gcal-ev-inline-time {
@@ -1937,51 +1978,58 @@ textarea {
 
 .gcal-ev-time {
   font-size: 11px;
+  line-height: 13.5px;
   opacity: 0.92;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
 
 .gcal-ev-sub {
   font-size: 11px;
+  line-height: 13.5px;
   opacity: 0.85;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .gcal-ev.is-compact {
-  padding: 3px 4px;
+  padding: 2px 3.5px;
   border-radius: 4px;
 }
 
 .gcal-ev.is-compact .gcal-ev-title {
   font-size: 10.5px;
   font-weight: 600;
-  line-height: 12.5px;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
+  line-height: 12px;
+  letter-spacing: -0.01em;
+}
+
+.gcal-ev.is-compact .gcal-ev-title.is-clamp-multi {
+  overflow-wrap: anywhere;
   word-break: normal;
-  overflow-wrap: normal;
   hyphens: auto;
   -webkit-hyphens: auto;
-  letter-spacing: -0.01em;
 }
 
 .gcal-ev.is-compact .gcal-ev-time {
   font-size: 9.5px;
+  line-height: 11px;
 }
 
 .gcal-ev.is-micro {
   padding: 0 6px;
   border-radius: 4px;
-  justify-content: center;
 }
 
 .gcal-ev.is-micro .gcal-ev-title {
   font-size: 10.5px;
   line-height: 11px;
-  white-space: nowrap;
+  white-space: nowrap !important;
 }
 
 .gcal-ev.is-compact.is-micro {
@@ -1992,6 +2040,7 @@ textarea {
 .gcal-ev.is-compact.is-micro .gcal-ev-title {
   font-size: 9px;
   line-height: 9.5px;
+  white-space: nowrap !important;
 }
 
 .gcal-ev.is-done {
@@ -2100,17 +2149,22 @@ textarea {
   position: absolute;
   left: 0;
   right: 0;
-  height: 7px;
+  height: 8px;
   z-index: 3;
   cursor: ns-resize;
 }
 
 .gcal-resize-handle.is-top {
-  top: 0;
+  top: -2px;
 }
 
 .gcal-resize-handle.is-bottom {
   bottom: 0;
+}
+
+.gcal-resize-handle.is-bottom.is-outer {
+  bottom: -8px;
+  height: 15px;
 }
 
 .gcal-resize-handle::after {
@@ -2121,23 +2175,39 @@ textarea {
   width: 20px;
   height: 3px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.8);
   opacity: 0;
   transition: opacity 140ms var(--ease-calm);
 }
 
 .gcal-resize-handle.is-top::after {
-  top: 2px;
+  top: 3px;
 }
 
 .gcal-resize-handle.is-bottom::after {
   bottom: 2px;
 }
 
+.gcal-resize-handle.is-bottom.is-outer::after {
+  bottom: 10px;
+}
+
+.gcal-ev.is-small-expandable .gcal-resize-handle.is-bottom::after {
+  opacity: 0.52;
+}
+
 .gcal-ev:hover .gcal-resize-handle::after,
 .gcal-ev:focus-visible .gcal-resize-handle::after,
 .gcal-ev:active .gcal-resize-handle::after {
   opacity: 1;
+}
+
+.gcal-duration-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
 }
 
 .gcal-create-title-input {

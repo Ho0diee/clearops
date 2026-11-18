@@ -45,8 +45,10 @@ export function useSchoolworkExtractorBridge(
       window.location.hostname !== '127.0.0.1';
     if (isHttpsProd) return;
 
+    let cancelled = false;
+
     const runSyncTick = async () => {
-      if (inFlightRef.current || document.visibilityState === 'hidden') return;
+      if (cancelled || inFlightRef.current) return;
       inFlightRef.current = true;
 
       try {
@@ -67,13 +69,15 @@ export function useSchoolworkExtractorBridge(
           }),
         });
 
-        if (!resp.ok) return;
+        if (!resp.ok || cancelled) return;
         const data = (await resp.json()) as {
           ok: boolean;
           hasUpdate?: boolean;
           outbox?: IncomingSchoolworkOutbox;
           currentVersion?: number;
         };
+
+        if (cancelled) return;
 
         if (!data.ok || !data.hasUpdate || !data.outbox) {
           if (typeof data.currentVersion === 'number') {
@@ -137,12 +141,14 @@ export function useSchoolworkExtractorBridge(
       }
     };
 
-    runSyncTick();
+    const initTimer = window.setTimeout(runSyncTick, 150);
     const timer = window.setInterval(runSyncTick, 3500);
     window.addEventListener('focus', runSyncTick);
     document.addEventListener('visibilitychange', runSyncTick);
 
     return () => {
+      cancelled = true;
+      window.clearTimeout(initTimer);
       window.clearInterval(timer);
       window.removeEventListener('focus', runSyncTick);
       document.removeEventListener('visibilitychange', runSyncTick);

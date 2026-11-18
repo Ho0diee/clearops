@@ -200,6 +200,51 @@ interface CreateSheetDraft {
   alertOffsetMinutes?: number;
 }
 
+const DURATION_PRESETS: { label: string; mins: number }[] = [
+  { label: '15m', mins: 15 },
+  { label: '30m', mins: 30 },
+  { label: '45m', mins: 45 },
+  { label: '1h', mins: 60 },
+  { label: '1.5h', mins: 90 },
+  { label: '2h', mins: 120 },
+];
+
+const QuickDurationRow: React.FC<{
+  startTime: string;
+  endTime: string;
+  onSetEndTime: (nextEndTime: string) => void;
+}> = ({ startTime, endTime, onSetEndTime }) => {
+  const sMin = toMin(startTime);
+  const eMin = Math.max(sMin + 5, toMin(endTime));
+  const curDur = eMin - sMin;
+
+  return (
+    <div className="gcal-duration-row" aria-label="Quick event duration">
+      {DURATION_PRESETS.map((p) => {
+        const active = Math.abs(curDur - p.mins) <= 2;
+        return (
+          <button
+            key={p.label}
+            type="button"
+            className={`gcal-pill-chip is-compact ${active ? 'is-active' : ''}`.trim()}
+            onClick={() => onSetEndTime(fromMin(Math.min(24 * 60, sMin + p.mins)))}
+          >
+            {p.label}
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        className="gcal-pill-chip is-compact"
+        title="Extend end time by 30 minutes"
+        onClick={() => onSetEndTime(fromMin(Math.min(24 * 60, eMin + 30)))}
+      >
+        +30m
+      </button>
+    </div>
+  );
+};
+
 const EventEnrichmentFields: React.FC<{
   customColor?: EventColorId;
   notes?: string;
@@ -453,9 +498,12 @@ const CalendarPane = memo<CalendarPaneProps>(
                   Math.max(isWeek ? 18 : 22, ((e - s) / 60) * hourHeight - 2)
                 );
                 const isMicro = height < 20;
-                const roomy = !isWeek && height >= 40;
-                const showHandles = interactive && !isBeingDragged && height >= 40;
-                const clampLines = isWeek ? Math.max(1, Math.floor((height - 4) / 11)) : undefined;
+                const isSingleLine = isWeek ? height < 26 : height < 36;
+                const roomy = !isWeek && height >= 42;
+                const showTopHandle = interactive && !isBeingDragged && height >= 28;
+                const showBottomHandle = interactive && !isBeingDragged;
+                const hasSpaceBelow =
+                  nextStartMin === null || ((nextStartMin - e) / 60) * hourHeight >= 8;
                 const isSlotDraftTarget =
                   draftOnThisDay?.mode === 'fill-slot' && draftOnThisDay.targetBlockId === block.id;
                 const isUpdateDraftTarget =
@@ -483,6 +531,15 @@ const CalendarPane = memo<CalendarPaneProps>(
                   : effectiveBlock.title;
                 const subLineText =
                   effectiveBlock.notes?.trim() || effectiveBlock.startingStepHint || '';
+                const showSubLine = roomy && !isWeek && Boolean(subLineText) && height >= 58;
+                const maxTitleLines = isSingleLine
+                  ? 1
+                  : isWeek
+                  ? Math.max(1, Math.floor((height - 4) / 12))
+                  : Math.max(
+                      1,
+                      Math.floor((height - (6 + (roomy ? 15 : 0) + (showSubLine ? 15 : 0))) / 15)
+                    );
 
                 return (
                   <div
@@ -492,8 +549,10 @@ const CalendarPane = memo<CalendarPaneProps>(
                     className={`gcal-ev ${eventClass(effectiveBlock)} ${
                       effectiveBlock.completed ? 'is-done' : ''
                     } ${isWeek ? 'is-compact' : ''} ${isMicro ? 'is-micro' : ''} ${
-                      block.id === highlightId ? 'is-flash' : ''
+                      isSingleLine ? 'is-single-line' : ''
                     } ${
+                      showBottomHandle && height < 38 && hasSpaceBelow ? 'is-small-expandable' : ''
+                    } ${block.id === highlightId ? 'is-flash' : ''} ${
                       isSlotDraftTarget || isUpdateDraftTarget ? 'is-voice-slot-target' : ''
                     } ${isBeingDragged ? 'is-drag-origin' : ''}`.trim()}
                     style={{
@@ -519,7 +578,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                     }}
                     title={`${effectiveBlock.title} (${effectiveBlock.startTime}–${effectiveBlock.endTime})`}
                   >
-                    {showHandles && onResizePointerDown && (
+                    {showTopHandle && onResizePointerDown && (
                       <span
                         className="gcal-resize-handle is-top"
                         aria-label="Adjust start time"
@@ -527,43 +586,53 @@ const CalendarPane = memo<CalendarPaneProps>(
                       />
                     )}
 
-                    <span
-                      className="gcal-ev-title"
-                      style={clampLines ? { WebkitLineClamp: clampLines } : undefined}
-                    >
-                      {effectiveBlock.completed && !isWeek && <Check size={11} strokeWidth={3} />}
-                      {typeof effectiveBlock.alertOffsetMinutes === 'number' && !isMicro && (
-                        <span
-                          className="gcal-ev-alert-pill"
-                          title={`Alert: ${formatAlertOffsetShort(
-                            effectiveBlock.alertOffsetMinutes
-                          )}`}
-                        >
-                          <Bell size={9.5} strokeWidth={2.7} />
-                          {!isWeek && effectiveBlock.alertOffsetMinutes > 0 && (
-                            <span>{formatAlertBadgeCompact(effectiveBlock.alertOffsetMinutes)}</span>
-                          )}
+                    <div className="gcal-ev-content">
+                      <span
+                        className={`gcal-ev-title ${
+                          maxTitleLines === 1 ? 'is-clamp-1' : 'is-clamp-multi'
+                        }`.trim()}
+                        style={
+                          maxTitleLines > 1 ? { WebkitLineClamp: maxTitleLines } : undefined
+                        }
+                      >
+                        {effectiveBlock.completed && !isWeek && (
+                          <Check size={11} strokeWidth={3} className="gcal-ev-inline-icon" />
+                        )}
+                        {typeof effectiveBlock.alertOffsetMinutes === 'number' && !isMicro && (
+                          <span
+                            className="gcal-ev-alert-pill"
+                            title={`Alert: ${formatAlertOffsetShort(
+                              effectiveBlock.alertOffsetMinutes
+                            )}`}
+                          >
+                            <Bell size={9.5} strokeWidth={2.7} />
+                            {!isWeek && effectiveBlock.alertOffsetMinutes > 0 && (
+                              <span>
+                                {formatAlertBadgeCompact(effectiveBlock.alertOffsetMinutes)}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                        {displayTitle}
+                        {!roomy && !isWeek && (
+                          <span className="gcal-ev-inline-time">, {fmtTime(block.startTime)}</span>
+                        )}
+                      </span>
+                      {roomy && (
+                        <span className="gcal-ev-time">
+                          {isWeek
+                            ? fmtTime(block.startTime)
+                            : `${fmtTime(block.startTime)} – ${fmtTime(block.endTime)}`}
                         </span>
                       )}
-                      {displayTitle}
-                      {!roomy && !isWeek && (
-                        <span className="gcal-ev-inline-time">, {fmtTime(block.startTime)}</span>
-                      )}
-                    </span>
-                    {roomy && (
-                      <span className="gcal-ev-time">
-                        {isWeek
-                          ? fmtTime(block.startTime)
-                          : `${fmtTime(block.startTime)} – ${fmtTime(block.endTime)}`}
-                      </span>
-                    )}
-                    {roomy && !isWeek && subLineText && height >= 54 && (
-                      <span className="gcal-ev-sub">{subLineText}</span>
-                    )}
+                      {showSubLine && <span className="gcal-ev-sub">{subLineText}</span>}
+                    </div>
 
-                    {showHandles && onResizePointerDown && (
+                    {showBottomHandle && onResizePointerDown && (
                       <span
-                        className="gcal-resize-handle is-bottom"
+                        className={`gcal-resize-handle is-bottom ${
+                          hasSpaceBelow ? 'is-outer' : ''
+                        }`.trim()}
                         aria-label="Adjust end time"
                         onPointerDown={(ev) => onResizePointerDown(ev, block, 'resize-end')}
                       />
@@ -2174,6 +2243,16 @@ export const CalendarGrid: React.FC<{
                 )}
               </div>
 
+              {createDraft.mode !== 'reminder' && (
+                <QuickDurationRow
+                  startTime={createDraft.startTime}
+                  endTime={createDraft.endTime}
+                  onSetEndTime={(nextEndTime) =>
+                    setCreateDraft((prev) => (prev ? { ...prev, endTime: nextEndTime } : prev))
+                  }
+                />
+              )}
+
               {createDraft.mode === 'event' && (
                 <div className="gcal-type-pills" style={{ marginTop: 10 }}>
                   {WHY_CATEGORIES.map((cat) => (
@@ -2298,6 +2377,14 @@ export const CalendarGrid: React.FC<{
                   }
                 />
               </div>
+
+              <QuickDurationRow
+                startTime={openBlock.startTime}
+                endTime={openBlock.endTime}
+                onSetEndTime={(nextEndTime) =>
+                  actions.updateCalendarBlock(openBlock.id, { endTime: nextEndTime })
+                }
+              />
 
               {openBlock.kind === 'baseline' && (
                 <div className="gcal-type-pills" style={{ marginTop: 10 }}>
