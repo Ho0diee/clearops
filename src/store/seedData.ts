@@ -8,7 +8,7 @@ export const DEFAULT_SITE_CONFIG: SiteConfig = {
   workspaceName: 'ClearOps',
   accentTheme: 'cobalt',
   activeTemplate: 'personal-cbs-ohcr',
-  hostingProvider: 'Railway + Cloudflare',
+  hostingProvider: 'Vercel',
   pwaInstallEnabled: true,
 };
 
@@ -574,7 +574,7 @@ export const AIRBNB710_STR_PRESET: Pick<
     workspaceName: 'Airbnb 710 Operations',
     accentTheme: 'cobalt',
     activeTemplate: 'airbnb710-str',
-    hostingProvider: 'Railway + Cloudflare',
+    hostingProvider: 'Vercel',
     pwaInstallEnabled: true,
   },
   hourlyRateDollars: 95,

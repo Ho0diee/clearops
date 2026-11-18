@@ -46,7 +46,7 @@ const THEME_SWATCHES: ThemeSwatchOption[] = [
   { id: 'amber', label: 'Warm Amber', hex: '#B45309' },
 ];
 
-const DEPLOY_COMMAND = 'railway up && railway domain airbnb710.com';
+const DEPLOY_COMMAND = 'vercel --prod && vercel domains add airbnb710.com clearops';
 
 export const SiteConfigView: React.FC = () => {
   const { state, actions } = useOpsStore();
@@ -631,15 +631,15 @@ export const SiteConfigView: React.FC = () => {
             </CardBody>
           </Card>
 
-          {/* CARD 4: airbnb710.com Railway + Cloudflare Domain & Mobile PWA Readiness */}
+          {/* CARD 4: airbnb710.com Vercel + Cloudflare Domain & Mobile PWA Readiness */}
           <Card>
             <CardHeader
-              title="airbnb710.com Railway + Cloudflare & Mobile PWA Readiness"
-              subtitle="Production deployment manifest, host allowlist, and configuration backup"
+              title="airbnb710.com Vercel + Cloudflare & Mobile PWA Readiness"
+              subtitle="Connected Git production pipeline, SPA rewrites, and configuration backup"
               action={
                 <Badge tone="streak">
                   <CheckCircle2 size={12} />
-                  Ready
+                  Vercel Connected
                 </Badge>
               }
             />
@@ -656,13 +656,12 @@ export const SiteConfigView: React.FC = () => {
                   />
                   <div className="ops-stack-xs">
                     <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600 }}>
-                      <code className="mono">vite.config.ts</code> &amp;{' '}
-                      <code className="mono">server.mjs</code>
+                      <code className="mono">vercel.json</code> &amp;{' '}
+                      <code className="mono">vite.config.ts</code>
                     </span>
                     <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-                      Configured for <code className="mono">airbnb710.com</code> host allowlist +{' '}
-                      <code className="mono">0.0.0.0:$PORT</code> +{' '}
-                      <code className="mono">/healthz</code> probe.
+                      Configured with SPA client-side routing rewrites and{' '}
+                      <code className="mono">airbnb710.com</code> auto-preset detection.
                     </span>
                   </div>
                 </div>
@@ -677,12 +676,10 @@ export const SiteConfigView: React.FC = () => {
                   />
                   <div className="ops-stack-xs">
                     <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600 }}>
-                      <code className="mono">railway.json</code> Nixpacks Manifest
+                      Vercel Git CI/CD (<code className="mono">Ho0diee/clearops</code>)
                     </span>
                     <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-                      Pre-configured build &amp; deploy manifest ready for{' '}
-                      <code className="mono">airbnb710.com</code> (resolving the Railway edge fallback{' '}
-                      <code className="mono">404</code> once bound).
+                      Linked to Vercel with <code className="mono">airbnb710.com</code> attached — auto-deploys every push to <code className="mono">main</code>.
                     </span>
                   </div>
                 </div>
@@ -710,7 +707,7 @@ export const SiteConfigView: React.FC = () => {
               {/* 1-Click Copy Deploy Command */}
               <div className="ops-stack-xs">
                 <span className="ui-field-label" style={{ marginBottom: 0 }}>
-                  Railway CLI Deploy &amp; Domain Binding
+                  Vercel CLI Deploy &amp; Domain Command
                 </span>
                 <div
                   className="ops-row-between"
