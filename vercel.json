@@ -1,4 +1,18 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/schedules/schoolwork-sync.ts": {
+      "experimentalTriggers": [{ "type": "schedule/v1beta" }],
+      "maxDuration": 60
+    }
+  },
+  "schedules": {
+    "schoolwork-hourly-sync": {
+      "schedule": "0 * * * *",
+      "timezone": "America/New_York",
+      "function": "api/schedules/schoolwork-sync"
+    }
+  },
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]

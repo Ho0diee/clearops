@@ -124,6 +124,7 @@ function ideaRichnessScore(idea: IdeaItem): number {
   if (idea.title) score += Math.min(100, idea.title.length);
   if (idea.blocksBelow) score += 50;
   if (idea.responsibilityType) score += 50;
+  if (typeof idea.earnedAmountDollars === 'number') score += 60;
   return score;
 }
 

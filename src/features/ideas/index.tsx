@@ -51,8 +51,20 @@ function nextResponsibilityType(
   return RESPONSIBILITY_CYCLE[(idx + 1) % RESPONSIBILITY_CYCLE.length];
 }
 
-function responsibilityLabel(type?: IdeaResponsibilityType): string {
-  if (type === 'paid') return 'Paid';
+function responsibilityLabel(type?: IdeaResponsibilityType, earnedAmount?: number): string {
+  if (type === 'paid') {
+    if (typeof earnedAmount === 'number' && Number.isFinite(earnedAmount)) {
+      const formatted =
+        earnedAmount % 1 === 0
+          ? earnedAmount.toLocaleString('en-US', { maximumFractionDigits: 0 })
+          : earnedAmount.toLocaleString('en-US', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            });
+      return `Paid · $${formatted}`;
+    }
+    return 'Paid';
+  }
   if (type === 'cost') return 'Cost';
   if (type === 'time-saving') return 'Time-Saving';
   return 'None';
@@ -102,6 +114,8 @@ export const IdeasHubView: React.FC = () => {
   const [inArchiveMode, setInArchiveMode] = useState(false);
   const [archiveOutcomeFilter, setArchiveOutcomeFilter] = useState<ArchiveOutcomeFilter>('all');
   const [archivePromptOpen, setArchivePromptOpen] = useState(false);
+  const [earnedDraft, setEarnedDraft] = useState('');
+  const [earnedMissingError, setEarnedMissingError] = useState(false);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [mobilePane, setMobilePane] = useState<MobileNotesPane>('folders');
 
@@ -125,6 +139,7 @@ export const IdeasHubView: React.FC = () => {
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const bodyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const newFolderInputRef = useRef<HTMLInputElement | null>(null);
+  const earnedInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCursorRef = useRef<number | null>(null);
 
   const allNotes = useMemo(
@@ -544,7 +559,21 @@ export const IdeasHubView: React.FC = () => {
                   className={`notes-archive-action-btn ${archivePromptOpen ? 'is-open' : ''}`.trim()}
                   onClick={() => {
                     setZonePickerOpen(false);
-                    setArchivePromptOpen((prev) => !prev);
+                    setArchivePromptOpen((prev) => {
+                      const next = !prev;
+                      if (next) {
+                        setEarnedMissingError(false);
+                        setEarnedDraft(
+                          typeof note.earnedAmountDollars === 'number'
+                            ? String(note.earnedAmountDollars)
+                            : ''
+                        );
+                        if (note.responsibilityType === 'paid') {
+                          window.setTimeout(() => earnedInputRef.current?.focus(), 35);
+                        }
+                      }
+                      return next;
+                    });
                   }}
                   title="Archive as Complete or Not Complete"
                 >
@@ -567,55 +596,121 @@ export const IdeasHubView: React.FC = () => {
 
         {/* Pure Apple Notes Paper Canvas */}
         <div className="notes-paper">
-          {!isArchived && archivePromptOpen && (
-            <div className="notes-archive-popover" role="region" aria-label="Archive options">
-              <div className="notes-zone-popover-head">
-                <span>Archive in {note.project} as:</span>
-                <button
-                  type="button"
-                  className="notes-icon-btn is-sm"
-                  aria-label="Cancel archive"
-                  onClick={() => setArchivePromptOpen(false)}
-                >
-                  <X size={14} />
-                </button>
+          {!isArchived && archivePromptOpen && (() => {
+            const isPaidTask = note.responsibilityType === 'paid';
+            const commitArchiveChoice = (outcome: ArchiveOutcome) => {
+              let earnedVal: number | undefined;
+              if (isPaidTask) {
+                const rawClean = earnedDraft.trim().replace(/^\$/, '').replace(/,/g, '');
+                const parsedNum = Number(rawClean);
+                if (rawClean === '' || !Number.isFinite(parsedNum) || parsedNum < 0) {
+                  setEarnedMissingError(true);
+                  earnedInputRef.current?.focus();
+                  return;
+                }
+                earnedVal = parsedNum;
+              }
+              actions.archiveIdea(note.id, outcome, earnedVal);
+              setArchivePromptOpen(false);
+              setEarnedMissingError(false);
+              setZonePickerOpen(false);
+              if (isMobileEditor) {
+                setMobilePane('list');
+              }
+              setSelectedNoteId(null);
+            };
+
+            return (
+              <div className="notes-archive-popover" role="region" aria-label="Archive options">
+                <div className="notes-zone-popover-head">
+                  <span>
+                    {isPaidTask
+                      ? 'How much did you make?'
+                      : `Archive in ${note.project} as:`}
+                  </span>
+                  <button
+                    type="button"
+                    className="notes-icon-btn is-sm"
+                    aria-label="Cancel archive"
+                    onClick={() => {
+                      setArchivePromptOpen(false);
+                      setEarnedMissingError(false);
+                    }}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+
+                {isPaidTask && (
+                  <div className="notes-earned-field">
+                    <div
+                      className={`notes-earned-input-wrap ${
+                        earnedMissingError ? 'is-error' : ''
+                      }`.trim()}
+                    >
+                      <span className="notes-earned-prefix">$</span>
+                      <input
+                        ref={earnedInputRef}
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="any"
+                        className="notes-earned-input"
+                        placeholder="0.00"
+                        aria-label="How much did you make in dollars"
+                        value={earnedDraft}
+                        onChange={(e) => {
+                          setEarnedDraft(e.target.value);
+                          if (earnedMissingError) setEarnedMissingError(false);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            commitArchiveChoice('completed');
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="notes-earned-zero-btn"
+                        onClick={() => {
+                          setEarnedDraft('0');
+                          setEarnedMissingError(false);
+                        }}
+                        title="Set earned amount to $0"
+                      >
+                        $0
+                      </button>
+                    </div>
+                    {earnedMissingError && (
+                      <span className="notes-earned-error">
+                        Enter how much you made before archiving (or tap $0).
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div className="notes-archive-choice-row">
+                  <button
+                    type="button"
+                    className="notes-archive-choice-btn is-complete"
+                    onClick={() => commitArchiveChoice('completed')}
+                  >
+                    <Check size={14} strokeWidth={2.8} />
+                    <span>Complete</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="notes-archive-choice-btn is-incomplete"
+                    onClick={() => commitArchiveChoice('not-completed')}
+                  >
+                    <Archive size={14} />
+                    <span>Not Complete</span>
+                  </button>
+                </div>
               </div>
-              <div className="notes-archive-choice-row">
-                <button
-                  type="button"
-                  className="notes-archive-choice-btn is-complete"
-                  onClick={() => {
-                    actions.archiveIdea(note.id, 'completed');
-                    setArchivePromptOpen(false);
-                    setZonePickerOpen(false);
-                    if (isMobileEditor) {
-                      setMobilePane('list');
-                    }
-                    setSelectedNoteId(null);
-                  }}
-                >
-                  <Check size={14} strokeWidth={2.8} />
-                  <span>Complete</span>
-                </button>
-                <button
-                  type="button"
-                  className="notes-archive-choice-btn is-incomplete"
-                  onClick={() => {
-                    actions.archiveIdea(note.id, 'not-completed');
-                    setArchivePromptOpen(false);
-                    setZonePickerOpen(false);
-                    if (isMobileEditor) {
-                      setMobilePane('list');
-                    }
-                    setSelectedNoteId(null);
-                  }}
-                >
-                  <Archive size={14} />
-                  <span>Not Complete</span>
-                </button>
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {isArchived ? (
             <div className="notes-chip-row">
@@ -654,7 +749,7 @@ export const IdeasHubView: React.FC = () => {
               </button>
               {note.responsibilityType && (
                 <span className={`notes-mini-badge is-${note.responsibilityType}`}>
-                  {responsibilityLabel(note.responsibilityType)}
+                  {responsibilityLabel(note.responsibilityType, note.earnedAmountDollars)}
                 </span>
               )}
               <span
@@ -1279,7 +1374,10 @@ export const IdeasHubView: React.FC = () => {
                     )}
                     {!reordering && item.responsibilityType && (
                       <span className={`notes-mini-badge is-${item.responsibilityType}`}>
-                        {responsibilityLabel(item.responsibilityType)}
+                        {responsibilityLabel(
+                          item.responsibilityType,
+                          isArchiveFolder ? item.earnedAmountDollars : undefined
+                        )}
                       </span>
                     )}
                     {!reordering && !isArchiveFolder && scheduled && (

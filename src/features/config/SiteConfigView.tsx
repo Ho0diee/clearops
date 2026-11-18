@@ -28,6 +28,7 @@ import {
 } from '../../components/ui';
 import { useOpsStore } from '../../store/opsStore';
 import { WhyAnchorsCard } from './WhyAnchorsCard';
+import { SchoolworkAutomationCard } from './SchoolworkAutomationCard';
 import { AIRBNB710_STR_PRESET, INITIAL_OPS_STATE } from '../../store/seedData';
 import type { AccentThemeId } from '../../types/schema';
 
@@ -818,6 +819,8 @@ export const SiteConfigView: React.FC = () => {
               </Banner>
             </CardBody>
           </Card>
+
+          <SchoolworkAutomationCard />
         </div>
       </div>
     </div>

@@ -91,6 +91,8 @@ export interface IdeaItem {
   updatedAt?: string;
   archivedAt?: string;
   archivedOutcome?: ArchiveOutcome;
+  /** Dollars earned on a Paid task (asked before archiving) */
+  earnedAmountDollars?: number;
 }
 
 export interface CheckupBenchmark {
@@ -277,7 +279,11 @@ export interface OpsActions {
     estimatedMinutes?: number;
   }) => string;
   updateIdea: (ideaId: string, patch: Partial<Omit<IdeaItem, 'id'>>) => void;
-  archiveIdea: (ideaId: string, outcome?: ArchiveOutcome) => void;
+  archiveIdea: (
+    ideaId: string,
+    outcome?: ArchiveOutcome,
+    earnedAmountDollars?: number
+  ) => void;
   unarchiveIdea: (ideaId: string) => void;
   deleteIdea: (ideaId: string) => void;
   moveIdeaRank: (ideaId: string, direction: 'up' | 'down') => void;

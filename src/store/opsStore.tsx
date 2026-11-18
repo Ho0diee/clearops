@@ -40,6 +40,10 @@ import {
 import { interpretScheduleInput, parseProgressiveVoiceDraft } from './scheduleAi';
 import { useSchoolworkExtractorBridge } from './schoolworkBridge';
 import {
+  getEasternNow,
+  reconcileSchoolworkLifecycle,
+} from '../schoolwork/standardizedEngine';
+import {
   mergeTombstones,
   mergeUniversalPayload,
   type SchoolDelayRecord,
@@ -728,7 +732,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }, 450);
   }, [state, performCloudSync]);
 
-  useSchoolworkExtractorBridge(state, setState, tombstonesRef);
+  useSchoolworkExtractorBridge(state, setState, tombstonesRef, ohchsDelaysRef);
 
   useEffect(() => {
     document.documentElement.dataset.accent = state.siteConfig.accentTheme || 'cobalt';
@@ -786,24 +790,64 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       updateCalendarBlock: (blockId, patch) => {
         const nowIso = new Date().toISOString();
-        setState((prev) => ({
-          ...prev,
-          blocks: sortBlocks(
+        const { todayIso: eastToday, nowMinutesOfDay } = getEasternNow();
+        setState((prev) => {
+          const patched = sortBlocks(
             prev.blocks.map((b) =>
               b.id === blockId ? { ...b, ...patch, updatedAt: nowIso } : b
             )
-          ),
-        }));
+          );
+          const reconciled = reconcileSchoolworkLifecycle({
+            blocks: patched,
+            todayIso: eastToday,
+            nowMinutesOfDay,
+            delaysByDate: ohchsDelaysRef.current,
+          });
+          return {
+            ...prev,
+            blocks: reconciled.blocks,
+          };
+        });
       },
 
       toggleBlockCompleted: (blockId: string) => {
         const nowIso = new Date().toISOString();
-        setState((prev) => ({
-          ...prev,
-          blocks: prev.blocks.map((b) =>
-            b.id === blockId ? { ...b, completed: !b.completed, updatedAt: nowIso } : b
-          ),
-        }));
+        const { todayIso: eastToday, nowMinutesOfDay } = getEasternNow();
+        setState((prev) => {
+          let toggledCompleted = false;
+          let linkedIdeaId: string | undefined;
+          const mapped = prev.blocks.map((b) => {
+            if (b.id !== blockId) return b;
+            toggledCompleted = !b.completed;
+            linkedIdeaId = b.assignedIdeaId;
+            return { ...b, completed: toggledCompleted, updatedAt: nowIso };
+          });
+          const reconciled = reconcileSchoolworkLifecycle({
+            blocks: mapped,
+            todayIso: eastToday,
+            nowMinutesOfDay,
+            delaysByDate: ohchsDelaysRef.current,
+          });
+          const nextIdeas =
+            blockId.startsWith('sch-hw-') && linkedIdeaId
+              ? prev.ideas.map((i) =>
+                  i.id === linkedIdeaId
+                    ? {
+                        ...i,
+                        status: (toggledCompleted ? 'completed' : 'active') as
+                          | 'completed'
+                          | 'active',
+                        updatedAt: nowIso,
+                      }
+                    : i
+                )
+              : prev.ideas;
+          return {
+            ...prev,
+            blocks: reconciled.blocks,
+            ideas: nextIdeas,
+          };
+        });
       },
 
       deleteCalendarBlock: (blockId: string) => {
@@ -814,10 +858,20 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           };
           saveLocalTombstones(tombstonesRef.current);
         }
-        setState((prev) => ({
-          ...prev,
-          blocks: prev.blocks.filter((b) => b.id !== blockId),
-        }));
+        const { todayIso: eastToday, nowMinutesOfDay } = getEasternNow();
+        setState((prev) => {
+          const remaining = prev.blocks.filter((b) => b.id !== blockId);
+          const reconciled = reconcileSchoolworkLifecycle({
+            blocks: remaining,
+            todayIso: eastToday,
+            nowMinutesOfDay,
+            delaysByDate: ohchsDelaysRef.current,
+          });
+          return {
+            ...prev,
+            blocks: reconciled.blocks,
+          };
+        });
       },
 
       updateWhyStatement: (category: WhyCategory, statement: string) => {
@@ -1440,8 +1494,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }));
       },
 
-      archiveIdea: (ideaId, outcome = 'completed') => {
+      archiveIdea: (ideaId, outcome = 'completed', earnedAmountDollars) => {
         let archivedTitle = '';
+        const cleanEarned =
+          typeof earnedAmountDollars === 'number' && Number.isFinite(earnedAmountDollars)
+            ? Math.max(0, Math.round(earnedAmountDollars * 100) / 100)
+            : undefined;
         setState((prev) => {
           const target = prev.ideas.find((i) => i.id === ideaId);
           if (!target || target.status === 'completed') return prev;
@@ -1454,6 +1512,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                   status: 'completed' as const,
                   archivedAt: nowIso,
                   archivedOutcome: outcome,
+                  ...(cleanEarned !== undefined ? { earnedAmountDollars: cleanEarned } : {}),
                   updatedAt: nowIso,
                 }
               : i
@@ -1475,10 +1534,14 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           };
         });
         if (archivedTitle) {
+          const earnedSuffix =
+            cleanEarned !== undefined
+              ? ` · $${cleanEarned % 1 === 0 ? cleanEarned.toFixed(0) : cleanEarned.toFixed(2)}`
+              : '';
           showToast(
             outcome === 'completed'
-              ? `Archived "${archivedTitle}" as Complete`
-              : `Archived "${archivedTitle}" as Not Complete`
+              ? `Archived "${archivedTitle}" as Complete${earnedSuffix}`
+              : `Archived "${archivedTitle}" as Not Complete${earnedSuffix}`
           );
         }
       },
