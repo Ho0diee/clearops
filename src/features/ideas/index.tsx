@@ -1251,6 +1251,22 @@ export const IdeasHubView: React.FC = () => {
         <div className="notes-folder-heading-row">
           <h2 className="notes-folder-heading">{folderDisplayName}</h2>
           {isArchiveFolder && <span className="notes-archive-mode-pill">Archive</span>}
+          {isArchiveFolder && (() => {
+            const folderEarnedTotal = folderNotes.reduce(
+              (sum, n) =>
+                sum + (typeof n.earnedAmountDollars === 'number' ? n.earnedAmountDollars : 0),
+              0
+            );
+            if (folderEarnedTotal <= 0) return null;
+            const formatted =
+              folderEarnedTotal % 1 === 0
+                ? folderEarnedTotal.toLocaleString('en-US', { maximumFractionDigits: 0 })
+                : folderEarnedTotal.toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  });
+            return <span className="notes-archive-earned-pill">${formatted} made</span>;
+          })()}
         </div>
 
         {reordering ? (
