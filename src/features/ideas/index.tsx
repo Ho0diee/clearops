@@ -22,7 +22,7 @@ import { formatShortDate, useOpsStore } from '../../store/opsStore';
 import { formatFriendlyTime } from '../../store/scheduleAi';
 import type { CalendarBlock, IdeaItem, IdeaResponsibilityType } from '../../types/schema';
 
-type SmartFolderId = '__ALL__' | '__BOTTLENECKS__' | string;
+type SmartFolderId = '__BOTTLENECKS__' | string;
 type MobileNotesPane = 'folders' | 'list' | 'note';
 
 const RESPONSIBILITY_CYCLE: (IdeaResponsibilityType | undefined)[] = [
@@ -84,7 +84,9 @@ function extractFirstStepHint(body: string): string {
 export const IdeasHubView: React.FC = () => {
   const { state, actions } = useOpsStore();
 
-  const [selectedFolder, setSelectedFolder] = useState<SmartFolderId>('__ALL__');
+  const [selectedFolder, setSelectedFolder] = useState<SmartFolderId>(
+    () => state.projects[0] || '__BOTTLENECKS__'
+  );
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [mobilePane, setMobilePane] = useState<MobileNotesPane>('folders');
 
@@ -113,7 +115,7 @@ export const IdeasHubView: React.FC = () => {
     let base = allNotes;
     if (selectedFolder === '__BOTTLENECKS__') {
       base = allNotes.filter((i) => i.isBottleneck);
-    } else if (selectedFolder !== '__ALL__') {
+    } else {
       base = allNotes.filter((i) => i.project === selectedFolder);
     }
 
@@ -147,11 +149,7 @@ export const IdeasHubView: React.FC = () => {
   );
 
   const folderDisplayName =
-    selectedFolder === '__ALL__'
-      ? 'All Ideas'
-      : selectedFolder === '__BOTTLENECKS__'
-      ? 'Bottlenecks'
-      : selectedFolder;
+    selectedFolder === '__BOTTLENECKS__' ? 'Bottlenecks' : selectedFolder;
 
   // Cleanup blank untitled note when navigating away (Apple Notes behavior)
   const cleanupBlankNoteIfEmpty = (noteId: string | null) => {
@@ -169,9 +167,7 @@ export const IdeasHubView: React.FC = () => {
     setZonePickerOpen(false);
     setMobilePane('list');
     const firstInFolder =
-      folderId === '__ALL__'
-        ? allNotes[0]
-        : folderId === '__BOTTLENECKS__'
+      folderId === '__BOTTLENECKS__'
         ? allNotes.find((i) => i.isBottleneck)
         : allNotes.find((i) => i.project === folderId);
     setSelectedNoteId(firstInFolder?.id ?? null);
@@ -558,15 +554,26 @@ export const IdeasHubView: React.FC = () => {
       <aside className="notes-folders-pane" aria-label="Folders">
         <div className="notes-pane-topbar">
           <h1 className="notes-large-title">Folders</h1>
-          {state.projects.length > 1 && (
+          <div className="ops-row" style={{ gap: 4 }}>
+            {state.projects.length > 1 && (
+              <button
+                type="button"
+                className="notes-text-btn"
+                onClick={() => setEditingFolders((prev) => !prev)}
+              >
+                {editingFolders ? 'Done' : 'Edit'}
+              </button>
+            )}
             <button
               type="button"
-              className="notes-text-btn"
-              onClick={() => setEditingFolders((prev) => !prev)}
+              className="notes-icon-btn"
+              aria-label="New folder"
+              title="New Folder"
+              onClick={() => setAddingFolder(true)}
             >
-              {editingFolders ? 'Done' : 'Edit'}
+              <FolderPlus size={20} />
             </button>
-          )}
+          </div>
         </div>
 
         {addingFolder && (
@@ -599,19 +606,6 @@ export const IdeasHubView: React.FC = () => {
         )}
 
         <div className="notes-group-card">
-          <button
-            type="button"
-            className={`notes-folder-row ${selectedFolder === '__ALL__' ? 'is-selected' : ''}`.trim()}
-            onClick={() => openFolder('__ALL__')}
-          >
-            <span className="notes-folder-icon">
-              <Folder size={17} />
-            </span>
-            <span className="notes-folder-name">All Ideas</span>
-            <span className="notes-folder-count">{allNotes.length}</span>
-            <ChevronRight size={16} className="notes-chevron" />
-          </button>
-
           <button
             type="button"
             className={`notes-folder-row ${
@@ -657,9 +651,10 @@ export const IdeasHubView: React.FC = () => {
                     className="notes-folder-delete"
                     aria-label={`Delete folder ${proj}`}
                     onClick={() => {
+                      const remaining = state.projects.filter((p) => p !== proj);
                       actions.removeProject(proj);
                       if (selectedFolder === proj) {
-                        setSelectedFolder('__ALL__');
+                        setSelectedFolder(remaining[0] || '__BOTTLENECKS__');
                       }
                     }}
                   >
@@ -669,29 +664,6 @@ export const IdeasHubView: React.FC = () => {
               </div>
             );
           })}
-        </div>
-
-        <div className="notes-folders-footer">
-          <button
-            type="button"
-            className="notes-new-folder-trigger"
-            onClick={() => setAddingFolder(true)}
-          >
-            <FolderPlus size={18} />
-            <span>New Folder</span>
-          </button>
-          <span className="notes-footer-meta">
-            {allNotes.length} {allNotes.length === 1 ? 'Note' : 'Notes'}
-          </span>
-          <button
-            type="button"
-            className="notes-compose-fab"
-            aria-label="New note"
-            title="New Note"
-            onClick={createNewNote}
-          >
-            <SquarePen size={19} />
-          </button>
         </div>
       </aside>
 
@@ -791,7 +763,7 @@ export const IdeasHubView: React.FC = () => {
                     )}
                   </div>
                   <div className="notes-item-sub">
-                    {selectedFolder === '__ALL__' || selectedFolder === '__BOTTLENECKS__' ? (
+                    {selectedFolder === '__BOTTLENECKS__' ? (
                       <span className="notes-item-folder-prefix">{item.project} · </span>
                     ) : null}
                     <span>{getPreviewSnippet(item)}</span>
