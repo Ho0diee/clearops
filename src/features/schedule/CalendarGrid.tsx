@@ -23,8 +23,14 @@ import { addDaysISO, formatShortDate, getWeekDatesISO, useOpsStore } from '../..
 import { inferWhyFromTitle } from '../../store/scheduleAi';
 import { getBlockingBottleneck } from '../../store/ideaBlocking';
 import { OHCHS_BY_DATE } from '../../store/ohchsSchedule';
+import {
+  EVENT_COLOR_OPTIONS,
+  formatAlertBadgeCompact,
+  formatAlertOffsetShort,
+} from '../../store/eventColors';
 import type {
   CalendarBlock,
+  EventColorId,
   ReminderItem,
   VoiceScheduleDraft,
   WhyCategory,
@@ -32,6 +38,15 @@ import type {
 
 const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const WHY_CATEGORIES: WhyCategory[] = ['Organization', 'School', 'Health', 'Family'];
+const ALERT_PRESETS: { label: string; value: number | undefined }[] = [
+  { label: 'Off', value: undefined },
+  { label: 'At start', value: 0 },
+  { label: '5m', value: 5 },
+  { label: '10m', value: 10 },
+  { label: '15m', value: 15 },
+  { label: '30m', value: 30 },
+  { label: '1h', value: 60 },
+];
 const SWIPE_MS = 260;
 const SNAP_BACK_MS = 210;
 const LONG_PRESS_MS = 380;
@@ -89,10 +104,17 @@ function shortTitle(b: CalendarBlock): string {
 }
 
 function eventClass(b: CalendarBlock): string {
+  if (b.customColor) return `gcal-ev-color-${b.customColor}`;
   if (b.kind === 'baseline') return `gcal-ev-${(b.whyCategory || 'Organization').toLowerCase()}`;
   if (b.kind === 'empty-zone') return isOpenZone(b) ? 'gcal-ev-zone-open' : 'gcal-ev-zone';
   if (b.kind === 'goal-session') return 'gcal-ev-goal';
   return 'gcal-ev-reflection';
+}
+
+function requestNotificationPermissionIfNeeded(): void {
+  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => undefined);
+  }
 }
 
 interface Positioned {
@@ -173,7 +195,142 @@ interface CreateSheetDraft {
   endTime: string;
   whyCategory: WhyCategory;
   manualWhy: boolean;
+  customColor?: EventColorId;
+  notes: string;
+  alertOffsetMinutes?: number;
 }
+
+const EventEnrichmentFields: React.FC<{
+  customColor?: EventColorId;
+  notes?: string;
+  alertOffsetMinutes?: number;
+  onColorChange: (color: EventColorId | undefined) => void;
+  onNotesChange: (notes: string) => void;
+  onAlertChange: (offsetMins: number | undefined) => void;
+}> = ({
+  customColor,
+  notes,
+  alertOffsetMinutes,
+  onColorChange,
+  onNotesChange,
+  onAlertChange,
+}) => {
+  const hasAlert = typeof alertOffsetMinutes === 'number';
+
+  return (
+    <div className="gcal-enrichment-group">
+      {/* Custom Color Swatches (beyond the 'Why') */}
+      <div className="gcal-field-block">
+        <div className="gcal-field-label-row">
+          <span className="gcal-field-label">Color</span>
+          {customColor && (
+            <span className="gcal-field-status">
+              {EVENT_COLOR_OPTIONS.find((c) => c.id === customColor)?.label}
+            </span>
+          )}
+        </div>
+        <div className="gcal-color-row" role="radiogroup" aria-label="Event color">
+          <button
+            type="button"
+            className={`gcal-color-auto ${!customColor ? 'is-active' : ''}`.trim()}
+            onClick={() => onColorChange(undefined)}
+            title="Use default Why color"
+          >
+            Why
+          </button>
+          {EVENT_COLOR_OPTIONS.map((opt) => {
+            const selected = customColor === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                aria-label={`Color: ${opt.label}`}
+                title={opt.label}
+                className={`gcal-color-dot ${selected ? 'is-selected' : ''}`.trim()}
+                style={{ backgroundColor: opt.hex }}
+                onClick={() => onColorChange(selected ? undefined : opt.id)}
+              >
+                {selected && <Check size={12} strokeWidth={3} color="#FFFFFF" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Description / Notes */}
+      <div className="gcal-field-block">
+        <textarea
+          className="ui-textarea gcal-desc-input"
+          rows={2}
+          placeholder="Add description…"
+          aria-label="Event description"
+          value={notes ?? ''}
+          onChange={(e) => onNotesChange(e.target.value)}
+        />
+      </div>
+
+      {/* Alert Controls (At start OR earlier) */}
+      <div className="gcal-field-block">
+        <div className="gcal-field-label-row">
+          <span className="gcal-field-label">
+            <Bell size={12} />
+            <span>Alert</span>
+          </span>
+          <span className={`gcal-field-status ${hasAlert ? 'is-on' : ''}`.trim()}>
+            {hasAlert ? formatAlertOffsetShort(alertOffsetMinutes!) : 'Off'}
+          </span>
+        </div>
+        <div className="gcal-alert-pills">
+          {ALERT_PRESETS.map((p) => {
+            const active =
+              p.value === undefined ? !hasAlert : alertOffsetMinutes === p.value;
+            return (
+              <button
+                key={p.label}
+                type="button"
+                className={`gcal-pill-chip is-compact ${active ? 'is-active' : ''}`.trim()}
+                onClick={() => {
+                  if (typeof p.value === 'number') {
+                    requestNotificationPermissionIfNeeded();
+                  }
+                  onAlertChange(p.value);
+                }}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+        {hasAlert && (
+          <div className="gcal-alert-custom-row">
+            <span className="gcal-sheet-meta">Lead time:</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={10080}
+              className="ui-input gcal-alert-mins-input"
+              aria-label="Minutes before event for alert"
+              value={alertOffsetMinutes}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw === '') {
+                  onAlertChange(0);
+                  return;
+                }
+                const parsed = Math.max(0, Math.min(10080, Math.round(Number(raw) || 0)));
+                onAlertChange(parsed);
+              }}
+            />
+            <span className="gcal-sheet-meta">min before (0 = at start)</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 interface CalendarPaneProps {
   columns: string[];
@@ -301,23 +458,43 @@ const CalendarPane = memo<CalendarPaneProps>(
                 const clampLines = isWeek ? Math.max(1, Math.floor((height - 4) / 11)) : undefined;
                 const isSlotDraftTarget =
                   draftOnThisDay?.mode === 'fill-slot' && draftOnThisDay.targetBlockId === block.id;
+                const isUpdateDraftTarget =
+                  draftOnThisDay?.mode === 'update-event' &&
+                  draftOnThisDay.targetBlockId === block.id;
+
+                const effectiveBlock: CalendarBlock = isUpdateDraftTarget
+                  ? {
+                      ...block,
+                      customColor: draftOnThisDay.customColor ?? block.customColor,
+                      notes: draftOnThisDay.notes ?? block.notes,
+                      alertOffsetMinutes:
+                        draftOnThisDay.alertOffsetMinutes === null
+                          ? undefined
+                          : draftOnThisDay.alertOffsetMinutes ?? block.alertOffsetMinutes,
+                    }
+                  : block;
+
                 const displayTitle = isSlotDraftTarget
                   ? draftOnThisDay.title
                     ? `Empty Zone — ${draftOnThisDay.title}`
                     : 'Empty Zone — ?'
                   : isWeek
-                  ? shortTitle(block)
-                  : block.title;
+                  ? shortTitle(effectiveBlock)
+                  : effectiveBlock.title;
+                const subLineText =
+                  effectiveBlock.notes?.trim() || effectiveBlock.startingStepHint || '';
 
                 return (
                   <div
                     key={block.id}
                     role="button"
                     tabIndex={0}
-                    className={`gcal-ev ${eventClass(block)} ${block.completed ? 'is-done' : ''} ${
-                      isWeek ? 'is-compact' : ''
-                    } ${isMicro ? 'is-micro' : ''} ${block.id === highlightId ? 'is-flash' : ''} ${
-                      isSlotDraftTarget ? 'is-voice-slot-target' : ''
+                    className={`gcal-ev ${eventClass(effectiveBlock)} ${
+                      effectiveBlock.completed ? 'is-done' : ''
+                    } ${isWeek ? 'is-compact' : ''} ${isMicro ? 'is-micro' : ''} ${
+                      block.id === highlightId ? 'is-flash' : ''
+                    } ${
+                      isSlotDraftTarget || isUpdateDraftTarget ? 'is-voice-slot-target' : ''
                     } ${isBeingDragged ? 'is-drag-origin' : ''}`.trim()}
                     style={{
                       top,
@@ -340,7 +517,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                         onOpenBlock(block.id);
                       }
                     }}
-                    title={`${block.title} (${block.startTime}–${block.endTime})`}
+                    title={`${effectiveBlock.title} (${effectiveBlock.startTime}–${effectiveBlock.endTime})`}
                   >
                     {showHandles && onResizePointerDown && (
                       <span
@@ -355,7 +532,20 @@ const CalendarPane = memo<CalendarPaneProps>(
                       className="gcal-ev-title"
                       style={clampLines ? { WebkitLineClamp: clampLines } : undefined}
                     >
-                      {block.completed && !isWeek && <Check size={11} strokeWidth={3} />}
+                      {effectiveBlock.completed && !isWeek && <Check size={11} strokeWidth={3} />}
+                      {typeof effectiveBlock.alertOffsetMinutes === 'number' && !isMicro && (
+                        <span
+                          className="gcal-ev-alert-pill"
+                          title={`Alert: ${formatAlertOffsetShort(
+                            effectiveBlock.alertOffsetMinutes
+                          )}`}
+                        >
+                          <Bell size={9.5} strokeWidth={2.7} />
+                          {!isWeek && effectiveBlock.alertOffsetMinutes > 0 && (
+                            <span>{formatAlertBadgeCompact(effectiveBlock.alertOffsetMinutes)}</span>
+                          )}
+                        </span>
+                      )}
                       {displayTitle}
                       {!roomy && !isWeek && (
                         <span className="gcal-ev-inline-time">, {fmtTime(block.startTime)}</span>
@@ -368,8 +558,8 @@ const CalendarPane = memo<CalendarPaneProps>(
                           : `${fmtTime(block.startTime)} – ${fmtTime(block.endTime)}`}
                       </span>
                     )}
-                    {roomy && !isWeek && block.startingStepHint && height >= 64 && (
-                      <span className="gcal-ev-sub">{block.startingStepHint}</span>
+                    {roomy && !isWeek && subLineText && height >= 54 && (
+                      <span className="gcal-ev-sub">{subLineText}</span>
                     )}
 
                     {showHandles && onResizePointerDown && (
@@ -427,12 +617,13 @@ const CalendarPane = memo<CalendarPaneProps>(
                 const height = Math.max(isWeek ? 22 : 26, ((e - s) / 60) * hourHeight - 2);
                 const previewTitle =
                   sheetCreateOnDay?.title.trim() || 'New event';
-                const previewClass =
-                  sheetCreateOnDay?.mode === 'empty-zone'
-                    ? 'gcal-ev-zone'
-                    : sheetCreateOnDay?.mode === 'reminder'
-                    ? 'gcal-ev-organization'
-                    : `gcal-ev-${(sheetCreateOnDay?.whyCategory || 'Organization').toLowerCase()}`;
+                const previewClass = sheetCreateOnDay?.customColor
+                  ? `gcal-ev-color-${sheetCreateOnDay.customColor}`
+                  : sheetCreateOnDay?.mode === 'empty-zone'
+                  ? 'gcal-ev-zone'
+                  : sheetCreateOnDay?.mode === 'reminder'
+                  ? 'gcal-ev-organization'
+                  : `gcal-ev-${(sheetCreateOnDay?.whyCategory || 'Organization').toLowerCase()}`;
 
                 return (
                   <div
@@ -446,7 +637,19 @@ const CalendarPane = memo<CalendarPaneProps>(
                       width: 'calc(100% - 4px)',
                     }}
                   >
-                    <span className="gcal-ev-title">{previewTitle}</span>
+                    <span className="gcal-ev-title">
+                      {typeof sheetCreateOnDay?.alertOffsetMinutes === 'number' && (
+                        <span className="gcal-ev-alert-pill">
+                          <Bell size={9.5} strokeWidth={2.7} />
+                          {sheetCreateOnDay.alertOffsetMinutes > 0 && (
+                            <span>
+                              {formatAlertBadgeCompact(sheetCreateOnDay.alertOffsetMinutes)}
+                            </span>
+                          )}
+                        </span>
+                      )}
+                      {previewTitle}
+                    </span>
                     <span className="gcal-ev-time">
                       {sheetCreateOnDay?.mode === 'reminder'
                         ? fmtTime(fromMin(s))
@@ -465,10 +668,11 @@ const CalendarPane = memo<CalendarPaneProps>(
                   const e = hasEnd ? Math.max(s + 20, toMin(draftOnThisDay.endTime!)) : s + 60;
                   const top = ((s - startHour * 60) / 60) * hourHeight;
                   const height = Math.max(isWeek ? 26 : 48, ((e - s) / 60) * hourHeight - 2);
-                  const toneClass =
-                    draftOnThisDay.mode === 'empty-zone'
-                      ? 'gcal-ev-zone'
-                      : `gcal-ev-${(draftOnThisDay.whyCategory || 'Organization').toLowerCase()}`;
+                  const toneClass = draftOnThisDay.customColor
+                    ? `gcal-ev-color-${draftOnThisDay.customColor}`
+                    : draftOnThisDay.mode === 'empty-zone'
+                    ? 'gcal-ev-zone'
+                    : `gcal-ev-${(draftOnThisDay.whyCategory || 'Organization').toLowerCase()}`;
                   return (
                     <div
                       className={`gcal-ev gcal-voice-draft ${toneClass} ${
@@ -481,7 +685,19 @@ const CalendarPane = memo<CalendarPaneProps>(
                         width: 'calc(100% - 4px)',
                       }}
                     >
-                      <span className="gcal-ev-title">{draftOnThisDay.title || '?'}</span>
+                      <span className="gcal-ev-title">
+                        {typeof draftOnThisDay.alertOffsetMinutes === 'number' && (
+                          <span className="gcal-ev-alert-pill">
+                            <Bell size={9.5} strokeWidth={2.7} />
+                            {draftOnThisDay.alertOffsetMinutes > 0 && (
+                              <span>
+                                {formatAlertBadgeCompact(draftOnThisDay.alertOffsetMinutes)}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                        {draftOnThisDay.title || '?'}
+                      </span>
                       <span className="gcal-ev-time">
                         {!draftOnThisDay.date ? 'Day ? · ' : ''}
                         {hasEnd
@@ -490,6 +706,9 @@ const CalendarPane = memo<CalendarPaneProps>(
                             )}`
                           : `${fmtTime(draftOnThisDay.startTime)} – ?`}
                       </span>
+                      {draftOnThisDay.notes && !isWeek && (
+                        <span className="gcal-ev-sub">{draftOnThisDay.notes}</span>
+                      )}
                     </div>
                   );
                 })()}
@@ -1073,6 +1292,9 @@ export const CalendarGrid: React.FC<{
       endTime: fromMin(clampedEnd),
       whyCategory: 'Organization',
       manualWhy: false,
+      customColor: undefined,
+      notes: '',
+      alertOffsetMinutes: undefined,
     });
     window.setTimeout(() => createInputRef.current?.focus({ preventScroll: true }), 40);
   }, []);
@@ -1080,6 +1302,7 @@ export const CalendarGrid: React.FC<{
   const commitNewEventDraft = () => {
     if (!createDraft) return;
     const rawTitle = createDraft.title.trim();
+    const trimmedNotes = createDraft.notes.trim() || undefined;
 
     if (createDraft.mode === 'reminder') {
       const remId = actions.addReminder({
@@ -1091,6 +1314,10 @@ export const CalendarGrid: React.FC<{
       setLocalFlashId(remId);
       setCreateDraft(null);
       return;
+    }
+
+    if (typeof createDraft.alertOffsetMinutes === 'number') {
+      requestNotificationPermissionIfNeeded();
     }
 
     if (createDraft.mode === 'empty-zone') {
@@ -1109,6 +1336,9 @@ export const CalendarGrid: React.FC<{
         title: zoneTitle,
         kind: 'empty-zone',
         completed: false,
+        customColor: createDraft.customColor,
+        notes: trimmedNotes,
+        alertOffsetMinutes: createDraft.alertOffsetMinutes,
       });
       setLocalFlashId(id);
       setCreateDraft(null);
@@ -1130,6 +1360,9 @@ export const CalendarGrid: React.FC<{
       kind: 'baseline',
       completed: false,
       whyCategory: whyCat,
+      customColor: createDraft.customColor,
+      notes: trimmedNotes,
+      alertOffsetMinutes: createDraft.alertOffsetMinutes,
     });
     setLocalFlashId(id);
     setCreateDraft(null);
@@ -1679,12 +1912,24 @@ export const CalendarGrid: React.FC<{
             className={`gcal-floating-draft ${
               liveDraft.mode === 'reminder'
                 ? 'is-reminder'
+                : liveDraft.customColor
+                ? `gcal-ev-color-${liveDraft.customColor}`
                 : liveDraft.mode === 'empty-zone'
                 ? 'gcal-ev-zone'
                 : `gcal-ev-${(liveDraft.whyCategory || 'Organization').toLowerCase()}`
             }`.trim()}
           >
-            <span className="gcal-ev-title">{liveDraft.title || '?'}</span>
+            <span className="gcal-ev-title">
+              {typeof liveDraft.alertOffsetMinutes === 'number' && (
+                <span className="gcal-ev-alert-pill">
+                  <Bell size={9.5} strokeWidth={2.7} />
+                  {liveDraft.alertOffsetMinutes > 0 && (
+                    <span>{formatAlertBadgeCompact(liveDraft.alertOffsetMinutes)}</span>
+                  )}
+                </span>
+              )}
+              {liveDraft.title || '?'}
+            </span>
             <span className="gcal-ev-time">
               {liveDraft.date ? formatShortDate(liveDraft.date) : 'Day ?'} ·{' '}
               {liveDraft.mode === 'reminder' ? 'Time ?' : '? – ?'}
@@ -1923,6 +2168,23 @@ export const CalendarGrid: React.FC<{
                 </div>
               )}
 
+              {createDraft.mode !== 'reminder' && (
+                <EventEnrichmentFields
+                  customColor={createDraft.customColor}
+                  notes={createDraft.notes}
+                  alertOffsetMinutes={createDraft.alertOffsetMinutes}
+                  onColorChange={(customColor) =>
+                    setCreateDraft((prev) => (prev ? { ...prev, customColor } : prev))
+                  }
+                  onNotesChange={(notes) =>
+                    setCreateDraft((prev) => (prev ? { ...prev, notes } : prev))
+                  }
+                  onAlertChange={(alertOffsetMinutes) =>
+                    setCreateDraft((prev) => (prev ? { ...prev, alertOffsetMinutes } : prev))
+                  }
+                />
+              )}
+
               <div className="gcal-sheet-actions">
                 <Button variant="primary" size="lg" fullWidth type="submit">
                   Save
@@ -2029,7 +2291,22 @@ export const CalendarGrid: React.FC<{
                 </div>
               )}
 
-              <div className="ops-stack-sm" style={{ marginTop: 12 }}>
+              <EventEnrichmentFields
+                customColor={openBlock.customColor}
+                notes={openBlock.notes}
+                alertOffsetMinutes={openBlock.alertOffsetMinutes}
+                onColorChange={(customColor) =>
+                  actions.updateCalendarBlock(openBlock.id, { customColor })
+                }
+                onNotesChange={(notes) =>
+                  actions.updateCalendarBlock(openBlock.id, { notes })
+                }
+                onAlertChange={(alertOffsetMinutes) =>
+                  actions.updateCalendarBlock(openBlock.id, { alertOffsetMinutes })
+                }
+              />
+
+              <div className="ops-stack-sm" style={{ marginTop: 10 }}>
                 {openBlock.whyCategory && (
                   <div className="ops-stack-xs">
                     <div>

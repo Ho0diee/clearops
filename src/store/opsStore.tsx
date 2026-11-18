@@ -707,6 +707,39 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         });
         if (!parsed) return null;
 
+        if (typeof parsed.alertOffsetMinutes === 'number' && typeof window !== 'undefined' && 'Notification' in window) {
+          if (Notification.permission === 'default') {
+            Notification.requestPermission().catch(() => undefined);
+          }
+        }
+
+        if (parsed.mode === 'update-event' && parsed.targetBlockId) {
+          setState((prev) => ({
+            ...prev,
+            selectedDate: parsed.date,
+            activeTab: 'schedule',
+            blocks: prev.blocks.map((b) =>
+              b.id === parsed.targetBlockId
+                ? {
+                    ...b,
+                    ...(parsed.customColor !== undefined ? { customColor: parsed.customColor } : {}),
+                    ...(parsed.notes !== undefined ? { notes: parsed.notes } : {}),
+                    ...(parsed.alertOffsetMinutes !== undefined
+                      ? {
+                          alertOffsetMinutes:
+                            parsed.alertOffsetMinutes === null
+                              ? undefined
+                              : parsed.alertOffsetMinutes,
+                        }
+                      : {}),
+                  }
+                : b
+            ),
+          }));
+          showToast(`Updated "${parsed.title}"`);
+          return parsed;
+        }
+
         if (parsed.mode === 'fill-slot' && parsed.targetBlockId) {
           const slotTitle = /^empty zone/i.test(parsed.title)
             ? parsed.title
@@ -720,6 +753,11 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 ? {
                     ...b,
                     title: slotTitle,
+                    ...(parsed.customColor !== undefined ? { customColor: parsed.customColor } : {}),
+                    ...(parsed.notes !== undefined ? { notes: parsed.notes } : {}),
+                    ...(typeof parsed.alertOffsetMinutes === 'number'
+                      ? { alertOffsetMinutes: parsed.alertOffsetMinutes }
+                      : {}),
                     assignedIdeaId: parsed.matchedIdeaId ?? b.assignedIdeaId,
                     startingStepHint: parsed.startingStepHint ?? b.startingStepHint,
                   }
@@ -760,6 +798,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           kind: parsed.mode === 'empty-zone' ? 'empty-zone' : 'baseline',
           completed: false,
           whyCategory: parsed.mode === 'event' ? parsed.whyCategory : undefined,
+          customColor: parsed.customColor,
+          notes: parsed.notes,
+          alertOffsetMinutes:
+            typeof parsed.alertOffsetMinutes === 'number'
+              ? parsed.alertOffsetMinutes
+              : undefined,
           assignedIdeaId: parsed.matchedIdeaId,
           startingStepHint: parsed.startingStepHint,
         };
@@ -790,6 +834,49 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           return null;
         }
 
+        if (typeof draft.alertOffsetMinutes === 'number' && typeof window !== 'undefined' && 'Notification' in window) {
+          if (Notification.permission === 'default') {
+            Notification.requestPermission().catch(() => undefined);
+          }
+        }
+
+        if (draft.mode === 'update-event' && draft.targetBlockId) {
+          setState((prev) => ({
+            ...prev,
+            selectedDate: draft.date!,
+            activeTab: 'schedule',
+            blocks: prev.blocks.map((b) =>
+              b.id === draft.targetBlockId
+                ? {
+                    ...b,
+                    ...(draft.customColor !== undefined ? { customColor: draft.customColor } : {}),
+                    ...(draft.notes !== undefined ? { notes: draft.notes } : {}),
+                    ...(draft.alertOffsetMinutes !== undefined
+                      ? {
+                          alertOffsetMinutes:
+                            draft.alertOffsetMinutes === null
+                              ? undefined
+                              : draft.alertOffsetMinutes,
+                        }
+                      : {}),
+                  }
+                : b
+            ),
+          }));
+          showToast(`Updated "${draft.title}"`);
+          return {
+            mode: 'update-event',
+            title: draft.title,
+            date: draft.date,
+            startTime: draft.startTime,
+            endTime: draft.endTime,
+            customColor: draft.customColor,
+            notes: draft.notes,
+            alertOffsetMinutes: draft.alertOffsetMinutes,
+            targetBlockId: draft.targetBlockId,
+          };
+        }
+
         if (draft.mode === 'fill-slot' && draft.targetBlockId) {
           const slotTitle = /^empty zone/i.test(draft.title)
             ? draft.title
@@ -803,6 +890,11 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 ? {
                     ...b,
                     title: slotTitle,
+                    ...(draft.customColor !== undefined ? { customColor: draft.customColor } : {}),
+                    ...(draft.notes !== undefined ? { notes: draft.notes } : {}),
+                    ...(typeof draft.alertOffsetMinutes === 'number'
+                      ? { alertOffsetMinutes: draft.alertOffsetMinutes }
+                      : {}),
                     assignedIdeaId: draft.matchedIdeaId ?? b.assignedIdeaId,
                     startingStepHint: draft.startingStepHint ?? b.startingStepHint,
                   }
@@ -816,6 +908,9 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             date: draft.date,
             startTime: draft.startTime,
             endTime: draft.endTime,
+            customColor: draft.customColor,
+            notes: draft.notes,
+            alertOffsetMinutes: draft.alertOffsetMinutes,
             targetBlockId: draft.targetBlockId,
             matchedIdeaId: draft.matchedIdeaId,
             startingStepHint: draft.startingStepHint,
@@ -857,6 +952,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           kind: draft.mode === 'empty-zone' ? 'empty-zone' : 'baseline',
           completed: false,
           whyCategory: draft.mode === 'event' ? draft.whyCategory : undefined,
+          customColor: draft.customColor,
+          notes: draft.notes,
+          alertOffsetMinutes:
+            typeof draft.alertOffsetMinutes === 'number'
+              ? draft.alertOffsetMinutes
+              : undefined,
           assignedIdeaId: draft.matchedIdeaId,
           startingStepHint: draft.startingStepHint,
         };
@@ -875,6 +976,9 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           startTime: draft.startTime,
           endTime: draft.endTime,
           whyCategory: draft.whyCategory,
+          customColor: draft.customColor,
+          notes: draft.notes,
+          alertOffsetMinutes: draft.alertOffsetMinutes,
           targetBlockId: blockId,
         };
       },

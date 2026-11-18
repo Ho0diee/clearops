@@ -17,6 +17,7 @@ import { IdeasHubView } from './features/ideas';
 import { PacingRoiView } from './features/pacing';
 import { ReflectionDrawer } from './features/reflection';
 import { SiteConfigView } from './features/config';
+import { AlertMonitor } from './components/AlertMonitor';
 
 const ClearOpsWorkspace: React.FC = () => {
   const { state, actions } = useOpsStore();
@@ -263,6 +264,7 @@ const ClearOpsWorkspace: React.FC = () => {
       </nav>
 
       <ReflectionDrawer />
+      <AlertMonitor />
 
       {state.toastMessage && state.activeTab !== 'schedule' && (
         <div className="ui-toast" role="status" aria-live="polite">

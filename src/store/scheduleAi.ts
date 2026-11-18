@@ -1,5 +1,6 @@
 import type {
   CalendarBlock,
+  EventColorId,
   IdeaItem,
   MissingVoiceField,
   ParsedLiveInput,
@@ -151,6 +152,11 @@ export function normalizeSpokenTranscript(raw: string): string {
       /\b(two|three|four|five|six|seven|eight)\s+(hours?|hrs?|hr)\b/gi,
       (_, w: string, unit: string) => `${WORD_HOURS[w.toLowerCase()]} ${unit}`
     )
+    .replace(/\b(?:one|1)\s+(minutes?|mins?|min)\b/gi, '1 minute')
+    .replace(/\b(?:two)\s+(minutes?|mins?|min)\b/gi, '2 minutes')
+    .replace(/\b(?:three)\s+(minutes?|mins?|min)\b/gi, '3 minutes')
+    .replace(/\b(?:five)\s+(minutes?|mins?|min)\b/gi, '5 minutes')
+    .replace(/\b(?:ten)\s+(minutes?|mins?|min)\b/gi, '10 minutes')
     .replace(/\bfifteen\s+(minutes?|mins?|min)\b/gi, '15 minutes')
     .replace(/\btwenty\s+(minutes?|mins?|min)\b/gi, '20 minutes')
     .replace(/\bthirty\s+(minutes?|mins?|min)\b/gi, '30 minutes')
@@ -964,6 +970,249 @@ function extractClauseTemporals(
   };
 }
 
+const SPOKEN_COLOR_MAP: Record<string, EventColorId> = {
+  red: 'crimson',
+  crimson: 'crimson',
+  scarlet: 'crimson',
+  tomato: 'crimson',
+  maroon: 'crimson',
+  orange: 'coral',
+  coral: 'coral',
+  tangerine: 'coral',
+  peach: 'coral',
+  rust: 'coral',
+  yellow: 'amber',
+  gold: 'amber',
+  golden: 'amber',
+  amber: 'amber',
+  mustard: 'amber',
+  green: 'emerald',
+  emerald: 'emerald',
+  lime: 'emerald',
+  forest: 'emerald',
+  mint: 'emerald',
+  olive: 'emerald',
+  sage: 'emerald',
+  teal: 'teal',
+  turquoise: 'teal',
+  aqua: 'teal',
+  cyan: 'teal',
+  sky: 'sky',
+  'sky blue': 'sky',
+  'light blue': 'sky',
+  'baby blue': 'sky',
+  blue: 'cobalt',
+  cobalt: 'cobalt',
+  navy: 'cobalt',
+  'royal blue': 'cobalt',
+  indigo: 'cobalt',
+  purple: 'violet',
+  violet: 'violet',
+  lavender: 'violet',
+  plum: 'violet',
+  grape: 'violet',
+  lilac: 'violet',
+  pink: 'pink',
+  magenta: 'pink',
+  rose: 'pink',
+  fuchsia: 'pink',
+  flamingo: 'pink',
+  gray: 'slate',
+  grey: 'slate',
+  slate: 'slate',
+  charcoal: 'slate',
+  black: 'slate',
+  graphite: 'slate',
+};
+
+const COLOR_NAME_ALT =
+  'sky\\s+blue|light\\s+blue|baby\\s+blue|royal\\s+blue|red|crimson|scarlet|tomato|maroon|orange|coral|tangerine|peach|rust|yellow|golden|gold|amber|mustard|emerald|green|lime|forest|mint|olive|sage|teal|turquoise|aqua|cyan|sky|cobalt|navy|indigo|blue|purple|violet|lavender|plum|grape|lilac|pink|magenta|rose|fuchsia|flamingo|charcoal|graphite|slate|grey|gray|black';
+
+interface SpokenEnrichmentResult {
+  cleanedText: string;
+  customColor?: EventColorId;
+  notes?: string;
+  alertOffsetMinutes?: number | null;
+}
+
+/**
+ * Extracts verbal Color, Description/Note, and Alert instructions (both "at time of event"
+ * and "N minutes/hours/days earlier") before temporal & title parsing so modifiers never
+ * pollute event titles, durations, or standalone reminder detection.
+ */
+function extractSpokenEventEnrichments(
+  text: string,
+  blocks: CalendarBlock[]
+): SpokenEnrichmentResult {
+  let working = text;
+  let customColor: EventColorId | undefined;
+  let notes: string | undefined;
+  let alertOffsetMinutes: number | null | undefined;
+
+  // 1. Extract spoken Description / Details ("description bring ID card", "with a note ask about pricing")
+  const descRe =
+    /(?:[,;.\s]+|^)(?:(?:and\s+|also\s+)?(?:with\s+(?:the\s+|a\s+)?|add\s+(?:a\s+|the\s+)?|set\s+(?:the\s+)?|include\s+(?:a\s+|the\s+)?|put\s+(?:in\s+)?(?:a\s+|the\s+)?)?(?:description|details?)(?:\s+(?:is|as|saying|that\s+says|to\s+say|of|:))?|(?:and\s+|also\s+)?(?:with\s+(?:a\s+|the\s+)?|add\s+(?:a\s+|the\s+)?|put\s+(?:a\s+)?)notes?(?:\s+(?:is|as|saying|that\s+says|to\s+say|to|:))?)\s+(.+?)(?=(?:[,;.]?\s+\b(?:and\s+|also\s+)?(?:make\s+(?:it|the\s+color)|(?:change|set|switch)\s+(?:the\s+)?color|in\s+(?:color\s+)?(?:red|orange|yellow|gold|amber|green|emerald|teal|cyan|sky|blue|cobalt|navy|purple|violet|pink|rose|gray|grey|slate|black)|(?:with\s+an?\s+|make\s+(?:it|this)\s+an?\s+|set\s+an?\s+|add\s+an?\s+|no\s+|without\s+(?:an?\s+)?|an?\s+|the\s+)(?:alert|alarm|notification)|(?:with\s+|set\s+|add\s+)?a\s+\d{1,3}[-\s]*(?:minute|min|hour|hr|day)\s+(?:early\s+)?(?:alert|alarm|notification)|alert(?:\s+me)?\b|notify\s+me\b|remind\s+me\s+\d+\s*(?:minutes?|mins?|hours?|hrs?)\s+(?:before|early|earlier|ahead|prior)))|$)/i;
+  const dm = working.match(descRe);
+  if (dm && dm[1]) {
+    let rawDesc = stripTrailingRamble(dm[1].trim()).replace(/^[,:;-]+\s*|[,.;-]+$/g, '').trim();
+    let rescuedTargetSuffix = '';
+
+    // Check if speaker put "... to/for/on <ExistingBlockTitle>" at the end of "add description X to Physics Honors"
+    const trailingTarget = rawDesc.match(/\s+\b(?:to|for|on)\s+([a-z0-9][a-z0-9\s'/-]{2,44})$/i);
+    if (trailingTarget) {
+      const candCore = trailingTarget[1]
+        .replace(/\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '')
+        .trim()
+        .toLowerCase();
+      const matchesBlock =
+        candCore.length >= 3 && blocks.some((b) => b.title.toLowerCase().includes(candCore));
+      if (matchesBlock) {
+        rescuedTargetSuffix = ` ${trailingTarget[1].trim()} `;
+        rawDesc = rawDesc.slice(0, trailingTarget.index).trim();
+      }
+    }
+
+    if (rawDesc) {
+      notes = rawDesc.charAt(0).toUpperCase() + rawDesc.slice(1);
+      working =
+        working.slice(0, dm.index ?? 0) +
+        rescuedTargetSuffix +
+        working.slice((dm.index ?? 0) + dm[0].length);
+    }
+  }
+
+  // 2. Extract spoken Alert ("alert me 15 minutes early", "make it an alert", "alert at the time", "no alert")
+  const disableAlertRe =
+    /(?:[,;.\s]+|^)(?:and\s+)?(?:no|without(?:\s+an?)?|remove(?:\s+the)?|turn\s+off(?:\s+the)?|disable(?:\s+the)?|cancel(?:\s+the)?)\s+(?:alert|alarm|notification)s?\b/gi;
+  if (disableAlertRe.test(working)) {
+    alertOffsetMinutes = null;
+    working = working.replace(disableAlertRe, ' ');
+  } else {
+    // 2a. Early lead-time alert ("alert me 15 minutes before", "with a 30 minute alert", "goes off 10 minutes early", "remind me 15 minutes early")
+    const earlyAlertPatterns: RegExp[] = [
+      /(?:[,;.\s]+|^)(?:and\s+|also\s+)?(?:(?:make\s+(?:it|this|that)\s+an?\s+|with\s+an?\s+|set\s+(?:up\s+)?an?\s+|add\s+an?\s+|give\s+me\s+an?\s+|an?\s+|the\s+)?(?:alert|alarm|notification)(?:\s+that\s+goes\s+off|\s+going\s+off)?(?:\s+me)?(?:\s+for)?|\b(?:alert|notify|remind)\s+me)\s+(\d{1,3})\s*(minutes?|mins?|min|hours?|hrs?|hr|days?)\s*(?:before(?:\s+(?:it(?:\s+starts)?|the\s+event|start|that))?|early|earlier(?:\s+than\s+that)?|ahead(?:\s+of\s+time)?|prior|in\s+advance)?\b/gi,
+      /(?:[,;.\s]+|^)(?:and\s+|also\s+)?(?:with\s+|set\s+|add\s+)a\s+(\d{1,3})[-\s]*(minute|min|hour|hr|day)\s+(?:early\s+)?(?:alert|alarm|notification)\b/gi,
+      /(?:[,;.\s]+|^)(?:and\s+|also\s+)?(?:that\s+)?goes\s+off\s+(\d{1,3})\s*(minutes?|mins?|min|hours?|hrs?|hr|days?)\s*(?:before|early|earlier(?:\s+than\s+that)?|ahead|prior)\b/gi,
+    ];
+
+    for (const pat of earlyAlertPatterns) {
+      let m: RegExpExecArray | null;
+      const gPat = new RegExp(pat.source, 'gi');
+      while ((m = gPat.exec(working)) !== null) {
+        const n = Number(m[1]);
+        const unit = m[2].toLowerCase();
+        const mult = unit.startsWith('d') ? 1440 : unit.startsWith('h') ? 60 : 1;
+        alertOffsetMinutes = Math.max(0, Math.min(10080, n * mult));
+      }
+      working = working.replace(pat, ' ');
+    }
+
+    // 2b. At-event-time alert ("make it an alert", "with an alert", "alert at the time of the event", "alert when it starts")
+    const atStartAlertRe =
+      /(?:[,;.\s]+|^)(?:and\s+|also\s+)?(?:make\s+(?:it|this|that)\s+an?\s+(?:alert|alarm)|(?:with|add|set(?:\s+up)?|put|give\s+me|turn\s+on)\s+(?:an?\s+|the\s+)?(?:alert|alarm|notification)(?:\s+(?:at\s+(?:the\s+)?(?:time(?:\s+of\s+the\s+event)?|start(?:\s+time)?)|on\s+time|when\s+it\s+starts))?|(?:an?\s+)?(?:alert|alarm)\s+(?:at\s+(?:the\s+)?(?:time(?:\s+of\s+the\s+event)?|start)|when\s+it\s+starts|on\s+time)|\b(?:alert|notify)\s+me(?:\s+(?:at\s+(?:the\s+)?(?:time(?:\s+of\s+the\s+event)?|start)|when\s+it\s+starts|on\s+time))?)(?=\s*(?:[,;.]|$|\b(?:for|on|to|in|and)\b))/gi;
+    if (atStartAlertRe.test(working)) {
+      if (alertOffsetMinutes === undefined) {
+        alertOffsetMinutes = 0;
+      }
+      working = working.replace(atStartAlertRe, ' ');
+    }
+  }
+
+  // 3. Extract spoken Color ("make it red", "change color to purple", "color teal", "in emerald")
+  const colorPatterns: RegExp[] = [
+    new RegExp(
+      `(?:[,;.\\s]+|^)(?:and\\s+|also\\s+)?(?:(?:change|set|switch|update|make)\\s+(?:the\\s+)?color(?:\\s+(?:of|for))?\\s+(?:to\\s+|into\\s+)?|make\\s+(?:it|that|this|the\\s+event)\\s+(?:colored\\s+)?|(?:with\\s+)?color(?:ed)?(?:\\s+is|\\s+as)?\\s+|in\\s+(?:color\\s+)?)(${COLOR_NAME_ALT})\\b(?:\\s+color)?`,
+      'gi'
+    ),
+    new RegExp(`(?:[,;.\\s]+|^)(?:and\\s+)?(${COLOR_NAME_ALT})\\s+color\\b`, 'gi'),
+  ];
+
+  for (const cPat of colorPatterns) {
+    let cm: RegExpExecArray | null;
+    const scanRe = new RegExp(cPat.source, 'gi');
+    while ((cm = scanRe.exec(working)) !== null) {
+      const key = cm[1].toLowerCase().replace(/\s+/g, ' ').trim();
+      const mapped = SPOKEN_COLOR_MAP[key];
+      if (mapped) {
+        customColor = mapped;
+      }
+    }
+    working = working.replace(cPat, ' ');
+  }
+
+  // Also support "make <EventName> <Color>" when modifying an existing event ("make Physics Honors purple")
+  const makeTargetColorRe = new RegExp(
+    `^(\\s*(?:hey\\s+|ok\\s+|okay\\s+|please\\s+|can\\s+you\\s+)?)(?:make|color|turn)\\s+(.+?)\\s+(${COLOR_NAME_ALT})\\b(?:\\s+color)?\\s*$`,
+    'i'
+  );
+  const mtc = working.trim().match(makeTargetColorRe);
+  if (mtc) {
+    const key = mtc[3].toLowerCase().replace(/\s+/g, ' ').trim();
+    const mapped = SPOKEN_COLOR_MAP[key];
+    if (mapped && !/\b(?:from|to|at|for)\s+\d/i.test(mtc[2])) {
+      customColor = mapped;
+      working = `${mtc[1]}${mtc[2]}`;
+    }
+  }
+
+  return {
+    cleanedText: working.replace(/\s{2,}/g, ' ').trim(),
+    customColor,
+    notes,
+    alertOffsetMinutes,
+  };
+}
+
+function findMatchingBlockForUpdate(
+  rawSubject: string,
+  explicitDate: string | undefined,
+  ctx: ScheduleAiContext
+): CalendarBlock | undefined {
+  const cleaned = rawSubject
+    .replace(
+      /^(?:change|set|update|modify|edit|make|turn|put|add|give)(?:\s+(?:the|an?|my))?(?:\s+(?:color|description|details?|notes?|alert|alarm|notification))?(?:\s+(?:of|for|on|to))?\s+/i,
+      ''
+    )
+    .replace(/^(?:for|on|to|of)\s+/i, '')
+    .trim();
+
+  const candidateTitle = summarizePunchyTitle(cleaned) || cleaned;
+  const needle = candidateTitle.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+  if (needle.length < 3) return undefined;
+
+  const scoreBlock = (b: CalendarBlock): number => {
+    const hay = b.title.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+    if (!hay) return 0;
+    let score = 0;
+    if (hay === needle) score = 100;
+    else if (hay.startsWith(needle) || needle.startsWith(hay)) score = 85;
+    else if (hay.includes(needle) || needle.includes(hay)) score = 70;
+    else {
+      const words = needle.split(/\s+/).filter((w) => w.length >= 3);
+      const matched = words.filter((w) => hay.includes(w));
+      if (words.length > 0 && matched.length === words.length) score = 60;
+    }
+    if (score === 0) return 0;
+    if (explicitDate && b.date === explicitDate) score += 50;
+    else if (!explicitDate && b.date === ctx.selectedDate) score += 35;
+    else if (!explicitDate && b.date === ctx.todayIso) score += 30;
+    else if (b.date >= ctx.todayIso) score += 15;
+    return score;
+  };
+
+  const pool = explicitDate ? ctx.blocks.filter((b) => b.date === explicitDate) : ctx.blocks;
+  let best: CalendarBlock | undefined;
+  let bestScore = 0;
+  for (const b of pool) {
+    const s = scoreBlock(b);
+    if (s > bestScore) {
+      bestScore = s;
+      best = b;
+    }
+  }
+  return bestScore >= 60 ? best : undefined;
+}
+
 const REVISION_SPLIT_RE =
   /(?:[,;!?]+|\.(?=\s+[a-z])|\b(?=(?:wait\s+no|no\s+wait|wait\s+actually|scratch\s+that|never\s*mind|actually|instead|i\s+mean|sorry|(?:the\s+)?(?:name|title)\s+should\s+be|it\s+should\s+be(?:\s+called|\s+named)?|change\s+(?:the\s+)?(?:name|title|event|time|start|end|day|date|it|that)|rename(?:\s+(?:it|that))?|call\s+(?:it|that)|name\s+(?:it|that)|title\s+(?:it|that)|make\s+(?:the\s+(?:name|title|time|day)|it|that)|switch\s+(?:(?:it|that)\s+)?to|update\s+(?:(?:it|that)\s+)?to|let'?s\s+(?:make\s+it|call\s+it|do)|no\b(?!\s*(?:problem|worries|thanks|thank\s+you)\b)\s+[a-z0-9])\b))/i;
 
@@ -986,17 +1235,19 @@ export function parseProgressiveVoiceDraft(
   if (!rawTrimmed) return null;
 
   const normalized = normalizeSpokenTranscript(rawTrimmed);
-  const globalPeriodHint = detectPeriodHint(normalized);
+  const enrich = extractSpokenEventEnrichments(normalized, ctx.blocks);
+  const workingNormalized = enrich.cleanedText || normalized;
+  const globalPeriodHint = detectPeriodHint(workingNormalized);
 
   // Check Slot-Placement Intent ("add ___ for the next focus slot")
   const slotTargetRegex =
     /(?:\b(?:for|in|into|to|during|on|at)\s+(?:the\s+|my\s+|a\s+|an\s+)?(?:(?:next|upcoming|first|open|available)\s+)?(?:focus\s*(?:slot|zone|block|time|session)|empty\s*(?:zone|slot|block)|open\s*(?:focus\s*)?(?:slot|zone|block)|free\s*(?:slot|block|time))\b|\b(?:the\s+|my\s+)?(?:next|upcoming|first)\s+(?:open\s+)?(?:focus\s*(?:slot|zone|block|time|session)|empty\s*(?:zone|slot|block)|open\s*(?:focus\s*)?(?:slot|zone|block)|free\s*(?:slot|block|time))\b)/i;
-  const slotMatch = normalized.match(slotTargetRegex);
+  const slotMatch = workingNormalized.match(slotTargetRegex);
 
   if (slotMatch && slotMatch.index !== undefined) {
-    const beforeSlot = normalized.slice(0, slotMatch.index);
-    const afterSlot = normalized.slice(slotMatch.index + slotMatch[0].length);
-    const allDates = extractAllDatesChronological(normalized, ctx.todayIso);
+    const beforeSlot = workingNormalized.slice(0, slotMatch.index);
+    const afterSlot = workingNormalized.slice(slotMatch.index + slotMatch[0].length);
+    const allDates = extractAllDatesChronological(workingNormalized, ctx.todayIso);
     const latestDate = allDates.length ? allDates[allDates.length - 1].date : undefined;
     const searchFromDate = latestDate ?? ctx.todayIso;
 
@@ -1034,6 +1285,9 @@ export function parseProgressiveVoiceDraft(
         dateSpoken: true,
         startTime: chosenZone.startTime,
         endTime: chosenZone.endTime,
+        customColor: enrich.customColor,
+        notes: enrich.notes,
+        alertOffsetMinutes: enrich.alertOffsetMinutes,
         targetBlockId: chosenZone.id,
         matchedIdeaId: matchedIdea?.id,
         startingStepHint: matchedIdea?.startingStep,
@@ -1052,6 +1306,9 @@ export function parseProgressiveVoiceDraft(
       dateSpoken: true,
       startTime: gap.startTime,
       endTime: gap.endTime,
+      customColor: enrich.customColor,
+      notes: enrich.notes,
+      alertOffsetMinutes: enrich.alertOffsetMinutes,
       matchedIdeaId: matchedIdea?.id,
       startingStepHint: matchedIdea?.startingStep,
       missingFields: missing,
@@ -1061,7 +1318,7 @@ export function parseProgressiveVoiceDraft(
   }
 
   // Split transcript into ordered conversational clauses
-  const rawClauses = normalized
+  const rawClauses = workingNormalized
     .split(REVISION_SPLIT_RE)
     .map((c) => c.trim())
     .filter(Boolean);
@@ -1182,12 +1439,50 @@ export function parseProgressiveVoiceDraft(
     }
   }
 
+  // Check if speaker is verbally modifying an existing calendar event's color, description, or alert
+  // (e.g., "make Physics Honors purple and alert 10 minutes early", "add description bring calculator to AP Pre-Calculus")
+  const hasEnrichment =
+    enrich.customColor !== undefined ||
+    enrich.notes !== undefined ||
+    enrich.alertOffsetMinutes !== undefined;
+  const startsWithExplicitNewEventVerb =
+    /^\s*(?:hey\s+|ok\s+|okay\s+|please\s+|can\s+you\s+)?(?:add|create|schedule|new|book)\s+(?!(?:a\s+|the\s+|an\s+)?(?:description|details?|notes?|alert|alarm|notification|color)\b)/i.test(
+      normalized
+    );
+
+  if (startMins === null && endMins === null && hasEnrichment && !startsWithExplicitNewEventVerb) {
+    const matchedExisting = findMatchingBlockForUpdate(enrich.cleanedText, knownDate, ctx);
+    if (matchedExisting) {
+      return {
+        rawTranscript: rawTrimmed,
+        mode: 'update-event',
+        targetBlockId: matchedExisting.id,
+        title: matchedExisting.title,
+        date: matchedExisting.date,
+        dateSpoken: true,
+        startTime: matchedExisting.startTime,
+        endTime: matchedExisting.endTime,
+        whyCategory: matchedExisting.whyCategory,
+        customColor: enrich.customColor ?? matchedExisting.customColor,
+        notes: enrich.notes ?? matchedExisting.notes,
+        alertOffsetMinutes:
+          enrich.alertOffsetMinutes === null
+            ? null
+            : enrich.alertOffsetMinutes ?? matchedExisting.alertOffsetMinutes,
+        missingFields: [],
+        nextPrompt: 'Complete — tap ✓ or press Enter to update',
+        isComplete: true,
+      };
+    }
+  }
+
   // Determine final mode
   const isPureEmptyZoneRequest =
     /\b(?:open\s+(?:an?\s+)?empty\s*zone|new\s+empty\s*zone|add\s+(?:an?\s+)?empty\s*zone)\b/i.test(
-      normalized
+      workingNormalized
     );
-  const isReminder = !isPureEmptyZoneRequest && /\b(remind(?:\s+me)?|reminder)\b/i.test(normalized);
+  const isReminder =
+    !isPureEmptyZoneRequest && /\b(remind(?:\s+me)?|reminder)\b/i.test(workingNormalized);
 
   if (isReminder) {
     const hasDate = Boolean(knownDate) || startMins !== null;
@@ -1237,8 +1532,11 @@ export function parseProgressiveVoiceDraft(
     endTime: knownEnd,
     whyCategory:
       mode === 'event' && effectiveTitle
-        ? inferWhyFromTitle(effectiveTitle, rawTrimmed)
+        ? inferWhyFromTitle(effectiveTitle, workingNormalized)
         : undefined,
+    customColor: enrich.customColor,
+    notes: enrich.notes,
+    alertOffsetMinutes: enrich.alertOffsetMinutes,
     missingFields: missing,
     nextPrompt: buildMissingPrompt(mode, missing, knownStart),
     isComplete: missing.length === 0,
@@ -1257,6 +1555,22 @@ export function interpretScheduleInput(
 
   const date = draft.date ?? (ctx.selectedDate || ctx.todayIso);
 
+  if (draft.mode === 'update-event' && draft.targetBlockId && draft.startTime) {
+    return {
+      mode: 'update-event',
+      title: draft.title ?? 'Event',
+      date,
+      startTime: draft.startTime,
+      endTime: draft.endTime,
+      whyCategory: draft.whyCategory,
+      customColor: draft.customColor,
+      notes: draft.notes,
+      alertOffsetMinutes: draft.alertOffsetMinutes,
+      targetBlockId: draft.targetBlockId,
+      explanation: 'Updated existing calendar event',
+    };
+  }
+
   if (draft.mode === 'fill-slot' && draft.targetBlockId && draft.startTime) {
     return {
       mode: 'fill-slot',
@@ -1264,6 +1578,9 @@ export function interpretScheduleInput(
       date,
       startTime: draft.startTime,
       endTime: draft.endTime,
+      customColor: draft.customColor,
+      notes: draft.notes,
+      alertOffsetMinutes: draft.alertOffsetMinutes,
       targetBlockId: draft.targetBlockId,
       matchedIdeaId: draft.matchedIdeaId,
       startingStepHint: draft.startingStepHint,
@@ -1301,6 +1618,9 @@ export function interpretScheduleInput(
     startTime,
     endTime,
     whyCategory: draft.mode === 'event' ? draft.whyCategory ?? inferWhyFromTitle(title) : undefined,
+    customColor: draft.customColor,
+    notes: draft.notes,
+    alertOffsetMinutes: draft.alertOffsetMinutes,
     matchedIdeaId: draft.matchedIdeaId,
     startingStepHint: draft.startingStepHint,
     explanation,

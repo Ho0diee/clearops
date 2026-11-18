@@ -18,11 +18,23 @@ export type ScheduleViewMode = 'day' | 'week';
 
 export type WhyCategory = 'Family' | 'School' | 'Organization' | 'Health';
 
+export type EventColorId =
+  | 'crimson'
+  | 'coral'
+  | 'amber'
+  | 'emerald'
+  | 'teal'
+  | 'sky'
+  | 'cobalt'
+  | 'violet'
+  | 'pink'
+  | 'slate';
+
 export type BlockKind = 'baseline' | 'empty-zone' | 'goal-session' | 'reflection';
 
 export interface CalendarBlock {
   id: string;
-  date: string; // YYYY-MM-DD (e.g., '2026-11-17')
+  date: string; // YYYY-MM-DD (e.g., '2026-11-18')
   startTime: string; // HH:MM 24h (e.g., '09:00')
   endTime: string; // HH:MM 24h (e.g., '10:30')
   title: string;
@@ -31,11 +43,16 @@ export interface CalendarBlock {
   /** Baseline obligations link directly to a core Why category & statement */
   whyCategory?: WhyCategory;
   whyStatement?: string;
+  /** Optional custom event color override beyond the Why category */
+  customColor?: EventColorId;
+  /** Optional alert lead time in minutes before startTime (0 = at event start, >0 = earlier) */
+  alertOffsetMinutes?: number;
   /** Empty Zones & Goal Sessions link to an active Idea or Multi-Day Paced Goal */
   assignedIdeaId?: string;
   assignedGoalId?: string;
   startingStepHint?: string;
   spilloverCount?: number;
+  /** Event description / freeform details */
   notes?: string;
 }
 
@@ -158,12 +175,15 @@ export interface ProtectedStreakState {
 }
 
 export interface ParsedLiveInput {
-  mode: 'event' | 'empty-zone' | 'reminder' | 'fill-slot';
+  mode: 'event' | 'empty-zone' | 'reminder' | 'fill-slot' | 'update-event';
   title: string;
   date: string;
   startTime: string;
   endTime?: string;
   whyCategory?: WhyCategory;
+  customColor?: EventColorId;
+  notes?: string;
+  alertOffsetMinutes?: number | null;
   targetBlockId?: string;
   matchedIdeaId?: string;
   startingStepHint?: string;
@@ -174,13 +194,16 @@ export type MissingVoiceField = 'title' | 'date' | 'startTime' | 'endTime';
 
 export interface VoiceScheduleDraft {
   rawTranscript: string;
-  mode: 'event' | 'empty-zone' | 'reminder' | 'fill-slot';
+  mode: 'event' | 'empty-zone' | 'reminder' | 'fill-slot' | 'update-event';
   title?: string;
   date?: string;
   dateSpoken: boolean;
   startTime?: string;
   endTime?: string;
   whyCategory?: WhyCategory;
+  customColor?: EventColorId;
+  notes?: string;
+  alertOffsetMinutes?: number | null;
   targetBlockId?: string;
   matchedIdeaId?: string;
   startingStepHint?: string;
