@@ -1,11 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowRight, Bell, Check, ChevronLeft, Sparkles, Trash2, X } from 'lucide-react';
 import { Badge, Button } from '../../components/ui';
 import { addDaysISO, formatShortDate, getWeekDatesISO, useOpsStore } from '../../store/opsStore';
-import type { CalendarBlock } from '../../types/schema';
+import type { CalendarBlock, ReminderItem } from '../../types/schema';
 
 const TODAY_ANCHOR = '2026-11-17';
 const WEEKDAY_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+const SWIPE_MS = 260;
+const SNAP_BACK_MS = 210;
+const EASE_OUT_EXPO = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 function toMin(t: string): number {
   const [h, m] = t.split(':').map(Number);
@@ -29,7 +32,11 @@ function dayNumber(iso: string): number {
 
 function isOpenZone(b: CalendarBlock): boolean {
   if (b.kind !== 'empty-zone') return false;
-  return !b.assignedIdeaId && !b.assignedGoalId && /open focus slot|reclaimed focus slot|^empty zone$/i.test(b.title);
+  return (
+    !b.assignedIdeaId &&
+    !b.assignedGoalId &&
+    /open focus slot|reclaimed focus slot|^empty zone$/i.test(b.title)
+  );
 }
 
 function shortTitle(b: CalendarBlock): string {
@@ -82,25 +89,179 @@ function layoutColumn(blocks: CalendarBlock[]): Positioned[] {
   return out;
 }
 
+interface CalendarPaneProps {
+  columns: string[];
+  isWeek: boolean;
+  startHour: number;
+  endHour: number;
+  hourHeight: number;
+  nowMin: number;
+  blocks: CalendarBlock[];
+  reminders: ReminderItem[];
+  highlightId?: string | null;
+  onSelectDay: (iso: string) => void;
+  onOpenBlock: (id: string) => void;
+  onOpenReminder: (id: string) => void;
+}
+
+const CalendarPane = memo<CalendarPaneProps>(
+  ({
+    columns,
+    isWeek,
+    startHour,
+    endHour,
+    hourHeight,
+    nowMin,
+    blocks,
+    reminders,
+    highlightId,
+    onSelectDay,
+    onOpenBlock,
+    onOpenReminder,
+  }) => {
+    return (
+      <>
+        {columns.map((iso) => {
+          const laid = layoutColumn(blocks.filter((b) => b.date === iso));
+          const dayReminders = reminders.filter((r) => r.date === iso);
+          const showNow = iso === TODAY_ANCHOR && nowMin >= startHour * 60 && nowMin <= endHour * 60;
+
+          return (
+            <div
+              key={iso}
+              className={`gcal-col ${iso === TODAY_ANCHOR && isWeek ? 'is-today' : ''}`.trim()}
+              onClick={(e) => {
+                if (isWeek && e.target === e.currentTarget) {
+                  onSelectDay(iso);
+                }
+              }}
+            >
+              {laid.map(({ block, col, cols }) => {
+                const s = toMin(block.startTime);
+                const e = Math.max(s + 15, toMin(block.endTime));
+                const top = ((s - startHour * 60) / 60) * hourHeight;
+                const height = Math.max(isWeek ? 18 : 22, ((e - s) / 60) * hourHeight - 2);
+                const roomy = !isWeek && height >= 40;
+                const clampLines = isWeek ? Math.max(1, Math.floor((height - 6) / 12.5)) : undefined;
+                return (
+                  <button
+                    key={block.id}
+                    type="button"
+                    className={`gcal-ev ${eventClass(block)} ${block.completed ? 'is-done' : ''} ${
+                      isWeek ? 'is-compact' : ''
+                    } ${block.id === highlightId ? 'is-flash' : ''}`.trim()}
+                    style={{
+                      top,
+                      height,
+                      left: `calc(${(col / cols) * 100}% + 1px)`,
+                      width: `calc(${100 / cols}% - ${isWeek ? 2 : 4}px)`,
+                    }}
+                    onClick={() => onOpenBlock(block.id)}
+                    title={`${block.title} (${block.startTime}–${block.endTime})`}
+                  >
+                    <span
+                      className="gcal-ev-title"
+                      style={clampLines ? { WebkitLineClamp: clampLines } : undefined}
+                    >
+                      {block.completed && !isWeek && <Check size={11} strokeWidth={3} />}
+                      {isWeek ? shortTitle(block) : block.title}
+                      {!roomy && !isWeek && (
+                        <span className="gcal-ev-inline-time">, {fmtTime(block.startTime)}</span>
+                      )}
+                    </span>
+                    {roomy && (
+                      <span className="gcal-ev-time">
+                        {isWeek
+                          ? fmtTime(block.startTime)
+                          : `${fmtTime(block.startTime)} – ${fmtTime(block.endTime)}`}
+                      </span>
+                    )}
+                    {roomy && !isWeek && block.startingStepHint && height >= 64 && (
+                      <span className="gcal-ev-sub">{block.startingStepHint}</span>
+                    )}
+                  </button>
+                );
+              })}
+
+              {dayReminders.map((rem, idx) => {
+                const m = toMin(rem.time);
+                const sameTimeIdx = dayReminders
+                  .slice(0, idx)
+                  .filter((prev) => Math.abs(toMin(prev.time) - m) < 20).length;
+                const top =
+                  ((m - startHour * 60) / 60) * hourHeight + sameTimeIdx * (isWeek ? 20 : 24);
+                return (
+                  <button
+                    key={rem.id}
+                    type="button"
+                    className={`gcal-rem ${rem.completed ? 'is-done' : ''} ${
+                      isWeek ? 'is-compact' : ''
+                    } ${rem.id === highlightId ? 'is-flash' : ''}`.trim()}
+                    style={{ top }}
+                    onClick={() => onOpenReminder(rem.id)}
+                    title={`Reminder: ${rem.title} (${fmtTime(rem.time)})`}
+                  >
+                    {rem.completed ? <Check size={10} strokeWidth={3} /> : <Bell size={10} />}
+                    <span className="gcal-rem-title">{rem.title}</span>
+                    {!isWeek && <span className="gcal-rem-time">{fmtTime(rem.time)}</span>}
+                  </button>
+                );
+              })}
+
+              {showNow && (
+                <div
+                  className="gcal-now"
+                  style={{ top: ((nowMin - startHour * 60) / 60) * hourHeight }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </>
+    );
+  }
+);
+CalendarPane.displayName = 'CalendarPane';
+
 export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highlightId }) => {
   const { state, actions } = useOpsStore();
   const isWeek = state.scheduleViewMode === 'week';
-  const weekDates = useMemo(() => getWeekDatesISO(state.selectedDate), [state.selectedDate]);
-  const columns = isWeek ? weekDates : [state.selectedDate];
+  const stepDays = isWeek ? 7 : 1;
   const hourHeight = isWeek ? 44 : 56;
 
   const [openBlockId, setOpenBlockId] = useState<string | null>(null);
   const [openReminderId, setOpenReminderId] = useState<string | null>(null);
-  const [slideDir, setSlideDir] = useState<'next' | 'prev' | null>(null);
-  const [dragOffsetX, setDragOffsetX] = useState(0);
-  const [isDraggingX, setIsDraggingX] = useState(false);
+  const [pendingHeaderIso, setPendingHeaderIso] = useState<string | null>(null);
+  const [overrideSide, setOverrideSide] = useState<{ dir: 1 | -1; iso: string } | null>(null);
   const [nowMin, setNowMin] = useState(() => {
     const d = new Date();
     return d.getHours() * 60 + d.getMinutes();
   });
+
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const touchRef = useRef<{ x: number; y: number; axis: 'none' | 'x' | 'y' } | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const prevPaneRef = useRef<HTMLDivElement | null>(null);
+  const centerPaneRef = useRef<HTMLDivElement | null>(null);
+  const nextPaneRef = useRef<HTMLDivElement | null>(null);
+
   const prevModeRef = useRef(state.scheduleViewMode);
+  const suppressClickUntilRef = useRef(0);
+  const wheelCooldownRef = useRef(0);
+  const animTimerRef = useRef<number | null>(null);
+  const animTargetIsoRef = useRef<string | null>(null);
+
+  const pointerRef = useRef<{
+    pointerId: number;
+    captured: boolean;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastTime: number;
+    vx: number;
+    axis: 'none' | 'x' | 'y';
+    stageWidth: number;
+  } | null>(null);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -110,36 +271,169 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
     return () => window.clearInterval(id);
   }, []);
 
-  const visibleBlocks = useMemo(
-    () => state.blocks.filter((b) => columns.includes(b.date)),
-    [state.blocks, columns]
+  useEffect(() => {
+    return () => {
+      if (animTimerRef.current !== null) {
+        window.clearTimeout(animTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Anchor dates for the 3-pane GPU carousel [prev, current, next]
+  const currAnchor = state.selectedDate;
+  const prevAnchor =
+    overrideSide?.dir === -1 ? overrideSide.iso : addDaysISO(currAnchor, -stepDays);
+  const nextAnchor =
+    overrideSide?.dir === 1 ? overrideSide.iso : addDaysISO(currAnchor, stepDays);
+
+  const prevColumns = useMemo(
+    () => (isWeek ? getWeekDatesISO(prevAnchor) : [prevAnchor]),
+    [isWeek, prevAnchor]
+  );
+  const currColumns = useMemo(
+    () => (isWeek ? getWeekDatesISO(currAnchor) : [currAnchor]),
+    [isWeek, currAnchor]
+  );
+  const nextColumns = useMemo(
+    () => (isWeek ? getWeekDatesISO(nextAnchor) : [nextAnchor]),
+    [isWeek, nextAnchor]
   );
 
-  const visibleReminders = useMemo(
-    () => state.reminders.filter((r) => columns.includes(r.date)),
-    [state.reminders, columns]
+  // Header reflects the destination date immediately during glide so strip & title feel instantaneous
+  const headerIso = pendingHeaderIso ?? currAnchor;
+  const headerWeekDates = useMemo(() => getWeekDatesISO(headerIso), [headerIso]);
+
+  const allWindowSet = useMemo(
+    () => new Set([...prevColumns, ...currColumns, ...nextColumns]),
+    [prevColumns, currColumns, nextColumns]
   );
 
-  // Hour range adapts to the visible events & reminders (Google Calendar-style compact day)
+  const windowBlocks = useMemo(
+    () => state.blocks.filter((b) => allWindowSet.has(b.date)),
+    [state.blocks, allWindowSet]
+  );
+  const windowReminders = useMemo(
+    () => state.reminders.filter((r) => allWindowSet.has(r.date)),
+    [state.reminders, allWindowSet]
+  );
+
+  // Shared hour range across all 3 panes so time labels & rulings stay rock-solid across swipes
   const { startHour, endHour } = useMemo(() => {
     let lo = 7;
     let hi = 21;
-    visibleBlocks.forEach((b) => {
+    state.blocks.forEach((b) => {
       lo = Math.min(lo, Math.floor(toMin(b.startTime) / 60));
       hi = Math.max(hi, Math.ceil(toMin(b.endTime) / 60));
     });
-    visibleReminders.forEach((r) => {
+    state.reminders.forEach((r) => {
       const m = toMin(r.time);
       lo = Math.min(lo, Math.floor(m / 60));
       hi = Math.max(hi, Math.ceil((m + 30) / 60));
     });
     return { startHour: Math.max(0, lo), endHour: Math.min(24, hi + 1) };
-  }, [visibleBlocks, visibleReminders]);
+  }, [state.blocks, state.reminders]);
 
-  const hours = Array.from({ length: endHour - startHour }, (_, i) => startHour + i);
+  const hours = useMemo(
+    () => Array.from({ length: endHour - startHour }, (_, i) => startHour + i),
+    [startHour, endHour]
+  );
   const gridHeight = hours.length * hourHeight;
 
-  // Auto-scroll on initial mount or when zooming between Week and Day (keep vertical scroll steady on horizontal swipes)
+  const resetTrackStylesInstant = useCallback(() => {
+    if (trackRef.current) {
+      trackRef.current.style.transition = 'none';
+      trackRef.current.style.transform = 'translate3d(-33.333333%, 0, 0)';
+    }
+    if (centerPaneRef.current) {
+      centerPaneRef.current.style.transition = 'none';
+      centerPaneRef.current.style.opacity = '1';
+    }
+    if (prevPaneRef.current) {
+      prevPaneRef.current.style.transition = 'none';
+      prevPaneRef.current.style.opacity = '0.6';
+    }
+    if (nextPaneRef.current) {
+      nextPaneRef.current.style.transition = 'none';
+      nextPaneRef.current.style.opacity = '0.6';
+    }
+  }, []);
+
+  // Synchronously recenter the 3-pane track BEFORE paint whenever selectedDate or viewMode commits
+  useLayoutEffect(() => {
+    resetTrackStylesInstant();
+  }, [state.selectedDate, state.scheduleViewMode, resetTrackStylesInstant]);
+
+  const finalizePendingGlide = useCallback(() => {
+    if (animTimerRef.current !== null) {
+      window.clearTimeout(animTimerRef.current);
+      animTimerRef.current = null;
+    }
+    const target = animTargetIsoRef.current;
+    animTargetIsoRef.current = null;
+    if (target) {
+      setOverrideSide(null);
+      setPendingHeaderIso(null);
+      actions.setSelectedDate(target);
+    }
+  }, [actions]);
+
+  const executeGlide = useCallback(
+    (dir: 1 | -1, targetIso: string) => {
+      if (animTimerRef.current !== null) {
+        window.clearTimeout(animTimerRef.current);
+      }
+      animTargetIsoRef.current = targetIso;
+      setPendingHeaderIso(targetIso);
+
+      const track = trackRef.current;
+      const centerEl = centerPaneRef.current;
+      const incomingEl = dir === 1 ? nextPaneRef.current : prevPaneRef.current;
+
+      if (!track) {
+        animTargetIsoRef.current = null;
+        setOverrideSide(null);
+        setPendingHeaderIso(null);
+        actions.setSelectedDate(targetIso);
+        return;
+      }
+
+      // Force style flush so transitions always animate smoothly from current position
+      void track.offsetWidth;
+
+      const destPct = dir === 1 ? '-66.666667%' : '0%';
+      track.style.transition = `transform ${SWIPE_MS}ms ${EASE_OUT_EXPO}`;
+      track.style.transform = `translate3d(${destPct}, 0, 0)`;
+
+      if (centerEl) {
+        centerEl.style.transition = `opacity ${Math.round(SWIPE_MS * 0.85)}ms ${EASE_OUT_EXPO}`;
+        centerEl.style.opacity = '0';
+      }
+      if (incomingEl) {
+        incomingEl.style.transition = `opacity ${Math.round(SWIPE_MS * 0.85)}ms ${EASE_OUT_EXPO}`;
+        incomingEl.style.opacity = '1';
+      }
+
+      animTimerRef.current = window.setTimeout(() => {
+        animTimerRef.current = null;
+        const committed = animTargetIsoRef.current;
+        animTargetIsoRef.current = null;
+        setOverrideSide(null);
+        setPendingHeaderIso(null);
+        if (committed) {
+          actions.setSelectedDate(committed);
+        }
+      }, SWIPE_MS + 12);
+    },
+    [actions]
+  );
+
+  // Trigger deferred glide when tapping a non-adjacent day in the strip (once overrideSide renders)
+  useEffect(() => {
+    if (!overrideSide) return;
+    executeGlide(overrideSide.dir, overrideSide.iso);
+  }, [overrideSide, executeGlide]);
+
+  // Auto-scroll on initial mount or when zooming between Week and Day
   const didInitialScrollRef = useRef(false);
   useEffect(() => {
     if (!scrollRef.current) return;
@@ -148,16 +442,17 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
     }
     didInitialScrollRef.current = true;
     prevModeRef.current = state.scheduleViewMode;
-    const firstMin = visibleBlocks.length
-      ? Math.min(...visibleBlocks.map((b) => toMin(b.startTime)))
+    const currBlocks = windowBlocks.filter((b) => currColumns.includes(b.date));
+    const firstMin = currBlocks.length
+      ? Math.min(...currBlocks.map((b) => toMin(b.startTime)))
       : 8 * 60;
     const target = ((firstMin - startHour * 60) / 60) * hourHeight - 12;
     scrollRef.current.scrollTop = Math.max(0, target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.scheduleViewMode]);
 
-  // Zoom from the tapped day's column (week → day) like pinching into Google Calendar
-  const dayIdx = Math.max(0, weekDates.indexOf(state.selectedDate));
+  // Horizontal zoom origin from tapped day column (strictly inside .gcal-stage so times are never covered)
+  const dayIdx = Math.max(0, headerWeekDates.indexOf(headerIso));
   const zoomOrigin = `${((dayIdx + 0.5) / 7) * 100}% 0`;
 
   // Scroll a newly added (chat) event or reminder into view
@@ -173,7 +468,9 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
   }, [highlightId]);
 
   const openBlock = openBlockId ? state.blocks.find((b) => b.id === openBlockId) ?? null : null;
-  const openReminder = openReminderId ? state.reminders.find((r) => r.id === openReminderId) ?? null : null;
+  const openReminder = openReminderId
+    ? state.reminders.find((r) => r.id === openReminderId) ?? null
+    : null;
 
   const activeIdeas = useMemo(
     () =>
@@ -182,62 +479,177 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
         .sort((a, b) => a.priorityRank - b.priorityRank),
     [state.ideas]
   );
-  const assignedIds = new Set(state.blocks.filter((b) => b.assignedIdeaId && !b.completed).map((b) => b.assignedIdeaId));
+  const assignedIds = new Set(
+    state.blocks.filter((b) => b.assignedIdeaId && !b.completed).map((b) => b.assignedIdeaId)
+  );
   const topIdea = activeIdeas.find((i) => !assignedIds.has(i.id)) ?? activeIdeas[0];
 
-  const shiftDate = (dir: 1 | -1) => {
-    setSlideDir(dir === 1 ? 'next' : 'prev');
-    actions.setSelectedDate(addDaysISO(state.selectedDate, dir * (isWeek ? 7 : 1)));
+  const selectDay = useCallback(
+    (iso: string) => {
+      if (performance.now() < suppressClickUntilRef.current) return;
+      finalizePendingGlide();
+
+      if (isWeek) {
+        actions.setSelectedDate(iso);
+        actions.setScheduleViewMode('day');
+        return;
+      }
+
+      if (iso === state.selectedDate) return;
+      const dir: 1 | -1 = iso > state.selectedDate ? 1 : -1;
+      const expectedNeighbor = addDaysISO(state.selectedDate, dir);
+      if (iso === expectedNeighbor) {
+        executeGlide(dir, iso);
+      } else {
+        setPendingHeaderIso(iso);
+        setOverrideSide({ dir, iso });
+      }
+    },
+    [isWeek, state.selectedDate, actions, finalizePendingGlide, executeGlide]
+  );
+
+  const handleOpenBlock = useCallback((id: string) => {
+    if (performance.now() < suppressClickUntilRef.current) return;
+    setOpenBlockId(id);
+  }, []);
+
+  const handleOpenReminder = useCallback((id: string) => {
+    if (performance.now() < suppressClickUntilRef.current) return;
+    setOpenReminderId(id);
+  }, []);
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    finalizePendingGlide();
+    const now = performance.now();
+    const stageWidth = stageRef.current?.clientWidth || 320;
+    pointerRef.current = {
+      pointerId: e.pointerId,
+      captured: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      lastX: e.clientX,
+      lastTime: now,
+      vx: 0,
+      axis: 'none',
+      stageWidth,
+    };
   };
 
-  const selectDay = (iso: string) => {
-    if (!isWeek && iso !== state.selectedDate) {
-      setSlideDir(iso > state.selectedDate ? 'next' : 'prev');
-    } else {
-      setSlideDir(null);
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const p = pointerRef.current;
+    if (!p || e.pointerId !== p.pointerId) return;
+
+    const x = e.clientX;
+    const y = e.clientY;
+    const dx = x - p.startX;
+    const dy = y - p.startY;
+
+    if (p.axis === 'none') {
+      if (Math.hypot(dx, dy) < 7) return;
+      p.axis = Math.abs(dx) > Math.abs(dy) * 1.1 ? 'x' : 'y';
+      if (p.axis === 'x') {
+        if (!p.captured) {
+          try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            p.captured = true;
+          } catch {
+            /* ignore */
+          }
+        }
+        if (scrollRef.current) scrollRef.current.style.overflowY = 'hidden';
+        if (trackRef.current) trackRef.current.style.transition = 'none';
+        if (centerPaneRef.current) centerPaneRef.current.style.transition = 'none';
+        if (prevPaneRef.current) prevPaneRef.current.style.transition = 'none';
+        if (nextPaneRef.current) nextPaneRef.current.style.transition = 'none';
+      }
     }
-    actions.setSelectedDate(iso);
-    actions.setScheduleViewMode('day');
-  };
 
-  const onTouchStart = (e: React.TouchEvent) => {
-    touchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, axis: 'none' };
-    setIsDraggingX(false);
-  };
+    if (p.axis !== 'x') return;
 
-  const onTouchMove = (e: React.TouchEvent) => {
-    const t = touchRef.current;
-    if (!t) return;
-    const dx = e.touches[0].clientX - t.x;
-    const dy = e.touches[0].clientY - t.y;
+    const now = performance.now();
+    const dt = Math.max(1, now - p.lastTime);
+    p.vx = (x - p.lastX) / dt;
+    p.lastX = x;
+    p.lastTime = now;
 
-    if (t.axis === 'none') {
-      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-      t.axis = Math.abs(dx) > Math.abs(dy) * 1.15 ? 'x' : 'y';
-      if (t.axis === 'x') setIsDraggingX(true);
+    const clampedDx = Math.max(-p.stageWidth, Math.min(p.stageWidth, dx));
+    const progress = Math.min(1, Math.abs(clampedDx) / p.stageWidth);
+
+    // Pure GPU 1:1 finger/pointer tracking — zero React re-renders during drag
+    if (trackRef.current) {
+      trackRef.current.style.transform = `translate3d(calc(-33.333333% + ${clampedDx}px), 0, 0)`;
     }
-
-    if (t.axis === 'x') {
-      // Rubber-band follow along X while keeping the hour labels anchored
-      const damped = dx * 0.48;
-      setDragOffsetX(Math.max(-140, Math.min(140, damped)));
+    if (centerPaneRef.current) {
+      centerPaneRef.current.style.opacity = String(1 - progress * 0.72);
     }
-  };
-
-  const onTouchEnd = (e: React.TouchEvent) => {
-    const t = touchRef.current;
-    touchRef.current = null;
-    setIsDraggingX(false);
-    setDragOffsetX(0);
-    if (!t) return;
-    const dx = e.changedTouches[0].clientX - t.x;
-    const dy = e.changedTouches[0].clientY - t.y;
-    if (t.axis === 'x' && Math.abs(dx) > 52 && Math.abs(dx) > Math.abs(dy)) {
-      shiftDate(dx < 0 ? 1 : -1);
+    const activeSide = clampedDx < 0 ? nextPaneRef.current : prevPaneRef.current;
+    const idleSide = clampedDx < 0 ? prevPaneRef.current : nextPaneRef.current;
+    if (activeSide) {
+      activeSide.style.opacity = String(0.55 + progress * 0.45);
+    }
+    if (idleSide) {
+      idleSide.style.opacity = '0.55';
     }
   };
 
-  const monthLabel = new Date(`${state.selectedDate}T12:00:00Z`).toLocaleDateString('en-US', {
+  const finishPointerGesture = (e: React.PointerEvent<HTMLDivElement>, cancelled = false) => {
+    const p = pointerRef.current;
+    if (!p || e.pointerId !== p.pointerId) return;
+    pointerRef.current = null;
+
+    if (p.captured) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (scrollRef.current) scrollRef.current.style.overflowY = '';
+    if (p.axis !== 'x') return;
+
+    suppressClickUntilRef.current = performance.now() + 320;
+    const dx = cancelled ? 0 : e.clientX - p.startX;
+    const distancePass = !cancelled && Math.abs(dx) > p.stageWidth * 0.22;
+    const flickPass =
+      !cancelled && Math.abs(dx) > 22 && Math.abs(p.vx) > 0.32 && Math.sign(dx) === Math.sign(p.vx);
+
+    if (distancePass || flickPass) {
+      const dir: 1 | -1 = dx < 0 ? 1 : -1;
+      executeGlide(dir, addDaysISO(state.selectedDate, dir * stepDays));
+      return;
+    }
+
+    // Smooth spring-back to center when swipe is cancelled
+    if (trackRef.current) {
+      trackRef.current.style.transition = `transform ${SNAP_BACK_MS}ms ${EASE_OUT_EXPO}`;
+      trackRef.current.style.transform = 'translate3d(-33.333333%, 0, 0)';
+    }
+    if (centerPaneRef.current) {
+      centerPaneRef.current.style.transition = `opacity ${SNAP_BACK_MS}ms ease-out`;
+      centerPaneRef.current.style.opacity = '1';
+    }
+    if (prevPaneRef.current) {
+      prevPaneRef.current.style.transition = `opacity ${SNAP_BACK_MS}ms ease-out`;
+      prevPaneRef.current.style.opacity = '0.6';
+    }
+    if (nextPaneRef.current) {
+      nextPaneRef.current.style.transition = `opacity ${SNAP_BACK_MS}ms ease-out`;
+      nextPaneRef.current.style.opacity = '0.6';
+    }
+  };
+
+  const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) * 1.3 || Math.abs(e.deltaX) < 32) return;
+    const now = performance.now();
+    if (now < wheelCooldownRef.current) return;
+    wheelCooldownRef.current = now + 420;
+    finalizePendingGlide();
+    const dir: 1 | -1 = e.deltaX > 0 ? 1 : -1;
+    executeGlide(dir, addDaysISO(state.selectedDate, dir * stepDays));
+  };
+
+  const monthLabel = new Date(`${headerIso}T12:00:00Z`).toLocaleDateString('en-US', {
     month: 'long',
     year: 'numeric',
     timeZone: 'UTC',
@@ -256,15 +668,15 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                 type="button"
                 className="gcal-back"
                 onClick={() => {
-                  setSlideDir(null);
+                  finalizePendingGlide();
                   actions.setScheduleViewMode('week');
                 }}
               >
                 <ChevronLeft size={18} />
                 <span>Week</span>
               </button>
-              <span key={state.selectedDate} className={`gcal-title gcal-title-day ${slideDir ? `is-slide-${slideDir}` : ''}`.trim()}>
-                {formatShortDate(state.selectedDate)}
+              <span key={headerIso} className="gcal-title gcal-title-day">
+                {formatShortDate(headerIso)}
               </span>
             </>
           )}
@@ -282,8 +694,8 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
         </div>
         <div className="gcal-strip">
           <div className="gcal-gutter" />
-          {weekDates.map((iso, idx) => {
-            const isSelected = iso === state.selectedDate;
+          {headerWeekDates.map((iso, idx) => {
+            const isSelected = iso === headerIso;
             const isToday = iso === TODAY_ANCHOR;
             const count =
               state.blocks.filter((b) => b.date === iso).length +
@@ -297,7 +709,9 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                 onClick={() => selectDay(iso)}
                 aria-label={`Open ${formatShortDate(iso)}`}
               >
-                <span className={`gcal-dow ${isToday ? 'is-today' : ''}`.trim()}>{WEEKDAY_LETTERS[idx]}</span>
+                <span className={`gcal-dow ${isToday ? 'is-today' : ''}`.trim()}>
+                  {WEEKDAY_LETTERS[idx]}
+                </span>
                 <span
                   className={`gcal-date ${isToday ? 'is-today' : ''} ${
                     isSelected && !isToday && !isWeek ? 'is-selected' : ''
@@ -316,21 +730,14 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
       <div
         ref={scrollRef}
         className="gcal-scroll"
-        style={isDraggingX ? { overflowY: 'hidden' } : undefined}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
-        onTouchCancel={() => {
-          touchRef.current = null;
-          setIsDraggingX(false);
-          setDragOffsetX(0);
-        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={(e) => finishPointerGesture(e, false)}
+        onPointerCancel={(e) => finishPointerGesture(e, true)}
+        onWheel={onWheel}
       >
-        <div
-          key={state.scheduleViewMode}
-          className={`gcal-body gcal-anim-${state.scheduleViewMode}`}
-          style={{ height: gridHeight, transformOrigin: zoomOrigin }}
-        >
+        <div className="gcal-body" style={{ height: gridHeight }}>
+          {/* Protected fixed-width time gutter — never covered by horizontal swipes or zooms */}
           <div className="gcal-gutter gcal-hours">
             {hours.map((h, i) => (
               <div key={h} className="gcal-hour-label" style={{ top: i * hourHeight }}>
@@ -339,109 +746,72 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
             ))}
           </div>
 
-          <div
-            key={isWeek ? weekDates[0] : state.selectedDate}
-            className={`gcal-cols ${!isDraggingX && slideDir ? `is-slide-${slideDir}` : ''}`.trim()}
-            style={
-              isDraggingX
-                ? { transform: `translate3d(${dragOffsetX}px, 0, 0)`, transition: 'none' }
-                : undefined
-            }
-          >
-            {hours.map((h, i) => (
-              <div key={h} className="gcal-hline" style={{ top: i * hourHeight }} />
-            ))}
+          {/* Clipped stage strictly to the right of the hour labels */}
+          <div ref={stageRef} className="gcal-stage">
+            <div className="gcal-hlines" aria-hidden="true">
+              {hours.map((h, i) => (
+                <div key={h} className="gcal-hline" style={{ top: i * hourHeight }} />
+              ))}
+            </div>
 
-            {columns.map((iso) => {
-              const laid = layoutColumn(visibleBlocks.filter((b) => b.date === iso));
-              const dayReminders = visibleReminders.filter((r) => r.date === iso);
-              const showNow = iso === TODAY_ANCHOR && nowMin >= startHour * 60 && nowMin <= endHour * 60;
-              return (
-                <div
-                  key={iso}
-                  className={`gcal-col ${iso === TODAY_ANCHOR && isWeek ? 'is-today' : ''}`.trim()}
-                  onClick={(e) => {
-                    if (isWeek && e.target === e.currentTarget) {
-                      selectDay(iso);
-                    }
-                  }}
-                >
-                  {laid.map(({ block, col, cols }) => {
-                    const s = toMin(block.startTime);
-                    const e = Math.max(s + 15, toMin(block.endTime));
-                    const top = ((s - startHour * 60) / 60) * hourHeight;
-                    const height = Math.max(isWeek ? 18 : 22, ((e - s) / 60) * hourHeight - 2);
-                    const roomy = !isWeek && height >= 40;
-                    const clampLines = isWeek ? Math.max(1, Math.floor((height - 6) / 12.5)) : undefined;
-                    return (
-                      <button
-                        key={block.id}
-                        type="button"
-                        className={`gcal-ev ${eventClass(block)} ${block.completed ? 'is-done' : ''} ${
-                          isWeek ? 'is-compact' : ''
-                        } ${block.id === highlightId ? 'is-flash' : ''}`.trim()}
-                        style={{
-                          top,
-                          height,
-                          left: `calc(${(col / cols) * 100}% + 1px)`,
-                          width: `calc(${100 / cols}% - ${isWeek ? 2 : 4}px)`,
-                        }}
-                        onClick={() => setOpenBlockId(block.id)}
-                        title={`${block.title} (${block.startTime}–${block.endTime})`}
-                      >
-                        <span
-                          className="gcal-ev-title"
-                          style={clampLines ? { WebkitLineClamp: clampLines } : undefined}
-                        >
-                          {block.completed && !isWeek && <Check size={11} strokeWidth={3} />}
-                          {isWeek ? shortTitle(block) : block.title}
-                          {!roomy && !isWeek && <span className="gcal-ev-inline-time">, {fmtTime(block.startTime)}</span>}
-                        </span>
-                        {roomy && (
-                          <span className="gcal-ev-time">
-                            {isWeek ? fmtTime(block.startTime) : `${fmtTime(block.startTime)} – ${fmtTime(block.endTime)}`}
-                          </span>
-                        )}
-                        {roomy && !isWeek && block.startingStepHint && height >= 64 && (
-                          <span className="gcal-ev-sub">{block.startingStepHint}</span>
-                        )}
-                      </button>
-                    );
-                  })}
-
-                  {dayReminders.map((rem, idx) => {
-                    const m = toMin(rem.time);
-                    const sameTimeIdx = dayReminders
-                      .slice(0, idx)
-                      .filter((prev) => Math.abs(toMin(prev.time) - m) < 20).length;
-                    const top = ((m - startHour * 60) / 60) * hourHeight + sameTimeIdx * (isWeek ? 20 : 24);
-                    return (
-                      <button
-                        key={rem.id}
-                        type="button"
-                        className={`gcal-rem ${rem.completed ? 'is-done' : ''} ${
-                          isWeek ? 'is-compact' : ''
-                        } ${rem.id === highlightId ? 'is-flash' : ''}`.trim()}
-                        style={{ top }}
-                        onClick={() => setOpenReminderId(rem.id)}
-                        title={`Reminder: ${rem.title} (${fmtTime(rem.time)})`}
-                      >
-                        {rem.completed ? <Check size={10} strokeWidth={3} /> : <Bell size={10} />}
-                        <span className="gcal-rem-title">{rem.title}</span>
-                        {!isWeek && <span className="gcal-rem-time">{fmtTime(rem.time)}</span>}
-                      </button>
-                    );
-                  })}
-
-                  {showNow && (
-                    <div
-                      className="gcal-now"
-                      style={{ top: ((nowMin - startHour * 60) / 60) * hourHeight }}
-                    />
-                  )}
+            <div
+              key={state.scheduleViewMode}
+              className={`gcal-zoom gcal-anim-${state.scheduleViewMode}`}
+              style={{ transformOrigin: zoomOrigin }}
+            >
+              <div ref={trackRef} className="gcal-track">
+                <div ref={prevPaneRef} className="gcal-pane" aria-hidden="true">
+                  <CalendarPane
+                    columns={prevColumns}
+                    isWeek={isWeek}
+                    startHour={startHour}
+                    endHour={endHour}
+                    hourHeight={hourHeight}
+                    nowMin={nowMin}
+                    blocks={windowBlocks}
+                    reminders={windowReminders}
+                    highlightId={null}
+                    onSelectDay={selectDay}
+                    onOpenBlock={handleOpenBlock}
+                    onOpenReminder={handleOpenReminder}
+                  />
                 </div>
-              );
-            })}
+
+                <div ref={centerPaneRef} className="gcal-pane">
+                  <CalendarPane
+                    columns={currColumns}
+                    isWeek={isWeek}
+                    startHour={startHour}
+                    endHour={endHour}
+                    hourHeight={hourHeight}
+                    nowMin={nowMin}
+                    blocks={windowBlocks}
+                    reminders={windowReminders}
+                    highlightId={highlightId}
+                    onSelectDay={selectDay}
+                    onOpenBlock={handleOpenBlock}
+                    onOpenReminder={handleOpenReminder}
+                  />
+                </div>
+
+                <div ref={nextPaneRef} className="gcal-pane" aria-hidden="true">
+                  <CalendarPane
+                    columns={nextColumns}
+                    isWeek={isWeek}
+                    startHour={startHour}
+                    endHour={endHour}
+                    hourHeight={hourHeight}
+                    nowMin={nowMin}
+                    blocks={windowBlocks}
+                    reminders={windowReminders}
+                    highlightId={null}
+                    onSelectDay={selectDay}
+                    onOpenBlock={handleOpenBlock}
+                    onOpenReminder={handleOpenReminder}
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -462,11 +832,17 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                 <div className="ops-stack-xs" style={{ minWidth: 0 }}>
                   <h3 className="gcal-sheet-title">{openBlock.title}</h3>
                   <span className="gcal-sheet-meta">
-                    {formatShortDate(openBlock.date)} · {fmtTime(openBlock.startTime)} – {fmtTime(openBlock.endTime)}
+                    {formatShortDate(openBlock.date)} · {fmtTime(openBlock.startTime)} –{' '}
+                    {fmtTime(openBlock.endTime)}
                   </span>
                 </div>
               </div>
-              <button type="button" className="ui-command-mic" aria-label="Close" onClick={() => setOpenBlockId(null)}>
+              <button
+                type="button"
+                className="ui-command-mic"
+                aria-label="Close"
+                onClick={() => setOpenBlockId(null)}
+              >
                 <X size={16} />
               </button>
             </div>
@@ -486,7 +862,9 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                 </div>
               )}
               {isOpenZone(openBlock) && (
-                <span className="gcal-sheet-meta">Open focus slot · ready for your next active priority (Waiting-On items excluded).</span>
+                <span className="gcal-sheet-meta">
+                  Open focus slot · ready for your next active priority (Waiting-On items excluded).
+                </span>
               )}
             </div>
 

@@ -1758,6 +1758,12 @@ textarea {
   min-height: 420px;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: none;
+}
+
+.gcal-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .gcal-body {
@@ -1769,6 +1775,9 @@ textarea {
 
 .gcal-hours {
   position: relative;
+  z-index: 3;
+  background: var(--bg-surface);
+  pointer-events: none;
 }
 
 .gcal-hour-label {
@@ -1781,72 +1790,63 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
-.gcal-cols {
+.gcal-stage {
   position: relative;
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border-subtle);
+  contain: layout paint;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.gcal-hlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.gcal-zoom {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.gcal-track {
+  position: relative;
+  display: flex;
+  width: 300%;
+  height: 100%;
+  transform: translate3d(-33.333333%, 0, 0);
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.gcal-pane {
+  position: relative;
+  width: 33.333333%;
+  flex: 0 0 33.333333%;
+  height: 100%;
   display: flex;
   min-width: 0;
-  border-left: 1px solid var(--border-subtle);
-  will-change: transform, opacity;
-  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
-.gcal-cols.is-slide-next {
-  animation: calSlideNext 320ms cubic-bezier(0.22, 1, 0.36, 1);
+.gcal-title-day {
+  animation: calTitleFade 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.gcal-cols.is-slide-prev {
-  animation: calSlidePrev 320ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.gcal-title-day.is-slide-next {
-  animation: calTitleNext 260ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.gcal-title-day.is-slide-prev {
-  animation: calTitlePrev 260ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-@keyframes calSlideNext {
+@keyframes calTitleFade {
   from {
-    transform: translate3d(56%, 0, 0);
-    opacity: 0.35;
+    opacity: 0.45;
   }
   to {
-    transform: translate3d(0, 0, 0);
-    opacity: 1;
-  }
-}
-
-@keyframes calSlidePrev {
-  from {
-    transform: translate3d(-56%, 0, 0);
-    opacity: 0.35;
-  }
-  to {
-    transform: translate3d(0, 0, 0);
-    opacity: 1;
-  }
-}
-
-@keyframes calTitleNext {
-  from {
-    transform: translate3d(14px, 0, 0);
-    opacity: 0;
-  }
-  to {
-    transform: translate3d(0, 0, 0);
-    opacity: 1;
-  }
-}
-
-@keyframes calTitlePrev {
-  from {
-    transform: translate3d(-14px, 0, 0);
-    opacity: 0;
-  }
-  to {
-    transform: translate3d(0, 0, 0);
     opacity: 1;
   }
 }
@@ -1987,7 +1987,7 @@ textarea {
 /* Current-time indicator */
 .gcal-now {
   position: absolute;
-  left: -1px;
+  left: 0;
   right: 0;
   height: 2px;
   background: var(--cal-now);
@@ -1998,10 +1998,10 @@ textarea {
 .gcal-now::before {
   content: '';
   position: absolute;
-  left: -5px;
-  top: -4px;
-  width: 10px;
-  height: 10px;
+  left: 0;
+  top: -3.5px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--cal-now);
 }
@@ -2275,28 +2275,27 @@ html.is-schedule-locked #root {
   cursor: default;
 }
 
-.gcal-anim-day .gcal-col,
 .gcal-anim-week .gcal-col {
   cursor: pointer;
 }
 
-/* Week ⇄ Day zoom */
+/* Week ⇄ Day zoom (strictly inside .gcal-stage; vertical scale locked to 1 so hour lines stay aligned) */
 .gcal-anim-day {
-  animation: calZoomIn 280ms var(--ease-calm);
+  animation: calZoomIn 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .gcal-anim-week {
-  animation: calZoomOut 280ms var(--ease-calm);
+  animation: calZoomOut 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @keyframes calZoomIn {
-  from { transform: scale(0.55); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
+  from { transform: scale3d(0.9, 1, 1); opacity: 0.25; }
+  to { transform: scale3d(1, 1, 1); opacity: 1; }
 }
 
 @keyframes calZoomOut {
-  from { transform: scale(1.18); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
+  from { transform: scale3d(1.08, 1, 1); opacity: 0.25; }
+  to { transform: scale3d(1, 1, 1); opacity: 1; }
 }
 
 /* Flash for events & reminders just added from chat */
@@ -2369,7 +2368,9 @@ html.is-schedule-locked #root {
 }
 
 .gcal-rem.is-done {
-  opacity: 0.55;
+  background: #F6F4EE;
+  color: #8A857B;
+  border-color: rgba(140, 134, 123, 0.35);
 }
 
 .gcal-rem.is-done .gcal-rem-title {
