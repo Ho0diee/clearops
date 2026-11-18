@@ -99,7 +99,6 @@ interface CalendarPaneProps {
   blocks: CalendarBlock[];
   reminders: ReminderItem[];
   highlightId?: string | null;
-  onSelectDay: (iso: string) => void;
   onOpenBlock: (id: string) => void;
   onOpenReminder: (id: string) => void;
 }
@@ -115,7 +114,6 @@ const CalendarPane = memo<CalendarPaneProps>(
     blocks,
     reminders,
     highlightId,
-    onSelectDay,
     onOpenBlock,
     onOpenReminder,
   }) => {
@@ -130,11 +128,6 @@ const CalendarPane = memo<CalendarPaneProps>(
             <div
               key={iso}
               className={`gcal-col ${iso === TODAY_ANCHOR && isWeek ? 'is-today' : ''}`.trim()}
-              onClick={(e) => {
-                if (isWeek && e.target === e.currentTarget) {
-                  onSelectDay(iso);
-                }
-              }}
             >
               {laid.map(({ block, col, cols }) => {
                 const s = toMin(block.startTime);
@@ -771,7 +764,6 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                     blocks={windowBlocks}
                     reminders={windowReminders}
                     highlightId={null}
-                    onSelectDay={selectDay}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />
@@ -788,7 +780,6 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                     blocks={windowBlocks}
                     reminders={windowReminders}
                     highlightId={highlightId}
-                    onSelectDay={selectDay}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />
@@ -805,7 +796,6 @@ export const CalendarGrid: React.FC<{ highlightId?: string | null }> = ({ highli
                     blocks={windowBlocks}
                     reminders={windowReminders}
                     highlightId={null}
-                    onSelectDay={selectDay}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />

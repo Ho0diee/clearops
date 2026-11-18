@@ -2275,10 +2275,6 @@ html.is-schedule-locked #root {
   cursor: default;
 }
 
-.gcal-anim-week .gcal-col {
-  cursor: pointer;
-}
-
 /* Week ⇄ Day zoom (strictly inside .gcal-stage; vertical scale locked to 1 so hour lines stay aligned) */
 .gcal-anim-day {
   animation: calZoomIn 220ms cubic-bezier(0.22, 1, 0.36, 1);

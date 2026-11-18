@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, Mic, Sparkles, Square } from 'lucide-react';
 import { formatShortDate, useOpsStore } from '../../store/opsStore';
 import { formatFriendlyTime } from '../../store/scheduleAi';
@@ -50,12 +50,16 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
   });
   const [text, setText] = useState('');
   const [listening, setListening] = useState(false);
+  // Keeps virtual keyboard suppressed on mobile throughout voice mode unless user explicitly taps the text input
+  const [suppressKeyboard, setSuppressKeyboard] = useState(false);
 
   const logRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const recRef = useRef<SpeechRec | null>(null);
   const wantListeningRef = useRef(false);
   const prefixTextRef = useRef('');
+  const latestTextRef = useRef('');
+  latestTextRef.current = text;
 
   useEffect(() => {
     try {
@@ -83,13 +87,14 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
     return actions.parseLiveCommand(trimmed);
   }, [text, actions]);
 
-  const push = (role: ChatMsg['role'], msg: string) =>
+  const push = useCallback((role: ChatMsg['role'], msg: string) => {
     setMessages((prev) => [
       ...prev,
       { id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role, text: msg },
     ]);
+  }, []);
 
-  const stopListening = (focusInput = false) => {
+  const stopListening = useCallback(() => {
     wantListeningRef.current = false;
     setListening(false);
     if (recRef.current) {
@@ -100,54 +105,86 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
       }
       recRef.current = null;
     }
-    if (focusInput) {
-      window.requestAnimationFrame(() => inputRef.current?.focus());
-    }
-  };
+    // Never focus inputRef here so mobile on-screen keyboard never pops up during/after voice mode
+  }, []);
 
-  const send = (raw: string) => {
-    const clean = raw.trim();
-    if (!clean) return;
-    stopListening(false);
-    push('user', clean);
-    setText('');
-    prefixTextRef.current = '';
+  const send = useCallback(
+    (raw: string) => {
+      const clean = raw.trim();
+      if (!clean) return;
+      stopListening();
+      setSuppressKeyboard(false);
+      inputRef.current?.blur();
+      push('user', clean);
+      setText('');
+      prefixTextRef.current = '';
 
-    const committed = actions.submitLiveCommand(clean);
-    if (!committed) {
-      push(
-        'app',
-        'Try saying something like "add patio photos for the next focus slot", "I have work at 4:30-6 tomorrow", or "set a reminder for 3 about keys".'
-      );
-      return;
-    }
+      const committed = actions.submitLiveCommand(clean);
+      if (!committed) {
+        push(
+          'app',
+          'Try saying something like "add patio photos for the next focus slot", "I have work at 4:30-6 tomorrow", or "set a reminder for 3 about keys".'
+        );
+        return;
+      }
 
-    onAdded(committed);
+      onAdded(committed);
 
-    const when = `${formatShortDate(committed.date)}, ${formatFriendlyTime(committed.startTime)}${
-      committed.endTime ? `–${formatFriendlyTime(committed.endTime)}` : ''
-    }`;
+      const when = `${formatShortDate(committed.date)}, ${formatFriendlyTime(committed.startTime)}${
+        committed.endTime ? `–${formatFriendlyTime(committed.endTime)}` : ''
+      }`;
 
-    if (committed.mode === 'fill-slot') {
-      push('app', `Placed "${committed.title}" into your open Focus Slot · ${when}.`);
-    } else if (committed.mode === 'reminder') {
-      push('app', `Reminder set: "${committed.title}" · ${when}.`);
-    } else if (committed.mode === 'empty-zone') {
-      const cleanZoneTitle = committed.title.replace(/^Empty Zone\s*[—-]\s*/i, '');
-      push('app', `Scheduled Focus Slot "${cleanZoneTitle}" · ${when}.`);
-    } else {
-      push(
-        'app',
-        `Added "${committed.title}" · ${when}${
-          committed.whyCategory ? ` · Why: ${committed.whyCategory}` : ''
-        }.`
-      );
-    }
-  };
+      if (committed.mode === 'fill-slot') {
+        push('app', `Placed "${committed.title}" into your open Focus Slot · ${when}.`);
+      } else if (committed.mode === 'reminder') {
+        push('app', `Reminder set: "${committed.title}" · ${when}.`);
+      } else if (committed.mode === 'empty-zone') {
+        const cleanZoneTitle = committed.title.replace(/^Empty Zone\s*[—-]\s*/i, '');
+        push('app', `Scheduled Focus Slot "${cleanZoneTitle}" · ${when}.`);
+      } else {
+        push(
+          'app',
+          `Added "${committed.title}" · ${when}${
+            committed.whyCategory ? ` · Why: ${committed.whyCategory}` : ''
+          }.`
+        );
+      }
+    },
+    [actions, onAdded, push, stopListening]
+  );
+
+  // Support pressing physical Enter key to submit voice dictation even while <input> stays blurred (no mobile keyboard!)
+  useEffect(() => {
+    if (!listening && !suppressKeyboard) return;
+    const onGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        active &&
+        active !== inputRef.current &&
+        (active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.tagName === 'SELECT' ||
+          active.isContentEditable)
+      ) {
+        return;
+      }
+      if (latestTextRef.current.trim()) {
+        e.preventDefault();
+        send(latestTextRef.current);
+      }
+    };
+    window.addEventListener('keydown', onGlobalKeyDown);
+    return () => window.removeEventListener('keydown', onGlobalKeyDown);
+  }, [listening, suppressKeyboard, send]);
 
   const toggleMic = () => {
+    // Ensure software keyboard stays dismissed when using voice mode
+    setSuppressKeyboard(true);
+    inputRef.current?.blur();
+
     if (listening) {
-      stopListening(true);
+      stopListening();
       return;
     }
 
@@ -159,9 +196,8 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
     if (!Ctor) {
       push(
         'app',
-        "Voice recognition isn't supported in this browser. On iPhone, tap the dictation mic on your keyboard and press Enter when done."
+        "Voice recognition isn't supported in this browser."
       );
-      inputRef.current?.focus();
       return;
     }
 
@@ -197,17 +233,15 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
         recRef.current = null;
       };
 
-      // Voice mode NEVER auto-sends on silence/end — wait for the user to press Enter!
+      // Voice mode NEVER auto-sends on silence/end and NEVER pops up the keyboard!
       rec.onend = () => {
         wantListeningRef.current = false;
         setListening(false);
         recRef.current = null;
-        window.requestAnimationFrame(() => inputRef.current?.focus());
       };
 
       setListening(true);
       rec.start();
-      inputRef.current?.focus();
     } catch {
       wantListeningRef.current = false;
       setListening(false);
@@ -253,6 +287,15 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
           ref={inputRef}
           className="sched-chat-input"
           value={text}
+          inputMode={listening || suppressKeyboard ? 'none' : 'text'}
+          onPointerDown={() => {
+            if (listening) {
+              stopListening();
+            }
+            if (suppressKeyboard) {
+              setSuppressKeyboard(false);
+            }
+          }}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
@@ -262,7 +305,7 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
           }}
           placeholder={
             listening
-              ? 'Listening… press Enter when done'
+              ? 'Listening… tap ↑ or press Enter when done'
               : 'Add event, focus slot, or reminder…'
           }
           aria-label="Add an event, focus slot, or reminder"
@@ -274,7 +317,9 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
             text.trim() && !listening ? 'ui-command-mic' : 'ui-command-mic-filled'
           } ${listening ? 'is-listening' : ''}`.trim()}
           aria-label={listening ? 'Done speaking (pause mic)' : 'Speak an event'}
-          title={listening ? 'Stop mic (press Enter to send)' : 'Voice input'}
+          title={listening ? 'Stop mic' : 'Voice input'}
+          onPointerDown={(e) => e.preventDefault()}
+          onMouseDown={(e) => e.preventDefault()}
           onClick={toggleMic}
         >
           {listening ? <Square size={13} fill="currentColor" /> : <Mic size={16} />}
@@ -284,7 +329,9 @@ export const ScheduleChat: React.FC<{ onAdded: (parsed: ParsedLiveInput) => void
             type="submit"
             className="ui-command-mic-filled"
             aria-label="Send to schedule"
-            title="Press Enter to add"
+            title="Send"
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.preventDefault()}
           >
             <ArrowUp size={16} />
           </button>
