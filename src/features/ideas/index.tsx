@@ -26,10 +26,16 @@ import {
 import { formatShortDate, useOpsStore } from '../../store/opsStore';
 import { countCoveredTasks, getBlockingBottleneck } from '../../store/ideaBlocking';
 import { formatFriendlyTime } from '../../store/scheduleAi';
-import type { CalendarBlock, IdeaItem, IdeaResponsibilityType } from '../../types/schema';
+import type {
+  ArchiveOutcome,
+  CalendarBlock,
+  IdeaItem,
+  IdeaResponsibilityType,
+} from '../../types/schema';
 
-type SmartFolderId = '__BOTTLENECKS__' | '__ARCHIVE__' | string;
+type SmartFolderId = '__BOTTLENECKS__' | string;
 type MobileNotesPane = 'folders' | 'list' | 'note';
+type ArchiveOutcomeFilter = 'all' | ArchiveOutcome;
 
 const RESPONSIBILITY_CYCLE: (IdeaResponsibilityType | undefined)[] = [
   'paid',
@@ -93,6 +99,9 @@ export const IdeasHubView: React.FC = () => {
   const [selectedFolder, setSelectedFolder] = useState<SmartFolderId>(
     () => state.projects[0] || '__BOTTLENECKS__'
   );
+  const [inArchiveMode, setInArchiveMode] = useState(false);
+  const [archiveOutcomeFilter, setArchiveOutcomeFilter] = useState<ArchiveOutcomeFilter>('all');
+  const [archivePromptOpen, setArchivePromptOpen] = useState(false);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [mobilePane, setMobilePane] = useState<MobileNotesPane>('folders');
 
@@ -135,27 +144,46 @@ export const IdeasHubView: React.FC = () => {
     [state.ideas]
   );
 
+  // Exact same folder layout inside Archive (active folders in order + any historical folder with archived notes)
+  const archiveProjects = useMemo(
+    () => Array.from(new Set([...state.projects, ...archivedNotes.map((i) => i.project)])),
+    [state.projects, archivedNotes]
+  );
+
   const bottleneckCount = useMemo(
     () => allNotes.filter((i) => i.isBottleneck).length,
     [allNotes]
   );
 
+  const archivedBottleneckCount = useMemo(
+    () => archivedNotes.filter((i) => i.isBottleneck).length,
+    [archivedNotes]
+  );
+
   const folderNotes = useMemo(() => {
+    const sourcePool = inArchiveMode ? archivedNotes : allNotes;
     let base: IdeaItem[];
-    if (selectedFolder === '__ARCHIVE__') {
-      base = archivedNotes;
-    } else if (selectedFolder === '__BOTTLENECKS__') {
-      base = allNotes
+    if (selectedFolder === '__BOTTLENECKS__') {
+      base = sourcePool
         .filter((i) => i.isBottleneck)
         .sort((a, b) =>
-          a.project !== b.project
+          inArchiveMode
+            ? 0
+            : a.project !== b.project
             ? a.project.localeCompare(b.project)
             : a.priorityRank - b.priorityRank
         );
     } else {
-      base = allNotes
+      base = sourcePool
         .filter((i) => i.project === selectedFolder)
-        .sort((a, b) => a.priorityRank - b.priorityRank);
+        .sort((a, b) => (inArchiveMode ? 0 : a.priorityRank - b.priorityRank));
+    }
+
+    if (inArchiveMode && archiveOutcomeFilter !== 'all') {
+      base = base.filter((i) => {
+        const effOutcome: ArchiveOutcome = i.archivedOutcome ?? 'completed';
+        return effOutcome === archiveOutcomeFilter;
+      });
     }
 
     const q = searchQuery.trim().toLowerCase();
@@ -164,9 +192,9 @@ export const IdeasHubView: React.FC = () => {
       const hay = `${i.title} ${getNoteBody(i)} ${i.project}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [allNotes, archivedNotes, selectedFolder, searchQuery]);
+  }, [allNotes, archivedNotes, inArchiveMode, selectedFolder, archiveOutcomeFilter, searchQuery]);
 
-  const isArchiveFolder = selectedFolder === '__ARCHIVE__';
+  const isArchiveFolder = inArchiveMode;
   const canReorder =
     selectedFolder !== '__BOTTLENECKS__' && !isArchiveFolder && !searchQuery.trim();
 
@@ -202,11 +230,7 @@ export const IdeasHubView: React.FC = () => {
   );
 
   const folderDisplayName =
-    selectedFolder === '__BOTTLENECKS__'
-      ? 'Bottlenecks'
-      : selectedFolder === '__ARCHIVE__'
-      ? 'Archive'
-      : selectedFolder;
+    selectedFolder === '__BOTTLENECKS__' ? 'Bottlenecks' : selectedFolder;
 
   // Cleanup blank untitled note when navigating away (Apple Notes behavior)
   const cleanupBlankNoteIfEmpty = (noteId: string | null) => {
@@ -217,21 +241,59 @@ export const IdeasHubView: React.FC = () => {
     }
   };
 
-  const openFolder = (folderId: SmartFolderId) => {
+  const openFolder = (folderId: SmartFolderId, archiveFlag = inArchiveMode) => {
     cleanupBlankNoteIfEmpty(selectedNoteId);
+    setInArchiveMode(archiveFlag);
     setSelectedFolder(folderId);
     setSearchQuery('');
     setZonePickerOpen(false);
+    setArchivePromptOpen(false);
     setReordering(false);
     setDragState(null);
     setMobilePane('list');
+    const pool = archiveFlag ? archivedNotes : allNotes;
     const firstInFolder =
-      folderId === '__ARCHIVE__'
-        ? archivedNotes[0]
-        : folderId === '__BOTTLENECKS__'
-        ? allNotes.find((i) => i.isBottleneck)
-        : allNotes.find((i) => i.project === folderId);
+      folderId === '__BOTTLENECKS__'
+        ? pool.find((i) => i.isBottleneck)
+        : pool.find((i) => i.project === folderId);
     setSelectedNoteId(firstInFolder?.id ?? null);
+  };
+
+  const enterArchiveMode = () => {
+    cleanupBlankNoteIfEmpty(selectedNoteId);
+    setInArchiveMode(true);
+    setArchiveOutcomeFilter('all');
+    setSearchQuery('');
+    setZonePickerOpen(false);
+    setArchivePromptOpen(false);
+    setEditingFolders(false);
+    setAddingFolder(false);
+    setReordering(false);
+    setDragState(null);
+    // Pick the first folder with archived notes (or first folder in layout) for desktop preview
+    const defaultArchiveFolder =
+      archiveProjects.find((p) => archivedNotes.some((n) => n.project === p)) ||
+      archiveProjects[0] ||
+      '__BOTTLENECKS__';
+    setSelectedFolder(defaultArchiveFolder);
+    const firstArchived = archivedNotes.find((n) => n.project === defaultArchiveFolder) ?? null;
+    setSelectedNoteId(firstArchived?.id ?? null);
+    setMobilePane('folders');
+  };
+
+  const exitArchiveMode = () => {
+    setInArchiveMode(false);
+    setArchiveOutcomeFilter('all');
+    setSearchQuery('');
+    setArchivePromptOpen(false);
+    const defaultActive = state.projects[0] || '__BOTTLENECKS__';
+    setSelectedFolder(defaultActive);
+    const firstActive =
+      defaultActive === '__BOTTLENECKS__'
+        ? allNotes.find((i) => i.isBottleneck)
+        : allNotes.find((i) => i.project === defaultActive);
+    setSelectedNoteId(firstActive?.id ?? null);
+    setMobilePane('folders');
   };
 
   const openNote = (noteId: string) => {
@@ -240,6 +302,7 @@ export const IdeasHubView: React.FC = () => {
     }
     setSelectedNoteId(noteId);
     setZonePickerOpen(false);
+    setArchivePromptOpen(false);
     setMobilePane('note');
   };
 
@@ -478,16 +541,12 @@ export const IdeasHubView: React.FC = () => {
               <>
                 <button
                   type="button"
-                  className="notes-archive-action-btn"
+                  className={`notes-archive-action-btn ${archivePromptOpen ? 'is-open' : ''}`.trim()}
                   onClick={() => {
-                    actions.archiveIdea(note.id);
                     setZonePickerOpen(false);
-                    if (isMobileEditor) {
-                      setMobilePane('list');
-                    }
-                    setSelectedNoteId(null);
+                    setArchivePromptOpen((prev) => !prev);
                   }}
-                  title="Finish & move to Archive"
+                  title="Archive as Complete or Not Complete"
                 >
                   <Archive size={14} />
                   <span>Archive</span>
@@ -508,12 +567,91 @@ export const IdeasHubView: React.FC = () => {
 
         {/* Pure Apple Notes Paper Canvas */}
         <div className="notes-paper">
+          {!isArchived && archivePromptOpen && (
+            <div className="notes-archive-popover" role="region" aria-label="Archive options">
+              <div className="notes-zone-popover-head">
+                <span>Archive in {note.project} as:</span>
+                <button
+                  type="button"
+                  className="notes-icon-btn is-sm"
+                  aria-label="Cancel archive"
+                  onClick={() => setArchivePromptOpen(false)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="notes-archive-choice-row">
+                <button
+                  type="button"
+                  className="notes-archive-choice-btn is-complete"
+                  onClick={() => {
+                    actions.archiveIdea(note.id, 'completed');
+                    setArchivePromptOpen(false);
+                    setZonePickerOpen(false);
+                    if (isMobileEditor) {
+                      setMobilePane('list');
+                    }
+                    setSelectedNoteId(null);
+                  }}
+                >
+                  <Check size={14} strokeWidth={2.8} />
+                  <span>Complete</span>
+                </button>
+                <button
+                  type="button"
+                  className="notes-archive-choice-btn is-incomplete"
+                  onClick={() => {
+                    actions.archiveIdea(note.id, 'not-completed');
+                    setArchivePromptOpen(false);
+                    setZonePickerOpen(false);
+                    if (isMobileEditor) {
+                      setMobilePane('list');
+                    }
+                    setSelectedNoteId(null);
+                  }}
+                >
+                  <Archive size={14} />
+                  <span>Not Complete</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {isArchived ? (
             <div className="notes-chip-row">
               <span className="notes-archived-origin-pill">
                 <Folder size={12} />
                 <span>{note.project}</span>
               </span>
+              <button
+                type="button"
+                className={`notes-outcome-toggle ${
+                  (note.archivedOutcome ?? 'completed') === 'completed'
+                    ? 'is-complete'
+                    : 'is-incomplete'
+                }`.trim()}
+                onClick={() =>
+                  actions.updateIdea(note.id, {
+                    archivedOutcome:
+                      (note.archivedOutcome ?? 'completed') === 'completed'
+                        ? 'not-completed'
+                        : 'completed',
+                  })
+                }
+                title="Tap to switch between Complete and Not Complete"
+              >
+                {(note.archivedOutcome ?? 'completed') === 'completed' ? (
+                  <>
+                    <Check size={12} strokeWidth={2.8} />
+                    <span>Complete</span>
+                  </>
+                ) : (
+                  <>
+                    <Archive size={11} />
+                    <span>Not Complete</span>
+                  </>
+                )}
+              </button>
               {note.responsibilityType && (
                 <span className={`notes-mini-badge is-${note.responsibilityType}`}>
                   {responsibilityLabel(note.responsibilityType)}
@@ -770,139 +908,207 @@ export const IdeasHubView: React.FC = () => {
 
   return (
     <div className={`notes-shell is-pane-${mobilePane}`.trim()}>
-      {/* PANE 1: Folders (Apple Notes root screen on mobile, left sidebar on desktop) */}
-      <aside className="notes-folders-pane" aria-label="Folders">
-        <div className="notes-pane-topbar">
-          <h1 className="notes-large-title">Folders</h1>
-          <div className="ops-row" style={{ gap: 4 }}>
-            {state.projects.length > 1 && (
+      {/* PANE 1: Folders (Active Folders OR identical Archive Folder Layout) */}
+      <aside className="notes-folders-pane" aria-label={inArchiveMode ? 'Archive folders' : 'Folders'}>
+        {inArchiveMode ? (
+          <>
+            <div className="notes-list-topbar">
               <button
                 type="button"
-                className="notes-text-btn"
-                onClick={() => setEditingFolders((prev) => !prev)}
+                className="notes-back-btn"
+                onClick={exitArchiveMode}
               >
-                {editingFolders ? 'Done' : 'Edit'}
+                <ChevronLeft size={19} />
+                <span>Folders</span>
               </button>
-            )}
-            <button
-              type="button"
-              className="notes-icon-btn"
-              aria-label="New folder"
-              title="New Folder"
-              onClick={() => setAddingFolder(true)}
-            >
-              <FolderPlus size={20} />
-            </button>
-          </div>
-        </div>
+            </div>
 
-        {addingFolder && (
-          <form className="notes-new-folder-card" onSubmit={handleCreateFolder}>
-            <Folder size={16} className="notes-accent-icon" />
-            <input
-              ref={newFolderInputRef}
-              type="text"
-              className="notes-new-folder-input"
-              placeholder="Folder name…"
-              aria-label="New folder name"
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-            />
-            <button type="submit" className="notes-icon-btn is-confirm" aria-label="Create folder">
-              <Check size={16} />
-            </button>
-            <button
-              type="button"
-              className="notes-icon-btn"
-              aria-label="Cancel new folder"
-              onClick={() => {
-                setAddingFolder(false);
-                setNewFolderName('');
-              }}
-            >
-              <X size={16} />
-            </button>
-          </form>
-        )}
+            <div className="notes-pane-topbar">
+              <h1 className="notes-large-title">Archive</h1>
+            </div>
 
-        <div className="notes-group-card">
-          <button
-            type="button"
-            className={`notes-folder-row ${
-              selectedFolder === '__BOTTLENECKS__' ? 'is-selected' : ''
-            }`.trim()}
-            onClick={() => openFolder('__BOTTLENECKS__')}
-          >
-            <span className="notes-folder-icon is-amber">
-              <AlertTriangle size={16} />
-            </span>
-            <span className="notes-folder-name">Bottlenecks</span>
-            <span className="notes-folder-count">{bottleneckCount}</span>
-            <ChevronRight size={16} className="notes-chevron" />
-          </button>
-        </div>
-
-        <div className="notes-section-label">My Folders</div>
-        <div className="notes-group-card">
-          {state.projects.map((proj) => {
-            const count = allNotes.filter((i) => i.project === proj).length;
-            return (
-              <div
-                key={proj}
-                className={`notes-folder-row-wrap ${
-                  selectedFolder === proj ? 'is-selected' : ''
+            <div className="notes-group-card">
+              <button
+                type="button"
+                className={`notes-folder-row ${
+                  selectedFolder === '__BOTTLENECKS__' ? 'is-selected' : ''
                 }`.trim()}
+                onClick={() => openFolder('__BOTTLENECKS__', true)}
               >
-                <button
-                  type="button"
-                  className="notes-folder-row"
-                  onClick={() => openFolder(proj)}
-                >
-                  <span className="notes-folder-icon">
-                    <Folder size={17} />
-                  </span>
-                  <span className="notes-folder-name">{proj}</span>
-                  <span className="notes-folder-count">{count}</span>
-                  <ChevronRight size={16} className="notes-chevron" />
-                </button>
-                {editingFolders && state.projects.length > 1 && (
+                <span className="notes-folder-icon is-amber">
+                  <AlertTriangle size={16} />
+                </span>
+                <span className="notes-folder-name">Bottlenecks</span>
+                <span className="notes-folder-count">{archivedBottleneckCount}</span>
+                <ChevronRight size={16} className="notes-chevron" />
+              </button>
+            </div>
+
+            <div className="notes-section-label">My Folders</div>
+            <div className="notes-group-card">
+              {archiveProjects.map((proj) => {
+                const count = archivedNotes.filter((i) => i.project === proj).length;
+                return (
+                  <div
+                    key={proj}
+                    className={`notes-folder-row-wrap ${
+                      selectedFolder === proj ? 'is-selected' : ''
+                    }`.trim()}
+                  >
+                    <button
+                      type="button"
+                      className="notes-folder-row"
+                      onClick={() => openFolder(proj, true)}
+                    >
+                      <span className="notes-folder-icon is-muted">
+                        <Folder size={17} />
+                      </span>
+                      <span className="notes-folder-name">{proj}</span>
+                      <span className="notes-folder-count">{count}</span>
+                      <ChevronRight size={16} className="notes-chevron" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="notes-pane-topbar">
+              <h1 className="notes-large-title">Folders</h1>
+              <div className="ops-row" style={{ gap: 4 }}>
+                {state.projects.length > 1 && (
                   <button
                     type="button"
-                    className="notes-folder-delete"
-                    aria-label={`Delete folder ${proj}`}
-                    onClick={() => {
-                      const remaining = state.projects.filter((p) => p !== proj);
-                      actions.removeProject(proj);
-                      if (selectedFolder === proj) {
-                        setSelectedFolder(remaining[0] || '__BOTTLENECKS__');
-                      }
-                    }}
+                    className="notes-text-btn"
+                    onClick={() => setEditingFolders((prev) => !prev)}
                   >
-                    <Trash2 size={14} />
+                    {editingFolders ? 'Done' : 'Edit'}
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="notes-icon-btn"
+                  aria-label="New folder"
+                  title="New Folder"
+                  onClick={() => setAddingFolder(true)}
+                >
+                  <FolderPlus size={20} />
+                </button>
               </div>
-            );
-          })}
-        </div>
+            </div>
 
-        <div className="notes-section-label">Completed</div>
-        <div className="notes-group-card">
-          <button
-            type="button"
-            className={`notes-folder-row ${
-              selectedFolder === '__ARCHIVE__' ? 'is-selected' : ''
-            }`.trim()}
-            onClick={() => openFolder('__ARCHIVE__')}
-          >
-            <span className="notes-folder-icon is-muted">
-              <Archive size={16} />
-            </span>
-            <span className="notes-folder-name">Archive</span>
-            <span className="notes-folder-count">{archivedNotes.length}</span>
-            <ChevronRight size={16} className="notes-chevron" />
-          </button>
-        </div>
+            {addingFolder && (
+              <form className="notes-new-folder-card" onSubmit={handleCreateFolder}>
+                <Folder size={16} className="notes-accent-icon" />
+                <input
+                  ref={newFolderInputRef}
+                  type="text"
+                  className="notes-new-folder-input"
+                  placeholder="Folder name…"
+                  aria-label="New folder name"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                />
+                <button
+                  type="submit"
+                  className="notes-icon-btn is-confirm"
+                  aria-label="Create folder"
+                >
+                  <Check size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="notes-icon-btn"
+                  aria-label="Cancel new folder"
+                  onClick={() => {
+                    setAddingFolder(false);
+                    setNewFolderName('');
+                  }}
+                >
+                  <X size={16} />
+                </button>
+              </form>
+            )}
+
+            <div className="notes-group-card">
+              <button
+                type="button"
+                className={`notes-folder-row ${
+                  selectedFolder === '__BOTTLENECKS__' ? 'is-selected' : ''
+                }`.trim()}
+                onClick={() => openFolder('__BOTTLENECKS__', false)}
+              >
+                <span className="notes-folder-icon is-amber">
+                  <AlertTriangle size={16} />
+                </span>
+                <span className="notes-folder-name">Bottlenecks</span>
+                <span className="notes-folder-count">{bottleneckCount}</span>
+                <ChevronRight size={16} className="notes-chevron" />
+              </button>
+            </div>
+
+            <div className="notes-section-label">My Folders</div>
+            <div className="notes-group-card">
+              {state.projects.map((proj) => {
+                const count = allNotes.filter((i) => i.project === proj).length;
+                return (
+                  <div
+                    key={proj}
+                    className={`notes-folder-row-wrap ${
+                      selectedFolder === proj ? 'is-selected' : ''
+                    }`.trim()}
+                  >
+                    <button
+                      type="button"
+                      className="notes-folder-row"
+                      onClick={() => openFolder(proj, false)}
+                    >
+                      <span className="notes-folder-icon">
+                        <Folder size={17} />
+                      </span>
+                      <span className="notes-folder-name">{proj}</span>
+                      <span className="notes-folder-count">{count}</span>
+                      <ChevronRight size={16} className="notes-chevron" />
+                    </button>
+                    {editingFolders && state.projects.length > 1 && (
+                      <button
+                        type="button"
+                        className="notes-folder-delete"
+                        aria-label={`Delete folder ${proj}`}
+                        onClick={() => {
+                          const remaining = state.projects.filter((p) => p !== proj);
+                          actions.removeProject(proj);
+                          if (selectedFolder === proj) {
+                            setSelectedFolder(remaining[0] || '__BOTTLENECKS__');
+                          }
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="notes-section-label">Archive</div>
+            <div className="notes-group-card">
+              <button
+                type="button"
+                className="notes-folder-row"
+                onClick={enterArchiveMode}
+              >
+                <span className="notes-folder-icon is-muted">
+                  <Archive size={16} />
+                </span>
+                <span className="notes-folder-name">Archive</span>
+                <span className="notes-folder-count">{archivedNotes.length}</span>
+                <ChevronRight size={16} className="notes-chevron" />
+              </button>
+            </div>
+          </>
+        )}
       </aside>
 
       {/* PANE 2: Notes List inside Selected Folder */}
@@ -918,7 +1124,7 @@ export const IdeasHubView: React.FC = () => {
             }}
           >
             <ChevronLeft size={19} />
-            <span>Folders</span>
+            <span>{isArchiveFolder ? 'Archive' : 'Folders'}</span>
           </button>
           <div className="ops-row" style={{ gap: 2, marginLeft: 'auto' }}>
             {canReorder && folderNotes.length > 1 && (
@@ -947,7 +1153,10 @@ export const IdeasHubView: React.FC = () => {
           </div>
         </div>
 
-        <h2 className="notes-folder-heading">{folderDisplayName}</h2>
+        <div className="notes-folder-heading-row">
+          <h2 className="notes-folder-heading">{folderDisplayName}</h2>
+          {isArchiveFolder && <span className="notes-archive-mode-pill">Archive</span>}
+        </div>
 
         {reordering ? (
           <div className="notes-reorder-hint">
@@ -959,7 +1168,7 @@ export const IdeasHubView: React.FC = () => {
             <input
               type="search"
               className="notes-search-input"
-              placeholder={isArchiveFolder ? 'Search archive' : 'Search'}
+              placeholder={isArchiveFolder ? `Search ${folderDisplayName} archive` : 'Search'}
               aria-label="Search notes"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -977,13 +1186,36 @@ export const IdeasHubView: React.FC = () => {
           </div>
         )}
 
+        {isArchiveFolder && (
+          <div className="notes-archive-filter-row" role="tablist" aria-label="Filter archive by completion">
+            {(
+              [
+                { id: 'all', label: 'All' },
+                { id: 'completed', label: 'Complete' },
+                { id: 'not-completed', label: 'Not Complete' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                className={`notes-filter-chip ${
+                  archiveOutcomeFilter === opt.id ? 'is-active' : ''
+                }`.trim()}
+                onClick={() => setArchiveOutcomeFilter(opt.id)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         {folderNotes.length === 0 ? (
           <div className="notes-empty-list">
             <span>
               {searchQuery
                 ? 'No matching notes'
                 : isArchiveFolder
-                ? 'No archived ideas yet. Tap Archive inside any finished note to keep it here.'
+                ? `No archived ideas in ${folderDisplayName} yet.`
                 : `No notes in ${folderDisplayName} yet.`}
             </span>
             {!searchQuery && !isArchiveFolder && (
@@ -1006,6 +1238,7 @@ export const IdeasHubView: React.FC = () => {
               const covering = !isArchiveFolder && item.isBottleneck && item.blocksBelow;
               const isDragged = dragState?.id === item.id;
               const shift = rowShiftFor(idx, item.id);
+              const effOutcome: ArchiveOutcome = item.archivedOutcome ?? 'completed';
 
               const rowContent = (
                 <>
@@ -1014,6 +1247,23 @@ export const IdeasHubView: React.FC = () => {
                     <span className="notes-item-title">
                       {item.title.trim() || 'New Note'}
                     </span>
+                    {isArchiveFolder && (
+                      <span
+                        className={`notes-mini-badge ${
+                          effOutcome === 'completed'
+                            ? 'is-outcome-complete'
+                            : 'is-outcome-incomplete'
+                        }`.trim()}
+                      >
+                        {effOutcome === 'completed' ? (
+                          <>
+                            <Check size={10} strokeWidth={3} /> Complete
+                          </>
+                        ) : (
+                          'Not Complete'
+                        )}
+                      </span>
+                    )}
                     {blocker && (
                       <span className="notes-mini-badge is-blocked">
                         <Lock size={10} /> Blocked
@@ -1032,7 +1282,7 @@ export const IdeasHubView: React.FC = () => {
                         {responsibilityLabel(item.responsibilityType)}
                       </span>
                     )}
-                    {!reordering && scheduled && (
+                    {!reordering && !isArchiveFolder && scheduled && (
                       <span className="notes-mini-badge is-scheduled">
                         {scheduled.date === todayIso
                           ? 'Today'
@@ -1041,7 +1291,7 @@ export const IdeasHubView: React.FC = () => {
                     )}
                   </div>
                   <div className="notes-item-sub">
-                    {selectedFolder === '__BOTTLENECKS__' || isArchiveFolder ? (
+                    {selectedFolder === '__BOTTLENECKS__' ? (
                       <span className="notes-item-folder-prefix">{item.project} · </span>
                     ) : null}
                     <span>{getPreviewSnippet(item)}</span>

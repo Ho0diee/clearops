@@ -728,7 +728,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }, 450);
   }, [state, performCloudSync]);
 
-  useSchoolworkExtractorBridge(state, setState);
+  useSchoolworkExtractorBridge(state, setState, tombstonesRef);
 
   useEffect(() => {
     document.documentElement.dataset.accent = state.siteConfig.accentTheme || 'cobalt';
@@ -1440,7 +1440,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }));
       },
 
-      archiveIdea: (ideaId) => {
+      archiveIdea: (ideaId, outcome = 'completed') => {
         let archivedTitle = '';
         setState((prev) => {
           const target = prev.ideas.find((i) => i.id === ideaId);
@@ -1453,6 +1453,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                   ...i,
                   status: 'completed' as const,
                   archivedAt: nowIso,
+                  archivedOutcome: outcome,
                   updatedAt: nowIso,
                 }
               : i
@@ -1474,7 +1475,11 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           };
         });
         if (archivedTitle) {
-          showToast(`Archived "${archivedTitle}"`);
+          showToast(
+            outcome === 'completed'
+              ? `Archived "${archivedTitle}" as Complete`
+              : `Archived "${archivedTitle}" as Not Complete`
+          );
         }
       },
 
@@ -1499,6 +1504,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                   status: 'active' as const,
                   priorityRank: existingActiveCount + 1,
                   archivedAt: undefined,
+                  archivedOutcome: undefined,
                   updatedAt: new Date().toISOString(),
                 }
               : i

@@ -4552,3 +4552,144 @@ html.is-schedule-locked #root {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+
+/* ==========================================================================
+   Archive Complete vs Not Complete Choice & Identical Folder Layout
+   ========================================================================== */
+
+.notes-archive-action-btn.is-open {
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary);
+  border-color: rgba(29, 94, 255, 0.25);
+}
+
+.notes-archive-popover {
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  background: #FAF9F5;
+  border: 1px solid var(--border-default);
+  box-shadow: 0 6px 18px rgba(20, 20, 19, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: fadeIn 140ms var(--ease-calm);
+}
+
+.notes-archive-choice-row {
+  display: flex;
+  gap: 8px;
+}
+
+.notes-archive-choice-btn {
+  flex: 1;
+  min-height: 38px;
+  padding: 8px 12px;
+  border-radius: 11px;
+  font-size: 13.5px;
+  font-weight: 600;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: transform 120ms var(--ease-calm), filter 120ms var(--ease-calm);
+}
+
+.notes-archive-choice-btn:active {
+  transform: scale(0.98);
+}
+
+.notes-archive-choice-btn.is-complete {
+  background: #15803D;
+  color: #FFFFFF;
+}
+
+.notes-archive-choice-btn.is-incomplete {
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.notes-outcome-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.notes-outcome-toggle.is-complete {
+  background: #E8F6EE;
+  color: #145A32;
+  border-color: rgba(21, 128, 61, 0.3);
+}
+
+.notes-outcome-toggle.is-incomplete {
+  background: #F3F2EE;
+  color: #57534E;
+  border-color: rgba(120, 113, 108, 0.3);
+}
+
+.notes-mini-badge.is-outcome-complete {
+  background: #E8F6EE;
+  color: #145A32;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.notes-mini-badge.is-outcome-incomplete {
+  background: #F3F2EE;
+  color: #57534E;
+}
+
+.notes-folder-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notes-archive-mode-pill {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2.5px 8px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+.notes-archive-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notes-filter-chip {
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.notes-filter-chip.is-active {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: #FFFFFF;
+}

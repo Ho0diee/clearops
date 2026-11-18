@@ -69,6 +69,8 @@ export interface ReminderItem {
 
 export type IdeaStatus = 'active' | 'waiting-on' | 'completed';
 
+export type ArchiveOutcome = 'completed' | 'not-completed';
+
 export type IdeaResponsibilityType = 'paid' | 'cost' | 'time-saving';
 
 export interface IdeaItem {
@@ -88,6 +90,7 @@ export interface IdeaItem {
   createdAt: string;
   updatedAt?: string;
   archivedAt?: string;
+  archivedOutcome?: ArchiveOutcome;
 }
 
 export interface CheckupBenchmark {
@@ -274,7 +277,7 @@ export interface OpsActions {
     estimatedMinutes?: number;
   }) => string;
   updateIdea: (ideaId: string, patch: Partial<Omit<IdeaItem, 'id'>>) => void;
-  archiveIdea: (ideaId: string) => void;
+  archiveIdea: (ideaId: string, outcome?: ArchiveOutcome) => void;
   unarchiveIdea: (ideaId: string) => void;
   deleteIdea: (ideaId: string) => void;
   moveIdeaRank: (ideaId: string, direction: 'up' | 'down') => void;
