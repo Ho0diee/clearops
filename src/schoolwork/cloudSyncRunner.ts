@@ -303,18 +303,24 @@ CONTENT:
 ${rawSlideText.slice(0, 160000)}`;
 
   const modelsToTry: Array<{ model: string; timeoutMs: number }> = [
-    { model: 'gemini-4-hydrogen', timeoutMs: 12_000 },
-    { model: 'gemini-3-flash-preview', timeoutMs: 12_000 },
-    { model: 'gemini-2.5-flash', timeoutMs: 20_000 },
+    { model: 'gemini-3.8-flash', timeoutMs: 18_000 },
+    { model: 'gemini-flash-latest', timeoutMs: 15_000 },
+    { model: 'gemini-3.7-flash', timeoutMs: 15_000 },
+    { model: 'gemini-3.6-flash', timeoutMs: 15_000 },
+    { model: 'gemini-3.5-flash', timeoutMs: 15_000 },
+    { model: 'gemini-3.5-flash-lite', timeoutMs: 12_000 },
+    { model: 'gemini-3.1-flash-lite', timeoutMs: 12_000 },
+    { model: 'gemini-flash-lite-latest', timeoutMs: 12_000 },
+    { model: 'gemini-4-hydrogen', timeoutMs: 15_000 },
     { model: 'gemini-4-argon', timeoutMs: 12_000 },
-    { model: 'gemini-2.5-flash-lite', timeoutMs: 15_000 },
+    { model: 'gemini-4-carbon', timeoutMs: 12_000 },
+    { model: 'gemini-pro-latest', timeoutMs: 15_000 },
   ];
 
   let parsed: {
     summary?: string;
     assignments?: Array<Omit<StandardizedExtractedAssignment, 'courseId'>>;
   } | null = null;
-  let lastError: unknown = null;
   const attemptErrors: string[] = [];
 
   for (const { model, timeoutMs } of modelsToTry) {
@@ -347,7 +353,11 @@ ${rawSlideText.slice(0, 160000)}`;
                       type: Type.ARRAY,
                       items: { type: Type.INTEGER },
                     },
-                    assignedDate: { type: Type.STRING, nullable: true },
+                    assignedDate: {
+                      type: Type.STRING,
+                      description:
+                        'YYYY-MM-DD when assigned/started (especially for labs), or empty string if unknown',
+                    },
                     dueDate: { type: Type.STRING },
                     dueTiming: {
                       type: Type.STRING,
@@ -385,9 +395,14 @@ ${rawSlideText.slice(0, 160000)}`;
       };
       break;
     } catch (err) {
-      lastError = err;
       const msg = err instanceof Error ? err.message : String(err);
-      attemptErrors.push(`${model}: ${msg.slice(0, 140)}`);
+      const codeMatch = msg.match(/"code"\s*:\s*(\d{3})|\b(400|401|403|404|429|500|503|504)\b/);
+      const shortErr = codeMatch
+        ? codeMatch[1] || codeMatch[2]
+        : /abort|timeout/i.test(msg)
+          ? 'timeout'
+          : msg.replace(/\s+/g, ' ').slice(0, 60);
+      attemptErrors.push(`${model}(${shortErr})`);
       // Immediately fail on invalid API key; fall back to next model on high demand (503), rate limit (429), 404, timeout, etc.
       if (/API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i.test(msg)) {
         throw err;
@@ -397,11 +412,7 @@ ${rawSlideText.slice(0, 160000)}`;
   }
 
   if (!parsed) {
-    throw new Error(
-      `All Gemini models are temporarily busy or unavailable. Last error: ${
-        lastError instanceof Error ? lastError.message : attemptErrors.join(' | ')
-      }`
-    );
+    throw new Error(`Gemini attempts failed: ${attemptErrors.join(', ')}`);
   }
 
   const assignments: StandardizedExtractedAssignment[] = (parsed.assignments || [])
