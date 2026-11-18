@@ -1182,7 +1182,10 @@ textarea {
 
 .ui-drawer-scrim {
   position: fixed;
-  inset: 0;
+  left: var(--app-vv-left, 0px);
+  right: 0;
+  top: var(--app-vv-top, 0px);
+  height: var(--app-vvh, 100dvh);
   z-index: 50;
   background: var(--bg-scrim);
   display: flex;
@@ -1192,7 +1195,7 @@ textarea {
 
 .ui-drawer-panel {
   width: min(528px, 100vw);
-  height: 100vh;
+  height: 100%;
   background: var(--bg-surface);
   border-left: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-drawer);
@@ -2007,10 +2010,13 @@ textarea {
   background: var(--cal-now);
 }
 
-/* Event detail & Google Calendar tap/drag creation bottom sheet */
+/* Event detail & Google Calendar tap/drag creation sheet (locked to live visualViewport) */
 .gcal-sheet-scrim {
   position: fixed;
-  inset: 0;
+  left: var(--app-vv-left, 0px);
+  right: 0;
+  top: var(--app-vv-top, 0px);
+  height: var(--app-vvh, 100dvh);
   z-index: 55;
   background: var(--bg-scrim);
   display: flex;
@@ -2166,8 +2172,10 @@ textarea {
 
 .gcal-sheet {
   width: min(560px, 100vw);
-  max-height: 85dvh;
+  max-height: calc(var(--app-vvh, 100dvh) - 24px);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   background: var(--bg-surface);
   border-radius: 18px 18px 0 0;
   padding: 10px 20px calc(20px + env(safe-area-inset-bottom, 0px));
@@ -2217,9 +2225,33 @@ textarea {
   to { transform: translateY(0); opacity: 1; }
 }
 
+@keyframes sheetCardIn {
+  from { transform: translateY(-8px) scale(0.985); opacity: 0.65; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
 @media (max-width: 768px) {
   :root {
     --cal-gutter: 46px;
+  }
+
+  /* On iPhone/mobile, anchor the event editor card near the TOP of visualViewport
+     so tapping title/time inputs is already above the iOS keyboard — zero jump & zero viewport pan */
+  .gcal-sheet-scrim {
+    align-items: flex-start;
+    padding: calc(12px + env(safe-area-inset-top, 0px)) 12px 12px;
+  }
+
+  .gcal-sheet {
+    width: 100%;
+    max-height: calc(var(--app-vvh, 100dvh) - 24px - env(safe-area-inset-top, 0px));
+    border-radius: 18px;
+    padding: 14px 16px 16px;
+    animation: sheetCardIn 170ms var(--ease-calm);
+  }
+
+  .gcal-sheet-grip {
+    display: none;
   }
 
   /* Calendar bleeds edge-to-edge on phone like a native calendar app */
@@ -2269,23 +2301,31 @@ textarea {
   background: var(--bg-surface-hover);
 }
 
-/* Hard viewport lock when Schedule tab is active (prevents iOS rubber-band / page drop) */
+/* Hard viewport lock when Schedule tab is active:
+   Keep html/body/root at 100% of the layout viewport so nothing is ever clipped or leaves empty void,
+   and anchor .ops-shell.is-schedule-lock directly to [vv.offsetTop, vv.offsetTop + vv.height]. */
 html.is-schedule-locked,
 html.is-schedule-locked body {
   position: fixed;
   inset: 0;
   width: 100%;
-  height: var(--app-vvh, 100dvh);
+  height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
+  background: var(--bg-surface);
 }
 
 html.is-schedule-locked #root {
-  height: var(--app-vvh, 100dvh);
+  width: 100%;
+  height: 100%;
   overflow: hidden;
 }
 
 .ops-shell.is-schedule-lock {
+  position: fixed;
+  left: var(--app-vv-left, 0px);
+  right: 0;
+  top: var(--app-vv-top, 0px);
   height: var(--app-vvh, 100dvh);
   min-height: 0;
   max-height: var(--app-vvh, 100dvh);

@@ -7,6 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Activity,
   ArrowRight,
@@ -1041,7 +1042,7 @@ export const CalendarGrid: React.FC<{
       whyCategory: 'Organization',
       manualWhy: false,
     });
-    window.setTimeout(() => createInputRef.current?.focus(), 40);
+    window.setTimeout(() => createInputRef.current?.focus({ preventScroll: true }), 40);
   }, []);
 
   const commitNewEventDraft = () => {
@@ -1736,453 +1737,479 @@ export const CalendarGrid: React.FC<{
       </div>
 
       {/* Google Calendar-style Tap/Sweep New Event Creation Sheet */}
-      {createDraft && (
-        <div
-          className="gcal-sheet-scrim is-light"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setCreateDraft(null);
-          }}
-        >
-          <form
-            className="gcal-sheet"
-            role="dialog"
-            aria-label="New calendar item"
-            onSubmit={(e) => {
-              e.preventDefault();
-              commitNewEventDraft();
+      {createDraft &&
+        createPortal(
+          <div
+            className="gcal-sheet-scrim is-light"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setCreateDraft(null);
             }}
           >
-            <div className="gcal-sheet-grip" />
-            <div className="ops-row-between" style={{ gap: 8 }}>
-              <input
-                ref={createInputRef}
-                className="gcal-create-title-input"
-                value={createDraft.title}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setCreateDraft((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          title: val,
-                          whyCategory: prev.manualWhy
-                            ? prev.whyCategory
-                            : inferWhyFromTitle(val || 'Event'),
-                        }
-                      : prev
-                  );
-                }}
-                placeholder={
-                  createDraft.mode === 'reminder'
-                    ? 'Add reminder…'
-                    : createDraft.mode === 'empty-zone'
-                    ? 'Focus slot topic (optional)…'
-                    : 'Add title'
-                }
-                aria-label="Event title"
-                enterKeyHint="done"
-              />
-              <button
-                type="button"
-                className="ui-command-mic"
-                aria-label="Cancel new event"
-                onClick={() => setCreateDraft(null)}
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="gcal-type-pills" style={{ marginTop: 12 }}>
-              {(['event', 'empty-zone', 'reminder'] as const).map((m) => (
+            <form
+              className="gcal-sheet"
+              role="dialog"
+              aria-label="New calendar item"
+              onSubmit={(e) => {
+                e.preventDefault();
+                commitNewEventDraft();
+              }}
+            >
+              <div className="gcal-sheet-grip" />
+              <div className="ops-row-between" style={{ gap: 8 }}>
+                <input
+                  ref={createInputRef}
+                  className="gcal-create-title-input"
+                  value={createDraft.title}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setCreateDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            title: val,
+                            whyCategory: prev.manualWhy
+                              ? prev.whyCategory
+                              : inferWhyFromTitle(val || 'Event'),
+                          }
+                        : prev
+                    );
+                  }}
+                  placeholder={
+                    createDraft.mode === 'reminder'
+                      ? 'Add reminder…'
+                      : createDraft.mode === 'empty-zone'
+                      ? 'Focus slot topic (optional)…'
+                      : 'Add title'
+                  }
+                  aria-label="Event title"
+                  enterKeyHint="done"
+                />
                 <button
-                  key={m}
                   type="button"
-                  className={`gcal-pill-chip ${createDraft.mode === m ? 'is-active' : ''}`.trim()}
-                  onClick={() => setCreateDraft((prev) => (prev ? { ...prev, mode: m } : prev))}
+                  className="ui-command-mic"
+                  aria-label="Cancel new event"
+                  onClick={() => setCreateDraft(null)}
                 >
-                  {m === 'event' ? 'Event' : m === 'empty-zone' ? 'Focus Slot' : 'Reminder'}
+                  <X size={16} />
                 </button>
-              ))}
-            </div>
+              </div>
 
-            <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
-              <input
-                type="date"
-                className="ui-input gcal-compact-field"
-                aria-label="Date"
-                value={createDraft.date}
-                onChange={(e) =>
-                  e.target.value &&
-                  setCreateDraft((prev) => (prev ? { ...prev, date: e.target.value } : prev))
-                }
-              />
-              <input
-                type="time"
-                className="ui-input gcal-compact-field"
-                aria-label="Start time"
-                value={createDraft.startTime === '24:00' ? '23:59' : createDraft.startTime}
-                onChange={(e) => {
-                  const nextStart = e.target.value;
-                  if (!nextStart) return;
-                  setCreateDraft((prev) => {
-                    if (!prev) return prev;
-                    const sMin = toMin(nextStart);
-                    const eMin = toMin(prev.endTime);
-                    return {
-                      ...prev,
-                      startTime: nextStart,
-                      endTime: eMin <= sMin ? fromMin(Math.min(24 * 60, sMin + 60)) : prev.endTime,
-                    };
-                  });
-                }}
-              />
-              {createDraft.mode !== 'reminder' && (
-                <>
-                  <span className="gcal-sheet-meta">–</span>
-                  <input
-                    type="time"
-                    className="ui-input gcal-compact-field"
-                    aria-label="End time"
-                    value={createDraft.endTime === '24:00' ? '23:59' : createDraft.endTime}
-                    onChange={(e) =>
-                      e.target.value &&
-                      setCreateDraft((prev) => (prev ? { ...prev, endTime: e.target.value } : prev))
-                    }
-                  />
-                </>
-              )}
-            </div>
-
-            {createDraft.mode === 'event' && (
-              <div className="gcal-type-pills" style={{ marginTop: 10 }}>
-                {WHY_CATEGORIES.map((cat) => (
+              <div className="gcal-type-pills" style={{ marginTop: 12 }}>
+                {(['event', 'empty-zone', 'reminder'] as const).map((m) => (
                   <button
-                    key={cat}
+                    key={m}
                     type="button"
-                    className={`gcal-pill-chip is-why-${cat.toLowerCase()} ${
-                      createDraft.whyCategory === cat ? 'is-active' : ''
-                    }`.trim()}
-                    onClick={() =>
-                      setCreateDraft((prev) =>
-                        prev ? { ...prev, whyCategory: cat, manualWhy: true } : prev
-                      )
-                    }
+                    className={`gcal-pill-chip ${createDraft.mode === m ? 'is-active' : ''}`.trim()}
+                    onClick={() => setCreateDraft((prev) => (prev ? { ...prev, mode: m } : prev))}
                   >
-                    {cat}
+                    {m === 'event' ? 'Event' : m === 'empty-zone' ? 'Focus Slot' : 'Reminder'}
                   </button>
                 ))}
               </div>
-            )}
 
-            <div className="gcal-sheet-actions">
-              <Button variant="primary" size="lg" fullWidth type="submit">
-                Save
-              </Button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Event detail & inline-edit bottom sheet (Google Calendar-style) */}
-      {openBlock && (
-        <div
-          className="gcal-sheet-scrim"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setOpenBlockId(null);
-          }}
-        >
-          <div className="gcal-sheet" role="dialog" aria-label={openBlock.title}>
-            <div className="gcal-sheet-grip" />
-            <div className="ops-row-between" style={{ alignItems: 'center', gap: 10 }}>
-              <div className="ops-row" style={{ alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
-                <span className={`gcal-swatch ${eventClass(openBlock)}`} style={{ marginTop: 0 }} />
+              <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
                 <input
-                  className="gcal-create-title-input"
-                  value={openBlock.title}
-                  aria-label="Edit event title"
+                  type="date"
+                  className="ui-input gcal-compact-field"
+                  aria-label="Date"
+                  value={createDraft.date}
                   onChange={(e) =>
-                    actions.updateCalendarBlock(openBlock.id, { title: e.target.value })
+                    e.target.value &&
+                    setCreateDraft((prev) => (prev ? { ...prev, date: e.target.value } : prev))
+                  }
+                />
+                <input
+                  type="time"
+                  className="ui-input gcal-compact-field"
+                  aria-label="Start time"
+                  value={createDraft.startTime === '24:00' ? '23:59' : createDraft.startTime}
+                  onChange={(e) => {
+                    const nextStart = e.target.value;
+                    if (!nextStart) return;
+                    setCreateDraft((prev) => {
+                      if (!prev) return prev;
+                      const sMin = toMin(nextStart);
+                      const eMin = toMin(prev.endTime);
+                      return {
+                        ...prev,
+                        startTime: nextStart,
+                        endTime: eMin <= sMin ? fromMin(Math.min(24 * 60, sMin + 60)) : prev.endTime,
+                      };
+                    });
+                  }}
+                />
+                {createDraft.mode !== 'reminder' && (
+                  <>
+                    <span className="gcal-sheet-meta">–</span>
+                    <input
+                      type="time"
+                      className="ui-input gcal-compact-field"
+                      aria-label="End time"
+                      value={createDraft.endTime === '24:00' ? '23:59' : createDraft.endTime}
+                      onChange={(e) =>
+                        e.target.value &&
+                        setCreateDraft((prev) => (prev ? { ...prev, endTime: e.target.value } : prev))
+                      }
+                    />
+                  </>
+                )}
+              </div>
+
+              {createDraft.mode === 'event' && (
+                <div className="gcal-type-pills" style={{ marginTop: 10 }}>
+                  {WHY_CATEGORIES.map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      className={`gcal-pill-chip is-why-${cat.toLowerCase()} ${
+                        createDraft.whyCategory === cat ? 'is-active' : ''
+                      }`.trim()}
+                      onClick={() =>
+                        setCreateDraft((prev) =>
+                          prev ? { ...prev, whyCategory: cat, manualWhy: true } : prev
+                        )
+                      }
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="gcal-sheet-actions">
+                <Button variant="primary" size="lg" fullWidth type="submit">
+                  Save
+                </Button>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
+
+      {/* Event detail & inline-edit sheet (Google Calendar-style) */}
+      {openBlock &&
+        createPortal(
+          <div
+            className="gcal-sheet-scrim"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setOpenBlockId(null);
+            }}
+          >
+            <div className="gcal-sheet" role="dialog" aria-label={openBlock.title}>
+              <div className="gcal-sheet-grip" />
+              <div className="ops-row-between" style={{ alignItems: 'center', gap: 10 }}>
+                <div
+                  className="ops-row"
+                  style={{ alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}
+                >
+                  <span className={`gcal-swatch ${eventClass(openBlock)}`} style={{ marginTop: 0 }} />
+                  <input
+                    className="gcal-create-title-input"
+                    value={openBlock.title}
+                    aria-label="Edit event title"
+                    enterKeyHint="done"
+                    onChange={(e) =>
+                      actions.updateCalendarBlock(openBlock.id, { title: e.target.value })
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.currentTarget.blur();
+                      }
+                    }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="ui-command-mic"
+                  aria-label="Close"
+                  onClick={() => setOpenBlockId(null)}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
+                <input
+                  type="date"
+                  className="ui-input gcal-compact-field"
+                  aria-label="Event date"
+                  value={openBlock.date}
+                  onChange={(e) =>
+                    e.target.value &&
+                    actions.updateCalendarBlock(openBlock.id, { date: e.target.value })
+                  }
+                />
+                <input
+                  type="time"
+                  className="ui-input gcal-compact-field"
+                  aria-label="Event start time"
+                  value={openBlock.startTime === '24:00' ? '23:59' : openBlock.startTime}
+                  onChange={(e) =>
+                    e.target.value &&
+                    actions.updateCalendarBlock(openBlock.id, { startTime: e.target.value })
+                  }
+                />
+                <span className="gcal-sheet-meta">–</span>
+                <input
+                  type="time"
+                  className="ui-input gcal-compact-field"
+                  aria-label="Event end time"
+                  value={openBlock.endTime === '24:00' ? '23:59' : openBlock.endTime}
+                  onChange={(e) =>
+                    e.target.value &&
+                    actions.updateCalendarBlock(openBlock.id, { endTime: e.target.value })
                   }
                 />
               </div>
-              <button
-                type="button"
-                className="ui-command-mic"
-                aria-label="Close"
-                onClick={() => setOpenBlockId(null)}
-              >
-                <X size={16} />
-              </button>
-            </div>
 
-            <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
-              <input
-                type="date"
-                className="ui-input gcal-compact-field"
-                aria-label="Event date"
-                value={openBlock.date}
-                onChange={(e) =>
-                  e.target.value &&
-                  actions.updateCalendarBlock(openBlock.id, { date: e.target.value })
-                }
-              />
-              <input
-                type="time"
-                className="ui-input gcal-compact-field"
-                aria-label="Event start time"
-                value={openBlock.startTime === '24:00' ? '23:59' : openBlock.startTime}
-                onChange={(e) =>
-                  e.target.value &&
-                  actions.updateCalendarBlock(openBlock.id, { startTime: e.target.value })
-                }
-              />
-              <span className="gcal-sheet-meta">–</span>
-              <input
-                type="time"
-                className="ui-input gcal-compact-field"
-                aria-label="Event end time"
-                value={openBlock.endTime === '24:00' ? '23:59' : openBlock.endTime}
-                onChange={(e) =>
-                  e.target.value &&
-                  actions.updateCalendarBlock(openBlock.id, { endTime: e.target.value })
-                }
-              />
-            </div>
+              {openBlock.kind === 'baseline' && (
+                <div className="gcal-type-pills" style={{ marginTop: 10 }}>
+                  {WHY_CATEGORIES.map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      className={`gcal-pill-chip is-why-${cat.toLowerCase()} ${
+                        (openBlock.whyCategory || 'Organization') === cat ? 'is-active' : ''
+                      }`.trim()}
+                      onClick={() =>
+                        actions.updateCalendarBlock(openBlock.id, { whyCategory: cat })
+                      }
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              )}
 
-            {openBlock.kind === 'baseline' && (
-              <div className="gcal-type-pills" style={{ marginTop: 10 }}>
-                {WHY_CATEGORIES.map((cat) => (
-                  <button
-                    key={cat}
-                    type="button"
-                    className={`gcal-pill-chip is-why-${cat.toLowerCase()} ${
-                      (openBlock.whyCategory || 'Organization') === cat ? 'is-active' : ''
-                    }`.trim()}
-                    onClick={() =>
-                      actions.updateCalendarBlock(openBlock.id, { whyCategory: cat })
-                    }
-                  >
-                    {cat}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <div className="ops-stack-sm" style={{ marginTop: 12 }}>
-              {openBlock.whyCategory && (
-                <div className="ops-stack-xs">
-                  <div>
-                    <Badge tone="why">Why: {openBlock.whyCategory}</Badge>
+              <div className="ops-stack-sm" style={{ marginTop: 12 }}>
+                {openBlock.whyCategory && (
+                  <div className="ops-stack-xs">
+                    <div>
+                      <Badge tone="why">Why: {openBlock.whyCategory}</Badge>
+                    </div>
+                    <span className="gcal-sheet-meta">
+                      {state.whyStatements[openBlock.whyCategory]}
+                    </span>
                   </div>
+                )}
+                {openBlock.startingStepHint && (
+                  <div>
+                    <Badge tone="zone">Starting step: {openBlock.startingStepHint}</Badge>
+                  </div>
+                )}
+                {isOpenZone(openBlock) && (
                   <span className="gcal-sheet-meta">
-                    {state.whyStatements[openBlock.whyCategory]}
+                    Open focus slot · ready for your next active idea.
                   </span>
-                </div>
-              )}
-              {openBlock.startingStepHint && (
-                <div>
-                  <Badge tone="zone">Starting step: {openBlock.startingStepHint}</Badge>
-                </div>
-              )}
-              {isOpenZone(openBlock) && (
-                <span className="gcal-sheet-meta">
-                  Open focus slot · ready for your next active priority (Waiting-On items excluded).
-                </span>
-              )}
-            </div>
+                )}
+              </div>
 
-            <div className="gcal-sheet-actions">
-              {openBlock.kind === 'empty-zone' && !isOpenZone(openBlock) && (
-                <Button
-                  variant="primary"
-                  size="lg"
-                  fullWidth
-                  iconRight={<ArrowRight size={15} />}
-                  onClick={() => {
-                    actions.spilloverEmptyZone(openBlock.id);
-                    setOpenBlockId(null);
-                  }}
-                >
-                  Spillover to next Empty Zone
-                </Button>
-              )}
-
-              {isOpenZone(openBlock) && topIdea && (
-                <>
+              <div className="gcal-sheet-actions">
+                {openBlock.kind === 'empty-zone' && !isOpenZone(openBlock) && (
                   <Button
                     variant="primary"
                     size="lg"
                     fullWidth
-                    iconLeft={<Sparkles size={15} />}
+                    iconRight={<ArrowRight size={15} />}
                     onClick={() => {
-                      actions.assignIdeaToBlock(openBlock.id, topIdea.id);
+                      actions.spilloverEmptyZone(openBlock.id);
                       setOpenBlockId(null);
                     }}
                   >
-                    Pull {topIdea.project} #{topIdea.priorityRank}: {topIdea.title}
+                    Spillover to next Empty Zone
                   </Button>
-                  <select
-                    className="ui-select"
-                    aria-label="Assign a different idea"
-                    value=""
-                    onChange={(e) => {
-                      if (e.target.value) {
-                        actions.assignIdeaToBlock(openBlock.id, e.target.value);
+                )}
+
+                {isOpenZone(openBlock) && topIdea && (
+                  <>
+                    <Button
+                      variant="primary"
+                      size="lg"
+                      fullWidth
+                      iconLeft={<Sparkles size={15} />}
+                      onClick={() => {
+                        actions.assignIdeaToBlock(openBlock.id, topIdea.id);
                         setOpenBlockId(null);
-                      }
+                      }}
+                    >
+                      Pull {topIdea.project}: {topIdea.title || 'Untitled Idea'}
+                    </Button>
+                    <select
+                      className="ui-select"
+                      aria-label="Assign a different idea"
+                      value=""
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          actions.assignIdeaToBlock(openBlock.id, e.target.value);
+                          setOpenBlockId(null);
+                        }
+                      }}
+                    >
+                      <option value="">Or choose another idea…</option>
+                      {activeIdeas.map((idea) => (
+                        <option key={idea.id} value={idea.id}>
+                          {idea.project}: {idea.title || 'Untitled Idea'}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
+
+                {openBlock.kind === 'reflection' && (
+                  <Button
+                    variant="primary"
+                    size="lg"
+                    fullWidth
+                    onClick={() => {
+                      setOpenBlockId(null);
+                      actions.setReflectionOpen(true);
                     }}
                   >
-                    <option value="">Or choose another idea…</option>
-                    {activeIdeas.map((idea) => (
-                      <option key={idea.id} value={idea.id}>
-                        {idea.project} #{idea.priorityRank}: {idea.title}
-                      </option>
-                    ))}
-                  </select>
-                </>
-              )}
+                    Open Reflection Check-In
+                  </Button>
+                )}
 
-              {openBlock.kind === 'reflection' && (
-                <Button
-                  variant="primary"
-                  size="lg"
-                  fullWidth
-                  onClick={() => {
-                    setOpenBlockId(null);
-                    actions.setReflectionOpen(true);
-                  }}
-                >
-                  Open Reflection Check-In
-                </Button>
-              )}
+                {openBlock.kind === 'goal-session' && (
+                  <Button
+                    variant="primary"
+                    size="lg"
+                    fullWidth
+                    iconLeft={<Activity size={15} />}
+                    onClick={() => {
+                      setOpenBlockId(null);
+                      actions.setActiveTab('pacing');
+                    }}
+                  >
+                    Pacing Confidence Check-In
+                  </Button>
+                )}
 
-              {openBlock.kind === 'goal-session' && (
-                <Button
-                  variant="primary"
-                  size="lg"
-                  fullWidth
-                  iconLeft={<Activity size={15} />}
-                  onClick={() => {
-                    setOpenBlockId(null);
-                    actions.setActiveTab('pacing');
-                  }}
-                >
-                  Pacing Confidence Check-In
-                </Button>
-              )}
-
-              <div className="ops-row" style={{ gap: 8 }}>
-                <Button
-                  variant={openBlock.completed ? 'secondary' : 'tonal-zone'}
-                  size="md"
-                  style={{ flex: 1 }}
-                  iconLeft={<Check size={14} />}
-                  onClick={() => actions.toggleBlockCompleted(openBlock.id)}
-                >
-                  {openBlock.completed ? 'Mark not done' : 'Mark done'}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="md"
-                  iconLeft={<Trash2 size={14} />}
-                  onClick={() => {
-                    actions.deleteCalendarBlock(openBlock.id);
-                    setOpenBlockId(null);
-                  }}
-                >
-                  Delete
-                </Button>
+                <div className="ops-row" style={{ gap: 8 }}>
+                  <Button
+                    variant={openBlock.completed ? 'secondary' : 'tonal-zone'}
+                    size="md"
+                    style={{ flex: 1 }}
+                    iconLeft={<Check size={14} />}
+                    onClick={() => actions.toggleBlockCompleted(openBlock.id)}
+                  >
+                    {openBlock.completed ? 'Mark not done' : 'Mark done'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="md"
+                    iconLeft={<Trash2 size={14} />}
+                    onClick={() => {
+                      actions.deleteCalendarBlock(openBlock.id);
+                      setOpenBlockId(null);
+                    }}
+                  >
+                    Delete
+                  </Button>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
 
-      {/* Reminder detail & inline-edit bottom sheet */}
-      {openReminder && (
-        <div
-          className="gcal-sheet-scrim"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setOpenReminderId(null);
-          }}
-        >
-          <div className="gcal-sheet" role="dialog" aria-label={openReminder.title}>
-            <div className="gcal-sheet-grip" />
-            <div className="ops-row-between" style={{ alignItems: 'center', gap: 10 }}>
-              <div className="ops-row" style={{ alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
-                <span className="gcal-swatch gcal-swatch-rem" style={{ marginTop: 0 }} />
+      {/* Reminder detail & inline-edit sheet */}
+      {openReminder &&
+        createPortal(
+          <div
+            className="gcal-sheet-scrim"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setOpenReminderId(null);
+            }}
+          >
+            <div className="gcal-sheet" role="dialog" aria-label={openReminder.title}>
+              <div className="gcal-sheet-grip" />
+              <div className="ops-row-between" style={{ alignItems: 'center', gap: 10 }}>
+                <div
+                  className="ops-row"
+                  style={{ alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}
+                >
+                  <span className="gcal-swatch gcal-swatch-rem" style={{ marginTop: 0 }} />
+                  <input
+                    className="gcal-create-title-input"
+                    value={openReminder.title}
+                    aria-label="Edit reminder title"
+                    enterKeyHint="done"
+                    onChange={(e) =>
+                      actions.updateReminder(openReminder.id, { title: e.target.value })
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.currentTarget.blur();
+                      }
+                    }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="ui-command-mic"
+                  aria-label="Close"
+                  onClick={() => setOpenReminderId(null)}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
                 <input
-                  className="gcal-create-title-input"
-                  value={openReminder.title}
-                  aria-label="Edit reminder title"
+                  type="date"
+                  className="ui-input gcal-compact-field"
+                  aria-label="Reminder date"
+                  value={openReminder.date}
                   onChange={(e) =>
-                    actions.updateReminder(openReminder.id, { title: e.target.value })
+                    e.target.value &&
+                    actions.updateReminder(openReminder.id, { date: e.target.value })
+                  }
+                />
+                <input
+                  type="time"
+                  className="ui-input gcal-compact-field"
+                  aria-label="Reminder time"
+                  value={openReminder.time}
+                  onChange={(e) =>
+                    e.target.value &&
+                    actions.updateReminder(openReminder.id, { time: e.target.value })
                   }
                 />
               </div>
-              <button
-                type="button"
-                className="ui-command-mic"
-                aria-label="Close"
-                onClick={() => setOpenReminderId(null)}
-              >
-                <X size={16} />
-              </button>
-            </div>
 
-            <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
-              <input
-                type="date"
-                className="ui-input gcal-compact-field"
-                aria-label="Reminder date"
-                value={openReminder.date}
-                onChange={(e) =>
-                  e.target.value &&
-                  actions.updateReminder(openReminder.id, { date: e.target.value })
-                }
-              />
-              <input
-                type="time"
-                className="ui-input gcal-compact-field"
-                aria-label="Reminder time"
-                value={openReminder.time}
-                onChange={(e) =>
-                  e.target.value &&
-                  actions.updateReminder(openReminder.id, { time: e.target.value })
-                }
-              />
-            </div>
-
-            <div className="gcal-sheet-actions">
-              <div className="ops-row" style={{ gap: 8 }}>
-                <Button
-                  variant={openReminder.completed ? 'secondary' : 'primary'}
-                  size="md"
-                  style={{ flex: 1 }}
-                  iconLeft={<Check size={14} />}
-                  onClick={() => {
-                    actions.toggleReminder(openReminder.id);
-                    setOpenReminderId(null);
-                  }}
-                >
-                  {openReminder.completed ? 'Mark not done' : 'Mark done'}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="md"
-                  iconLeft={<Trash2 size={14} />}
-                  onClick={() => {
-                    actions.deleteReminder(openReminder.id);
-                    setOpenReminderId(null);
-                  }}
-                >
-                  Delete
-                </Button>
+              <div className="gcal-sheet-actions">
+                <div className="ops-row" style={{ gap: 8 }}>
+                  <Button
+                    variant={openReminder.completed ? 'secondary' : 'primary'}
+                    size="md"
+                    style={{ flex: 1 }}
+                    iconLeft={<Check size={14} />}
+                    onClick={() => {
+                      actions.toggleReminder(openReminder.id);
+                      setOpenReminderId(null);
+                    }}
+                  >
+                    {openReminder.completed ? 'Mark not done' : 'Mark done'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="md"
+                    iconLeft={<Trash2 size={14} />}
+                    onClick={() => {
+                      actions.deleteReminder(openReminder.id);
+                      setOpenReminderId(null);
+                    }}
+                  >
+                    Delete
+                  </Button>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

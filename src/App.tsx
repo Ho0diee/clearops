@@ -23,12 +23,15 @@ const ClearOpsWorkspace: React.FC = () => {
   const isScheduleLocked = state.activeTab === 'schedule';
 
   // Hard-lock viewport on iPhone/iOS Safari when on Schedule so touching/dragging
-  // outside the calendar grid (e.g. voice button, chat bar, header) never drops/bounces the page.
+  // outside the calendar grid never drops/bounces the page AND opening the iOS keyboard
+  // inside an event edit sheet keeps the visible shell + sheet locked to visualViewport.
   useEffect(() => {
     const root = document.documentElement;
     if (!isScheduleLocked) {
       root.classList.remove('is-schedule-locked', 'is-kb-open');
       root.style.removeProperty('--app-vvh');
+      root.style.removeProperty('--app-vv-top');
+      root.style.removeProperty('--app-vv-left');
       return;
     }
 
@@ -36,28 +39,55 @@ const ClearOpsWorkspace: React.FC = () => {
     window.scrollTo(0, 0);
 
     const vv = window.visualViewport;
+    let settleTimerA: number | null = null;
+    let settleTimerB: number | null = null;
+
     const syncViewport = () => {
-      const h = vv ? Math.round(vv.height) : window.innerHeight;
-      root.style.setProperty('--app-vvh', `${h}px`);
-      const kbOpen = vv ? vv.height < window.innerHeight - 110 : false;
-      root.classList.toggle('is-kb-open', kbOpen);
       if (window.scrollY !== 0 || window.scrollX !== 0) {
         window.scrollTo(0, 0);
       }
+      const h = vv ? Math.round(vv.height) : window.innerHeight;
+      const top = vv ? Math.max(0, Math.round(vv.offsetTop)) : 0;
+      const left = vv ? Math.max(0, Math.round(vv.offsetLeft)) : 0;
+      root.style.setProperty('--app-vvh', `${h}px`);
+      root.style.setProperty('--app-vv-top', `${top}px`);
+      root.style.setProperty('--app-vv-left', `${left}px`);
+      const kbOpen = vv ? vv.height < window.innerHeight - 110 : false;
+      root.classList.toggle('is-kb-open', kbOpen);
+    };
+
+    const handleFocusChange = () => {
+      syncViewport();
+      if (settleTimerA !== null) window.clearTimeout(settleTimerA);
+      if (settleTimerB !== null) window.clearTimeout(settleTimerB);
+      settleTimerA = window.setTimeout(syncViewport, 70);
+      settleTimerB = window.setTimeout(syncViewport, 280);
     };
 
     syncViewport();
     vv?.addEventListener('resize', syncViewport);
     vv?.addEventListener('scroll', syncViewport);
     window.addEventListener('resize', syncViewport);
+    document.addEventListener('focusin', handleFocusChange);
+    document.addEventListener('focusout', handleFocusChange);
 
     const preventRubberBand = (e: TouchEvent) => {
       if (state.isReflectionOpen) return;
       const target = e.target as HTMLElement | null;
       if (!target) return;
 
-      // Allow scrolling inside the calendar time grid or open event detail sheet
-      if (target.closest('.gcal-scroll') || target.closest('.gcal-sheet')) {
+      // Allow scrolling inside the calendar time grid
+      if (target.closest('.gcal-scroll')) {
+        return;
+      }
+
+      // Allow scrolling inside an event edit/detail sheet only when its contents overflow
+      const sheet = target.closest('.gcal-sheet') as HTMLElement | null;
+      if (sheet) {
+        if (sheet.scrollHeight > sheet.clientHeight + 1) {
+          return;
+        }
+        e.preventDefault();
         return;
       }
 
@@ -73,12 +103,18 @@ const ClearOpsWorkspace: React.FC = () => {
     document.addEventListener('touchmove', preventRubberBand, { passive: false });
 
     return () => {
+      if (settleTimerA !== null) window.clearTimeout(settleTimerA);
+      if (settleTimerB !== null) window.clearTimeout(settleTimerB);
       vv?.removeEventListener('resize', syncViewport);
       vv?.removeEventListener('scroll', syncViewport);
       window.removeEventListener('resize', syncViewport);
+      document.removeEventListener('focusin', handleFocusChange);
+      document.removeEventListener('focusout', handleFocusChange);
       document.removeEventListener('touchmove', preventRubberBand);
       root.classList.remove('is-schedule-locked', 'is-kb-open');
       root.style.removeProperty('--app-vvh');
+      root.style.removeProperty('--app-vv-top');
+      root.style.removeProperty('--app-vv-left');
     };
   }, [isScheduleLocked, state.isReflectionOpen]);
 
