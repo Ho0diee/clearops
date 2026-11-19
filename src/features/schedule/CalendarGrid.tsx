@@ -177,6 +177,242 @@ function layoutColumn(blocks: CalendarBlock[]): Positioned[] {
   return out;
 }
 
+/** Placement for one event in a day column (label card geometry + optional duration rail). */
+interface SmartPlaced {
+  block: CalendarBlock;
+  railed: boolean;
+  hasRail: boolean;
+  top: number;
+  height: number;
+  col: number;
+  cols: number;
+  indentPx: number;
+  hasSpaceBelow: boolean;
+  lane: number;
+  railTop: number;
+  railHeight: number;
+  shifted: boolean;
+}
+
+const RAIL_LABEL_CAP_MIN = 60;
+
+function railGeometry(isWeek: boolean): { railW: number; pitch: number; lead: number } {
+  return isWeek ? { railW: 3, pitch: 5, lead: 1 } : { railW: 4, pitch: 8, lead: 2 };
+}
+
+/**
+ * Readable overlap layout:
+ * - Lone events render as normal full-width blocks.
+ * - Overlap clusters (always in week view; in day view only when a long event is involved) render
+ *   every event as a thin colored duration rail at its exact start/end, plus a label card capped
+ *   at ~1 hour that uses the remaining full width. Labels stack so they never collide; if a label
+ *   has to slide below its real start, the rail's start dot still marks the true time.
+ * - Short overlaps in day view keep classic side-by-side columns (there is room for them).
+ */
+function layoutColumnSmart(
+  blocks: CalendarBlock[],
+  opts: { hourHeight: number; startHour: number; isWeek: boolean }
+): SmartPlaced[] {
+  const { hourHeight, startHour, isWeek } = opts;
+  const pxOf = (min: number) => ((min - startHour * 60) / 60) * hourHeight;
+  const minFullPx = isWeek ? 18 : 22;
+  const minLabelPx = isWeek ? 30 : 30;
+  const capLabelPx = (RAIL_LABEL_CAP_MIN / 60) * hourHeight - 2;
+  const { pitch, lead } = railGeometry(isWeek);
+
+  const items = blocks
+    .map((b) => {
+      const s = toMin(b.startTime);
+      return { block: b, s, e: Math.max(s + 10, toMin(b.endTime)) };
+    })
+    .sort((a, b) => (a.s !== b.s ? a.s - b.s : b.e - b.s - (a.e - a.s)));
+
+  const clusters: (typeof items)[] = [];
+  let curEnd = -1;
+  for (const it of items) {
+    const last = clusters[clusters.length - 1];
+    if (last && it.s < curEnd) {
+      last.push(it);
+      curEnd = Math.max(curEnd, it.e);
+    } else {
+      clusters.push([it]);
+      curEnd = it.e;
+    }
+  }
+
+  const out: SmartPlaced[] = [];
+  let cursorPx = -Infinity;
+
+  clusters.forEach((cluster, ci) => {
+    const nextClusterStart = clusters[ci + 1]?.[0].s;
+    const nextClusterPx = nextClusterStart !== undefined ? pxOf(nextClusterStart) : Infinity;
+    const firstTop = pxOf(cluster[0].s);
+    const hasLong = cluster.some((it) => it.e - it.s > RAIL_LABEL_CAP_MIN + 10);
+    const collidesWithPrevLabel = firstTop < cursorPx - 1;
+
+    // 1) Lone event that fits at its true position → normal block
+    if (cluster.length === 1 && !collidesWithPrevLabel) {
+      const it = cluster[0];
+      const top = firstTop;
+      const maxAvail = Number.isFinite(nextClusterPx) ? Math.max(11, nextClusterPx - top - 1.5) : Infinity;
+      const height = Math.min(maxAvail, Math.max(minFullPx, ((it.e - it.s) / 60) * hourHeight - 2));
+      out.push({
+        block: it.block,
+        railed: false,
+        hasRail: false,
+        top,
+        height,
+        col: 0,
+        cols: 1,
+        indentPx: 0,
+        hasSpaceBelow: nextClusterPx - (top + height) >= 8,
+        lane: 0,
+        railTop: top,
+        railHeight: height,
+        shifted: false,
+      });
+      cursorPx = top + height;
+      return;
+    }
+
+    // 2) Day view short overlaps → classic side-by-side columns
+    if (cluster.length > 1 && !isWeek && !hasLong && !collidesWithPrevLabel) {
+      const laid = layoutColumn(cluster.map((it) => it.block));
+      let maxBottom = cursorPx;
+      laid.forEach(({ block, col, cols }) => {
+        const s = toMin(block.startTime);
+        const e = Math.max(s + 10, toMin(block.endTime));
+        const top = pxOf(s);
+        const nextInCol = laid
+          .filter((o) => o.col === col && toMin(o.block.startTime) >= e)
+          .map((o) => toMin(o.block.startTime));
+        const nextPx = nextInCol.length ? pxOf(Math.min(...nextInCol)) : nextClusterPx;
+        const maxAvail = Number.isFinite(nextPx) ? Math.max(11, nextPx - top - 1.5) : Infinity;
+        const height = Math.min(maxAvail, Math.max(minFullPx, ((e - s) / 60) * hourHeight - 2));
+        maxBottom = Math.max(maxBottom, top + height);
+        out.push({
+          block,
+          railed: false,
+          hasRail: false,
+          top,
+          height,
+          col,
+          cols,
+          indentPx: 0,
+          hasSpaceBelow: nextPx - (top + height) >= 8,
+          lane: 0,
+          railTop: top,
+          railHeight: height,
+          shifted: false,
+        });
+      });
+      cursorPx = maxBottom;
+      return;
+    }
+
+    // 3) Rail mode: stacked label cards (≤ ~1h tall) + duration rails only where needed
+    type RailItem = (typeof cluster)[number];
+    const isLongItem = (it: RailItem) => it.e - it.s > RAIL_LABEL_CAP_MIN + 10;
+    const labelHeightOf = (it: RailItem) => {
+      const durPx = ((it.e - it.s) / 60) * hourHeight;
+      return Math.max(minLabelPx, Math.min(capLabelPx, durPx - 2));
+    };
+
+    // Group labels into rows: in day view, short events starting together share a row side by side
+    const rows: { s: number; items: RailItem[] }[] = [];
+    cluster.forEach((it) => {
+      const last = rows[rows.length - 1];
+      if (
+        !isWeek &&
+        last &&
+        Math.abs(it.s - last.s) < 15 &&
+        last.items.length < 3 &&
+        !isLongItem(it) &&
+        last.items.every((x) => !isLongItem(x))
+      ) {
+        last.items.push(it);
+      } else {
+        rows.push({ s: it.s, items: [it] });
+      }
+    });
+
+    const pending: {
+      it: RailItem;
+      top: number;
+      height: number;
+      col: number;
+      cols: number;
+      shifted: boolean;
+      needsRail: boolean;
+    }[] = [];
+
+    rows.forEach((row) => {
+      const trueTop = pxOf(row.s);
+      const rowTop = Math.max(trueTop, cursorPx + 2);
+      let rowH = 0;
+      row.items.forEach((it, i) => {
+        const h = labelHeightOf(it);
+        rowH = Math.max(rowH, h);
+        const durPx = ((it.e - it.s) / 60) * hourHeight;
+        const shifted = rowTop > pxOf(it.s) + 1;
+        pending.push({
+          it,
+          top: rowTop,
+          height: h,
+          col: i,
+          cols: row.items.length,
+          shifted,
+          needsRail: shifted || durPx - 2 > h + 2,
+        });
+      });
+      cursorPx = rowTop + rowH;
+    });
+
+    // Assign rail lanes only to events that actually need a duration line
+    const laneEnds: number[] = [];
+    const laneOf = new Map<RailItem, number>();
+    pending
+      .filter((p) => p.needsRail)
+      .sort((a, b) => (a.it.s !== b.it.s ? a.it.s - b.it.s : b.it.e - a.it.e))
+      .forEach((p) => {
+        let lane = laneEnds.findIndex((end) => end <= p.it.s);
+        if (lane === -1) {
+          lane = laneEnds.length;
+          laneEnds.push(p.it.e);
+        } else {
+          laneEnds[lane] = p.it.e;
+        }
+        laneOf.set(p.it, lane);
+      });
+    const indentPx = laneEnds.length
+      ? laneEnds.length * pitch + lead + (isWeek ? 1 : 3)
+      : isWeek
+      ? 1
+      : 2;
+
+    pending.forEach((p) => {
+      const durPx = ((p.it.e - p.it.s) / 60) * hourHeight;
+      out.push({
+        block: p.it.block,
+        railed: true,
+        hasRail: p.needsRail,
+        top: p.top,
+        height: p.height,
+        col: p.col,
+        cols: p.cols,
+        indentPx,
+        hasSpaceBelow: false,
+        lane: laneOf.get(p.it) ?? 0,
+        railTop: pxOf(p.it.s),
+        railHeight: Math.max(8, durPx - 2),
+        shifted: p.shifted,
+      });
+    });
+  });
+
+  return out;
+}
+
 type ActiveGridDrag =
   | {
       kind: 'move-block';
@@ -699,7 +935,11 @@ const CalendarPane = memo<CalendarPaneProps>(
     return (
       <>
         {columns.map((iso) => {
-          const laid = layoutColumn(blocks.filter((b) => b.date === iso));
+          const laid = layoutColumnSmart(
+            blocks.filter((b) => b.date === iso),
+            { hourHeight, startHour, isWeek }
+          );
+          const rail = railGeometry(isWeek);
           const dayReminders = reminders.filter((r) => r.date === iso);
           const showNow = iso === todayIso && nowMin >= startHour * 60 && nowMin <= endHour * 60;
           const targetDraftIso = liveDraft ? liveDraft.date ?? fallbackDraftIso : null;
@@ -742,30 +982,18 @@ const CalendarPane = memo<CalendarPaneProps>(
               data-iso={iso}
               className={`gcal-col ${iso === todayIso && isWeek ? 'is-today' : ''}`.trim()}
             >
-              {laid.map(({ block, col, cols }) => {
+              {laid.map((placed) => {
+                const { block, col, cols } = placed;
                 const isBeingDragged = interactive && draggedBlockId === block.id;
-                const s = toMin(block.startTime);
-                const e = Math.max(s + 10, toMin(block.endTime));
-                const top = ((s - startHour * 60) / 60) * hourHeight;
-                const nextInColStarts = laid
-                  .filter((other) => other.col === col && toMin(other.block.startTime) >= e)
-                  .map((other) => toMin(other.block.startTime));
-                const nextStartMin = nextInColStarts.length ? Math.min(...nextInColStarts) : null;
-                const maxAvailPx =
-                  nextStartMin !== null
-                    ? Math.max(11, ((nextStartMin - s) / 60) * hourHeight - 1.5)
-                    : Infinity;
-                const height = Math.min(
-                  maxAvailPx,
-                  Math.max(isWeek ? 18 : 22, ((e - s) / 60) * hourHeight - 2)
-                );
+                const top = placed.top;
+                const height = placed.height;
+                const isRailed = placed.railed;
                 const isMicro = height < 20;
                 const isSingleLine = isWeek ? height < 26 : height < 36;
                 const roomy = !isWeek && height >= 42;
-                const showTopHandle = interactive && !isBeingDragged && height >= 28;
-                const showBottomHandle = interactive && !isBeingDragged;
-                const hasSpaceBelow =
-                  nextStartMin === null || ((nextStartMin - e) / 60) * hourHeight >= 8;
+                const showTopHandle = interactive && !isBeingDragged && !isRailed && height >= 28;
+                const showBottomHandle = interactive && !isBeingDragged && !isRailed;
+                const hasSpaceBelow = placed.hasSpaceBelow;
                 const isSlotDraftTarget =
                   draftOnThisDay?.mode === 'fill-slot' && draftOnThisDay.targetBlockId === block.id;
                 const isUpdateDraftMatch =
@@ -813,16 +1041,72 @@ const CalendarPane = memo<CalendarPaneProps>(
                       Math.floor((height - (6 + (roomy ? 15 : 0) + (showSubLine ? 15 : 0))) / 15)
                     );
 
+                const laneX = rail.lead + placed.lane * rail.pitch;
+                const colorCls = eventClass(effectiveBlock);
+                const railStateCls = `${effectiveBlock.completed ? 'is-done' : ''} ${
+                  isBeingDragged || isVoiceMoveSource ? 'is-drag-origin' : ''
+                }`;
+
                 return (
+                  <React.Fragment key={block.id}>
+                  {isRailed && placed.hasRail && (
+                    <>
+                      <div
+                        className={`gcal-rail-hit ${isWeek ? 'is-week' : ''} ${railStateCls}`.trim()}
+                        style={{
+                          top: placed.railTop,
+                          height: placed.railHeight,
+                          left: laneX - (isWeek ? 3 : 4),
+                        }}
+                        aria-hidden="true"
+                        onPointerDown={
+                          interactive && onBlockPointerDown
+                            ? (ev) => onBlockPointerDown(ev, block)
+                            : undefined
+                        }
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          onOpenBlock(block.id);
+                        }}
+                      >
+                        <span className={`gcal-rail-line ${colorCls}`}>
+                          <span
+                            className="gcal-rail-dot is-start"
+                            onPointerDown={
+                              interactive && onResizePointerDown && !isBeingDragged
+                                ? (ev) => onResizePointerDown(ev, block, 'resize-start')
+                                : undefined
+                            }
+                          />
+                          <span
+                            className="gcal-rail-dot is-end"
+                            onPointerDown={
+                              interactive && onResizePointerDown && !isBeingDragged
+                                ? (ev) => onResizePointerDown(ev, block, 'resize-end')
+                                : undefined
+                            }
+                          />
+                        </span>
+                      </div>
+                      <span
+                        className={`gcal-rail-connector ${colorCls} ${railStateCls}`.trim()}
+                        style={{
+                          top: top + Math.min(isWeek ? 7 : 10, height / 2) - 1,
+                          left: laneX + rail.railW - 1,
+                          width: Math.max(2, placed.indentPx - (laneX + rail.railW) + 2),
+                        }}
+                        aria-hidden="true"
+                      />
+                    </>
+                  )}
                   <div
-                    key={block.id}
                     role="button"
                     tabIndex={0}
-                    className={`gcal-ev ${eventClass(effectiveBlock)} ${
+                    className={`gcal-ev ${colorCls} ${
                       effectiveBlock.completed ? 'is-done' : ''
                     } ${isWeek ? 'is-compact' : ''} ${isMicro ? 'is-micro' : ''} ${
                       isSingleLine ? 'is-single-line' : ''
-                    } ${
+                    } ${isRailed ? 'is-railed' : ''} ${
                       showBottomHandle && height < 38 && hasSpaceBelow ? 'is-small-expandable' : ''
                     } ${block.id === highlightId ? 'is-flash' : ''} ${
                       isSlotDraftTarget || isUpdateDraftTarget ? 'is-voice-slot-target' : ''
@@ -830,8 +1114,16 @@ const CalendarPane = memo<CalendarPaneProps>(
                     style={{
                       top,
                       height,
-                      left: `calc(${(col / cols) * 100}% + 1px)`,
-                      width: `calc(${100 / cols}% - ${isWeek ? 2 : 4}px)`,
+                      left: isRailed
+                        ? `calc(${placed.indentPx}px + (100% - ${placed.indentPx + (isWeek ? 1 : 3)}px) * ${
+                            col / cols
+                          })`
+                        : `calc(${(col / cols) * 100}% + 1px)`,
+                      width: isRailed
+                        ? `calc((100% - ${placed.indentPx + (isWeek ? 1 : 3)}px) / ${cols} - ${
+                            cols > 1 ? 3 : 0
+                          }px)`
+                        : `calc(${100 / cols}% - ${isWeek ? 2 : 4}px)`,
                     }}
                     onPointerDown={
                       interactive && onBlockPointerDown
@@ -870,7 +1162,9 @@ const CalendarPane = memo<CalendarPaneProps>(
                         {effectiveBlock.completed && !isWeek && (
                           <Check size={11} strokeWidth={3} className="gcal-ev-inline-icon" />
                         )}
-                        {typeof effectiveBlock.alertOffsetMinutes === 'number' && !isMicro && (
+                        {typeof effectiveBlock.alertOffsetMinutes === 'number' &&
+                          !isMicro &&
+                          !(isWeek && isRailed) && (
                           <span
                             className="gcal-ev-alert-pill"
                             title={`Alert: ${formatAlertOffsetShort(
@@ -910,6 +1204,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                       />
                     )}
                   </div>
+                  </React.Fragment>
                 );
               })}
 

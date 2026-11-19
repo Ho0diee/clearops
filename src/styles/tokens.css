@@ -5728,3 +5728,137 @@ html.is-schedule-locked #root {
     max-width: 165px;
   }
 }
+
+
+/* ==========================================================================
+   Duration Rails — long/overlapping events show a thin colored line for their
+   true span while the readable label card stays ~1 hour tall at full width.
+   ========================================================================== */
+
+.gcal-rail-hit {
+  position: absolute;
+  z-index: 1;
+  width: 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.gcal-rail-hit.is-week {
+  width: 9px;
+}
+
+.gcal-rail-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 4px;
+  border-radius: 3px;
+  display: block;
+  opacity: 0.88;
+  transition: opacity 140ms var(--ease-calm), width 140ms var(--ease-calm);
+}
+
+.gcal-rail-hit.is-week .gcal-rail-line {
+  left: 3px;
+  width: 3px;
+}
+
+.gcal-rail-hit:hover .gcal-rail-line,
+.gcal-rail-hit:active .gcal-rail-line {
+  opacity: 1;
+}
+
+/* Start dot marks the exact start time; end cap marks the exact end time */
+.gcal-rail-dot {
+  position: absolute;
+  left: 50%;
+  display: block;
+  background: inherit;
+  transform: translateX(-50%);
+  box-shadow: 0 0 0 2px var(--bg-surface);
+}
+
+.gcal-rail-dot.is-start {
+  top: -2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.gcal-rail-dot.is-end {
+  bottom: -1px;
+  width: 9px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.gcal-rail-hit.is-week .gcal-rail-dot.is-start {
+  width: 7px;
+  height: 7px;
+}
+
+.gcal-rail-hit.is-week .gcal-rail-dot.is-end {
+  width: 7px;
+  height: 2.5px;
+}
+
+/* Bigger invisible touch targets on the dots for drag-to-resize */
+.gcal-rail-dot::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  transform: translate(-50%, -50%);
+}
+
+/* Short horizontal stub tying each label card to its own rail */
+.gcal-rail-connector {
+  position: absolute;
+  z-index: 1;
+  height: 2px;
+  border-radius: 1px;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.gcal-rail-hit.is-done,
+.gcal-rail-connector.is-done {
+  opacity: 0.45;
+}
+
+.gcal-rail-hit.is-drag-origin,
+.gcal-rail-connector.is-drag-origin {
+  opacity: 0.3;
+}
+
+/* Label cards in rail mode sit above rails, with a crisp separation edge */
+.gcal-ev.is-railed {
+  z-index: 2;
+  box-shadow: 0 0 0 1.5px var(--bg-surface), 0 1px 3px rgba(20, 20, 19, 0.12);
+}
+
+.gcal-ev.is-compact.is-railed {
+  border-radius: 4px;
+}
+
+/* Week view: cleaner word wrapping (no mid-syllable splits when width allows) */
+.gcal-ev.is-compact .gcal-ev-title.is-clamp-multi {
+  overflow-wrap: break-word;
+  word-break: break-word;
+  hyphens: manual;
+  -webkit-hyphens: manual;
+}
+
+/* Small blocks: keep the enlarged drag-to-extend hit area, but don't paint a pill over the text */
+.gcal-ev.is-small-expandable .gcal-resize-handle.is-bottom::after {
+  opacity: 0;
+  bottom: 1px;
+}
+
+.gcal-ev.is-small-expandable:active .gcal-resize-handle.is-bottom::after {
+  opacity: 0.9;
+}
