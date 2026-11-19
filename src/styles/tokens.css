@@ -6019,3 +6019,9 @@ html.is-schedule-locked #root {
 .gcal-ev.is-layered.is-text-pushed .gcal-ev-title {
   text-shadow: none;
 }
+
+/* Start tick sits on the far right edge so it never covers the earlier event's text */
+.gcal-ev.is-layered.is-text-pushed::after {
+  left: auto;
+  right: 0;
+}
