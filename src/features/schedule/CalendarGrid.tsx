@@ -182,6 +182,12 @@ interface SmartPlaced {
   block: CalendarBlock;
   /** Display-only color so overlapping events never share a color (data is untouched). */
   displayColor?: EventColorId;
+  /** Layered overlap mode: drawn on top of earlier events, translucent, text pushed below theirs. */
+  layered?: boolean;
+  depth?: number;
+  padTop?: number;
+  /** Height available for this event's own text before a later event covers it. */
+  textZoneH?: number;
   railed: boolean;
   hasRail: boolean;
   top: number;
@@ -197,6 +203,33 @@ interface SmartPlaced {
 }
 
 const RAIL_LABEL_CAP_MIN = 60;
+
+/** Overlap presentation: 'layered' (translucent stacking) or 'rails' (duration lines). */
+const OVERLAP_STYLE: 'layered' | 'rails' = 'layered';
+
+const WHY_HEX: Record<WhyCategory, string> = {
+  School: '#4170E0',
+  Health: '#0B8043',
+  Family: '#E67C73',
+  Organization: '#8E5BC9',
+};
+
+/** Solid hex for an event's displayed color (null for striped open focus slots). */
+function blockDisplayHex(b: CalendarBlock, displayColor?: EventColorId): string | null {
+  const id = displayColor ?? b.customColor;
+  if (id) return EVENT_COLOR_HEX[id] ?? null;
+  if (b.kind === 'baseline') return WHY_HEX[b.whyCategory || 'Organization'];
+  if (b.kind === 'empty-zone') return isOpenZone(b) ? null : '#2E9E6B';
+  if (b.kind === 'goal-session') return '#F4511E';
+  return '#7986CB';
+}
+
+function hexToRgbTriplet(hex: string): string {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  const n = parseInt(full, 16);
+  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+}
 
 const COLOR_FAMILY_BY_ID: Record<EventColorId, string> = {
   crimson: 'red',
@@ -272,8 +305,7 @@ function assignDistinctColors(group: CalendarBlock[]): Map<string, EventColorId>
   return overrides;
 }
 
-function railGeometry(isWeek: boolean): { railW: number; pitch: number; lead: number; gap: number } {
-  // Tight rails: the line hugs the card so overlaps keep almost the full width of a lone event
+function railGeometry(isWeek: boolean): { railW: number; pitch: number; lead: number; gap: number } {  // Tight rails: the line hugs the card so overlaps keep almost the full width of a lone event
   return isWeek
     ? { railW: 2, pitch: 3, lead: 1, gap: 1 }
     : { railW: 3, pitch: 5, lead: 1, gap: 2 };
@@ -330,7 +362,7 @@ function layoutColumnSmart(
     const collidesWithPrevLabel = firstTop < cursorPx - 1;
 
     // 1) Lone event that fits at its true position → normal block
-    if (cluster.length === 1 && !collidesWithPrevLabel) {
+    if (cluster.length === 1 && (!collidesWithPrevLabel || OVERLAP_STYLE === 'layered')) {
       const it = cluster[0];
       const top = firstTop;
       const maxAvail = Number.isFinite(nextClusterPx) ? Math.max(11, nextClusterPx - top - 1.5) : Infinity;
@@ -351,6 +383,93 @@ function layoutColumnSmart(
         shifted: false,
       });
       cursorPx = top + height;
+      return;
+    }
+
+    // 2a) Layered overlap: full width at true times, later events on top (translucent);
+    //     text only drops below an earlier event's text when they would actually collide.
+    if (OVERLAP_STYLE === 'layered' && cluster.length > 1) {
+      const colors = assignDistinctColors(cluster.map((it) => it.block));
+      const textZone = isWeek ? 28 : 36;
+      const prevPlaced: {
+        top: number;
+        bottom: number;
+        textTop: number;
+        textBottom: number;
+        depth: number;
+      }[] = [];
+      let maxBottom = cursorPx;
+
+      const geo = cluster.map((it) => {
+        const top = pxOf(it.s);
+        const trueH = Math.max(minFullPx, ((it.e - it.s) / 60) * hourHeight - 2);
+        return { it, top, trueH };
+      });
+
+      geo.forEach(({ it, top, trueH }, idx) => {
+        const overlappingPrev = prevPlaced.filter((p) => p.bottom > top + 0.5);
+        const depth = overlappingPrev.reduce((d, p) => Math.max(d, p.depth + 1), 0);
+        const ownText = Math.min(textZone, trueH);
+
+        // Slide text down past any earlier text block it would collide with
+        let textTop = top;
+        let moved = true;
+        let guard = 0;
+        while (moved && guard < 12) {
+          moved = false;
+          guard += 1;
+          for (const p of overlappingPrev) {
+            if (p.textTop < textTop + ownText - 0.5 && p.textBottom > textTop + 0.5) {
+              textTop = p.textBottom + 2;
+              moved = true;
+            }
+          }
+        }
+
+        const pad = textTop - top;
+        const height = Math.max(trueH, pad + ownText);
+
+        // How much room this event's own text has before a later event's box covers it
+        const laterTops = geo
+          .slice(idx + 1)
+          .filter((o) => o.top < top + height - 0.5)
+          .map((o) => o.top);
+        const coverTop = laterTops.length ? Math.min(...laterTops) : null;
+        const textZoneH =
+          coverTop !== null ? Math.max(ownText, coverTop - textTop - 2) : undefined;
+
+        out.push({
+          block: it.block,
+          displayColor: colors.get(it.block.id),
+          layered: depth > 0,
+          depth,
+          padTop: pad,
+          textZoneH,
+          railed: false,
+          hasRail: false,
+          top,
+          height,
+          col: 0,
+          cols: 1,
+          indentPx: 0,
+          hasSpaceBelow: nextClusterPx - (top + height) >= 8,
+          lane: 0,
+          railTop: top,
+          railHeight: height,
+          shifted: pad > 1,
+        });
+
+        prevPlaced.push({
+          top,
+          bottom: top + height,
+          textTop,
+          textBottom: textTop + ownText,
+          depth,
+        });
+        maxBottom = Math.max(maxBottom, top + height);
+      });
+
+      cursorPx = maxBottom;
       return;
     }
 
@@ -1071,9 +1190,12 @@ const CalendarPane = memo<CalendarPaneProps>(
                 const top = placed.top;
                 const height = placed.height;
                 const isRailed = placed.railed;
+                const padTop = placed.padTop ?? 0;
+                // Room for this event's own text (below any pushed-down offset, above any covering event)
+                const textH = Math.min(height - padTop, placed.textZoneH ?? Infinity);
                 const isMicro = height < 20;
-                const isSingleLine = isWeek ? height < 26 : height < 36;
-                const roomy = !isWeek && height >= 42;
+                const isSingleLine = isWeek ? textH < 26 : textH < 36;
+                const roomy = !isWeek && textH >= 34;
                 const showTopHandle = interactive && !isBeingDragged && !isRailed && height >= 28;
                 const showBottomHandle = interactive && !isBeingDragged && !isRailed;
                 const hasSpaceBelow = placed.hasSpaceBelow;
@@ -1114,20 +1236,31 @@ const CalendarPane = memo<CalendarPaneProps>(
                   : effectiveBlock.title;
                 const subLineText =
                   effectiveBlock.notes?.trim() || effectiveBlock.startingStepHint || '';
-                const showSubLine = roomy && !isWeek && Boolean(subLineText) && height >= 58;
+                const showSubLine = roomy && !isWeek && Boolean(subLineText) && textH >= 58;
                 const maxTitleLines = isSingleLine
                   ? 1
                   : isWeek
-                  ? Math.max(1, Math.floor((height - 4) / 12))
+                  ? Math.max(1, Math.floor((textH - 4) / 12))
                   : Math.max(
                       1,
-                      Math.floor((height - (6 + (roomy ? 15 : 0) + (showSubLine ? 15 : 0))) / 15)
+                      Math.floor((textH - (6 + (roomy ? 15 : 0) + (showSubLine ? 15 : 0))) / 15)
                     );
 
                 const laneX = rail.lead + placed.lane * rail.pitch;
                 const colorCls = placed.displayColor
                   ? `gcal-ev-color-${placed.displayColor}`
                   : eventClass(effectiveBlock);
+                const layerHex = placed.layered
+                  ? blockDisplayHex(effectiveBlock, placed.displayColor)
+                  : null;
+                const depthIndent = (placed.depth ?? 0) * (isWeek ? 3 : 6);
+                const layerStyle: React.CSSProperties = layerHex
+                  ? ({
+                      zIndex: 2 + (placed.depth ?? 0),
+                      '--ev-layer-rgb': hexToRgbTriplet(layerHex),
+                      '--ev-fade': padTop > 1 ? `${padTop}px` : '-8px',
+                    } as React.CSSProperties)
+                  : {};
                 const railStateCls = `${effectiveBlock.completed ? 'is-done' : ''} ${
                   isBeingDragged || isVoiceMoveSource ? 'is-drag-origin' : ''
                 }`;
@@ -1191,7 +1324,9 @@ const CalendarPane = memo<CalendarPaneProps>(
                       effectiveBlock.completed ? 'is-done' : ''
                     } ${isWeek ? 'is-compact' : ''} ${isMicro ? 'is-micro' : ''} ${
                       isSingleLine ? 'is-single-line' : ''
-                    } ${isRailed ? 'is-railed' : ''} ${
+                    } ${isRailed ? 'is-railed' : ''} ${layerHex ? 'is-layered' : ''} ${
+                      padTop > 1 ? 'is-text-pushed' : ''
+                    } ${
                       showBottomHandle && height < 38 && hasSpaceBelow ? 'is-small-expandable' : ''
                     } ${block.id === highlightId ? 'is-flash' : ''} ${
                       isSlotDraftTarget || isUpdateDraftTarget ? 'is-voice-slot-target' : ''
@@ -1203,12 +1338,13 @@ const CalendarPane = memo<CalendarPaneProps>(
                         ? `calc(${placed.indentPx}px + (100% - ${placed.indentPx + (isWeek ? 1 : 2)}px) * ${
                             col / cols
                           })`
-                        : `calc(${(col / cols) * 100}% + 1px)`,
+                        : `calc(${(col / cols) * 100}% + ${1 + depthIndent}px)`,
                       width: isRailed
                         ? `calc((100% - ${placed.indentPx + (isWeek ? 1 : 2)}px) / ${cols} - ${
                             cols > 1 ? 3 : 0
                           }px)`
-                        : `calc(${100 / cols}% - ${isWeek ? 2 : 4}px)`,
+                        : `calc(${100 / cols}% - ${(isWeek ? 2 : 4) + depthIndent}px)`,
+                      ...layerStyle,
                     }}
                     onPointerDown={
                       interactive && onBlockPointerDown
@@ -1227,6 +1363,9 @@ const CalendarPane = memo<CalendarPaneProps>(
                     }}
                     title={`${effectiveBlock.title} (${effectiveBlock.startTime}–${effectiveBlock.endTime})`}
                   >
+                    {layerHex && padTop > 1 && (
+                      <span className="gcal-ev-hit" style={{ top: padTop }} aria-hidden="true" />
+                    )}
                     {showTopHandle && onResizePointerDown && (
                       <span
                         className="gcal-resize-handle is-top"

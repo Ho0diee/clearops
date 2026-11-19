@@ -5911,3 +5911,111 @@ html.is-schedule-locked #root {
 .gcal-rail-connector {
   height: 1.5px;
 }
+
+/* ==========================================================================
+   Layered Overlaps — later events sit on top, translucent; when their text
+   would collide, it drops just below the earlier event's text while the top
+   of their box fades so the text underneath stays readable.
+   ========================================================================== */
+
+.gcal-ev.is-layered {
+  background: linear-gradient(
+    to bottom,
+    rgba(var(--ev-layer-rgb), 0.14) 0,
+    rgba(var(--ev-layer-rgb), 0.14) var(--ev-fade, -8px),
+    rgba(var(--ev-layer-rgb), 0.9) calc(var(--ev-fade, -8px) + 8px),
+    rgba(var(--ev-layer-rgb), 0.9) 100%
+  ) !important;
+  color: #fff !important;
+  box-shadow:
+    inset 3px 0 0 rgb(var(--ev-layer-rgb)),
+    inset 0 2px 0 rgb(var(--ev-layer-rgb)),
+    0 0 0 1.5px var(--bg-surface),
+    0 2px 6px rgba(20, 20, 19, 0.14);
+  -webkit-backdrop-filter: saturate(1.1);
+  backdrop-filter: saturate(1.1);
+}
+
+.gcal-ev.is-layered .gcal-ev-content {
+  padding-top: max(0px, var(--ev-fade, 0px));
+}
+
+.gcal-ev.is-layered.is-text-pushed .gcal-ev-title {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.gcal-ev.is-layered.is-done {
+  opacity: 0.6;
+}
+
+/* Faded top of a pushed layered event is tap-through, so the earlier event's title stays tappable */
+.gcal-ev.is-layered.is-text-pushed {
+  pointer-events: none;
+}
+
+.gcal-ev.is-layered.is-text-pushed .gcal-ev-hit {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 0;
+  pointer-events: auto;
+}
+
+.gcal-ev.is-layered.is-text-pushed .gcal-resize-handle {
+  pointer-events: auto;
+}
+
+/* Layered refinements: crisper solid fill; pushed events keep the area above their text fully clear */
+.gcal-ev.is-layered {
+  background: rgba(var(--ev-layer-rgb), 0.95) !important;
+}
+
+.gcal-ev.is-layered.is-text-pushed {
+  background: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Solid card starts exactly where this event's text starts */
+.gcal-ev.is-layered.is-text-pushed::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--ev-fade) - 3px);
+  bottom: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: rgba(var(--ev-layer-rgb), 0.95);
+  box-shadow:
+    inset 3px 0 0 rgb(var(--ev-layer-rgb)),
+    0 0 0 1.5px var(--bg-surface),
+    0 2px 6px rgba(20, 20, 19, 0.16);
+  pointer-events: none;
+}
+
+/* Short accent on the left edge marks the event's true start above the card */
+.gcal-ev.is-layered.is-text-pushed::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: calc(var(--ev-fade) - 1px);
+  z-index: 1;
+  border-radius: 2px;
+  background: rgb(var(--ev-layer-rgb));
+  box-shadow: 0 0 0 1px var(--bg-surface);
+  pointer-events: none;
+}
+
+.gcal-ev.is-layered.is-text-pushed .gcal-ev-content {
+  position: relative;
+  z-index: 1;
+}
+
+.gcal-ev.is-layered.is-text-pushed .gcal-ev-title {
+  text-shadow: none;
+}
