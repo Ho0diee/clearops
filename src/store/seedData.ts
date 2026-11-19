@@ -45,6 +45,8 @@ export const INITIAL_OPS_STATE: OpsState = {
   blocks: INITIAL_OHCHS.blocks,
   reminders: INITIAL_OHCHS.reminders,
   projects: ['OHCR', 'CBS', 'Personal'],
+  activeTimers: [],
+  pendingPlacement: null,
   ideas: [
     {
       id: 'idea-ohcr-1',

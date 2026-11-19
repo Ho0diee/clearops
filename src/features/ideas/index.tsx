@@ -16,9 +16,11 @@ import {
   Lightbulb,
   Lock,
   Pencil,
+  Play,
   Receipt,
   RotateCcw,
   Search,
+  Square,
   SquarePen,
   Tag,
   Trash2,
@@ -27,16 +29,43 @@ import {
 import { addDaysISO, formatShortDate, useOpsStore } from '../../store/opsStore';
 import { countCoveredTasks, getBlockingBottleneck } from '../../store/ideaBlocking';
 import { formatFriendlyTime } from '../../store/scheduleAi';
-import {
-  findAvailableEmptySpaces,
-  formatWindowFreeLabel,
-} from '../../store/emptySpaceFinder';
+import { formatTimerClock } from '../../components/ActiveTimersBar';
 import type {
   ArchiveOutcome,
   CalendarBlock,
   IdeaItem,
   IdeaResponsibilityType,
 } from '../../types/schema';
+
+function calcEndTimeHHMM(startHHMM: string, durationMins: number): string {
+  const [hRaw, mRaw] = startHHMM.split(':').map(Number);
+  const start = (hRaw || 0) * 60 + (mRaw || 0);
+  const end = Math.min(24 * 60, Math.max(start + 15, start + Math.round(durationMins)));
+  if (end >= 24 * 60) return '24:00';
+  return `${String(Math.floor(end / 60)).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}`;
+}
+
+function defaultRetroStartTime(durationMins: number): string {
+  const now = new Date();
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+  const endSnapped = Math.round(nowMins / 5) * 5;
+  const start = Math.max(
+    0,
+    Math.min(24 * 60 - 15, endSnapped - Math.max(15, Math.round(durationMins)))
+  );
+  return `${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(
+    2,
+    '0'
+  )}`;
+}
+
+function formatDurationMinutesLabel(mins: number): string {
+  const safe = Math.max(1, Math.round(mins));
+  if (safe < 60) return `${safe} min`;
+  const h = Math.floor(safe / 60);
+  const m = safe % 60;
+  return m === 0 ? `${h} hr` : `${h}h ${m}m`;
+}
 
 type SmartFolderId = '__BOTTLENECKS__' | string;
 type MobileNotesPane = 'folders' | 'list' | 'note';
@@ -121,6 +150,11 @@ export const IdeasHubView: React.FC = () => {
   const [archivePromptOpen, setArchivePromptOpen] = useState(false);
   const [earnedDraft, setEarnedDraft] = useState('');
   const [earnedMissingError, setEarnedMissingError] = useState(false);
+  const [archiveDurationDraft, setArchiveDurationDraft] = useState('');
+  const [archiveLogDate, setArchiveLogDate] = useState(todayIso);
+  const [archiveLogStartTime, setArchiveLogStartTime] = useState(() => defaultRetroStartTime(30));
+  const [archiveLogTimeTouched, setArchiveLogTimeTouched] = useState(false);
+  const [archiveShowTimeLog, setArchiveShowTimeLog] = useState(true);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [mobilePane, setMobilePane] = useState<MobileNotesPane>('folders');
 
@@ -132,11 +166,13 @@ export const IdeasHubView: React.FC = () => {
   const [renamingContext, setRenamingContext] = useState<'list' | 'heading'>('list');
   const [renameFolderDraft, setRenameFolderDraft] = useState('');
   const [zonePickerOpen, setZonePickerOpen] = useState(false);
-  const [emptySpaceStep, setEmptySpaceStep] = useState<'ask-duration' | 'pick-slot'>('ask-duration');
+  const [emptySpaceStep, setEmptySpaceStep] = useState<'ask-duration' | 'pick-day'>('ask-duration');
   const [spaceDurationMins, setSpaceDurationMins] = useState<number>(60);
-  const [customSpaceMinsDraft, setCustomSpaceMinsDraft] = useState<string>('');
-  const [visibleSpacesCount, setVisibleSpacesCount] = useState<number>(6);
+  const [spaceDurationDraft, setSpaceDurationDraft] = useState<string>('');
+  const [spaceDurationUnit, setSpaceDurationUnit] = useState<'min' | 'hr'>('min');
+  const [spaceCustomDateDraft, setSpaceCustomDateDraft] = useState<string>(todayIso);
   const [reordering, setReordering] = useState(false);
+  const [timerNowMs, setTimerNowMs] = useState(() => Date.now());
   const [dragState, setDragState] = useState<{
     id: string;
     pointerId: number;
@@ -164,7 +200,22 @@ export const IdeasHubView: React.FC = () => {
   const newFolderInputRef = useRef<HTMLInputElement | null>(null);
   const renameFolderInputRef = useRef<HTMLInputElement | null>(null);
   const earnedInputRef = useRef<HTMLInputElement | null>(null);
+  const spaceDurationInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCursorRef = useRef<number | null>(null);
+
+  const activeTimerCount = state.activeTimers.length;
+  useEffect(() => {
+    if (activeTimerCount === 0) return;
+    setTimerNowMs(Date.now());
+    const id = window.setInterval(() => setTimerNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [activeTimerCount]);
+
+  const activeTimerByIdeaId = useMemo(() => {
+    const map = new Map<string, (typeof state.activeTimers)[number]>();
+    state.activeTimers.forEach((t) => map.set(t.ideaId, t));
+    return map;
+  }, [state.activeTimers]);
 
   const allNotes = useMemo(
     () => state.ideas.filter((i) => i.status !== 'completed'),
@@ -293,42 +344,27 @@ export const IdeasHubView: React.FC = () => {
   // Sync preferred duration when opening a different note
   useEffect(() => {
     const est = openNoteRecord?.estimatedMinutes;
-    if (typeof est === 'number' && est >= 15 && est <= 240) {
+    if (typeof est === 'number' && est >= 15 && est <= 480) {
       setSpaceDurationMins(est);
     } else {
       setSpaceDurationMins(60);
     }
-    setVisibleSpacesCount(6);
   }, [openNoteRecord?.id, openNoteRecord?.estimatedMinutes]);
 
-  const activeScheduledBlockForOpenNote = useMemo(() => {
-    if (!openNoteRecord) return undefined;
-    return state.blocks.find(
-      (b) => b.assignedIdeaId === openNoteRecord.id && !b.completed
-    );
-  }, [state.blocks, openNoteRecord]);
-
-  // Real upcoming Empty Spaces on the calendar (blank open gaps + Senior Privileges free periods)
-  const availableEmptySpaces = useMemo(
-    () =>
-      findAvailableEmptySpaces({
-        blocks: state.blocks,
-        todayIso,
-        durationMinutes: spaceDurationMins,
-        excludeBlockId: activeScheduledBlockForOpenNote?.id,
-        horizonDays: visibleSpacesCount > 12 ? 28 : 14,
-        maxResults: Math.max(24, visibleSpacesCount + 6),
-      }),
-    [
-      state.blocks,
-      todayIso,
-      spaceDurationMins,
-      activeScheduledBlockForOpenNote?.id,
-      visibleSpacesCount,
-    ]
-  );
-
   const tomorrowIso = useMemo(() => addDaysISO(todayIso, 1), [todayIso]);
+  const yesterdayIso = useMemo(() => addDaysISO(todayIso, -1), [todayIso]);
+
+  const upcomingPlacementDays = useMemo(() => {
+    return Array.from({ length: 7 }, (_, idx) => {
+      const iso = addDaysISO(todayIso, idx);
+      const [y, m, d] = iso.split('-').map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      const weekday = dt.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
+      const label = idx === 0 ? 'Today' : idx === 1 ? 'Tomorrow' : weekday;
+      const sub = formatShortDate(iso);
+      return { iso, label, sub };
+    });
+  }, [todayIso]);
 
   const folderDisplayName =
     selectedFolder === '__BOTTLENECKS__' ? 'Bottlenecks' : selectedFolder;
@@ -671,6 +707,10 @@ export const IdeasHubView: React.FC = () => {
     const scheduledBlock = state.blocks.find(
       (b) => b.assignedIdeaId === note.id && !b.completed
     );
+    const activeTimerForNote = activeTimerByIdeaId.get(note.id) ?? null;
+    const completedLoggedBlocksForNote = state.blocks.filter(
+      (b) => b.assignedIdeaId === note.id && b.completed
+    );
     const bodyValue = getNoteBody(note);
 
     return (
@@ -727,6 +767,13 @@ export const IdeasHubView: React.FC = () => {
                             ? String(note.earnedAmountDollars)
                             : ''
                         );
+                        setArchiveDurationDraft('');
+                        setArchiveLogDate(todayIso);
+                        setArchiveLogStartTime(defaultRetroStartTime(30));
+                        setArchiveLogTimeTouched(false);
+                        setArchiveShowTimeLog(
+                          !activeTimerForNote && completedLoggedBlocksForNote.length === 0
+                        );
                         if (note.responsibilityType === 'paid') {
                           window.setTimeout(() => earnedInputRef.current?.focus(), 35);
                         }
@@ -757,19 +804,68 @@ export const IdeasHubView: React.FC = () => {
         <div className="notes-paper">
           {!isArchived && archivePromptOpen && (() => {
             const isPaidTask = note.responsibilityType === 'paid';
-            const commitArchiveChoice = (outcome: ArchiveOutcome) => {
-              let earnedVal: number | undefined;
-              if (isPaidTask) {
-                const rawClean = earnedDraft.trim().replace(/^\$/, '').replace(/,/g, '');
-                const parsedNum = Number(rawClean);
-                if (rawClean === '' || !Number.isFinite(parsedNum) || parsedNum < 0) {
-                  setEarnedMissingError(true);
-                  earnedInputRef.current?.focus();
+            const parsedArchiveMins = Math.round(Number(archiveDurationDraft));
+            const hasValidArchiveDur =
+              archiveDurationDraft.trim() !== '' &&
+              Number.isFinite(parsedArchiveMins) &&
+              parsedArchiveMins >= 5 &&
+              parsedArchiveMins <= 600;
+            const archiveEndTime = hasValidArchiveDur
+              ? calcEndTimeHHMM(archiveLogStartTime, parsedArchiveMins)
+              : null;
+
+            const validateEarnedIfPaid = (): { ok: boolean; value?: number } => {
+              if (!isPaidTask) return { ok: true };
+              const rawClean = earnedDraft.trim().replace(/^\$/, '').replace(/,/g, '');
+              const parsedNum = Number(rawClean);
+              if (rawClean === '' || !Number.isFinite(parsedNum) || parsedNum < 0) {
+                setEarnedMissingError(true);
+                earnedInputRef.current?.focus();
+                return { ok: false };
+              }
+              return { ok: true, value: parsedNum };
+            };
+
+            const commitArchiveChoice = (
+              outcome: ArchiveOutcome,
+              placeOnCalendarAfter = false
+            ) => {
+              const earnedRes = validateEarnedIfPaid();
+              if (!earnedRes.ok) return;
+
+              const cleanNoteTitle =
+                note.title.trim() || extractFirstStepHint(bodyValue) || 'Focus Work';
+
+              if (!activeTimerForNote && archiveShowTimeLog && hasValidArchiveDur) {
+                if (placeOnCalendarAfter) {
+                  actions.archiveIdea(note.id, outcome, earnedRes.value);
+                  setArchivePromptOpen(false);
+                  setEarnedMissingError(false);
+                  setZonePickerOpen(false);
+                  setSelectedNoteId(null);
+                  actions.beginCalendarPlacement({
+                    ideaId: note.id,
+                    title: cleanNoteTitle,
+                    date: archiveLogDate || todayIso,
+                    durationMinutes: Math.max(15, parsedArchiveMins),
+                    startTime: archiveLogTimeTouched ? archiveLogStartTime : undefined,
+                    endTime:
+                      archiveLogTimeTouched && archiveEndTime ? archiveEndTime : undefined,
+                    completed: true,
+                    preferRetroactive: true,
+                    returnTab: 'ideas',
+                  });
                   return;
                 }
-                earnedVal = parsedNum;
+                actions.logIdeaTimeToCalendar(note.id, {
+                  date: archiveLogDate || todayIso,
+                  startTime: archiveLogStartTime,
+                  endTime: calcEndTimeHHMM(archiveLogStartTime, Math.max(15, parsedArchiveMins)),
+                  completed: true,
+                });
               }
-              actions.archiveIdea(note.id, outcome, earnedVal);
+
+              actions.archiveIdea(note.id, outcome, earnedRes.value);
               setArchivePromptOpen(false);
               setEarnedMissingError(false);
               setZonePickerOpen(false);
@@ -779,13 +875,20 @@ export const IdeasHubView: React.FC = () => {
               setSelectedNoteId(null);
             };
 
+            const selectArchiveDuration = (mins: number) => {
+              setArchiveDurationDraft(String(mins));
+              if (!archiveLogTimeTouched && archiveLogDate === todayIso) {
+                setArchiveLogStartTime(defaultRetroStartTime(mins));
+              }
+            };
+
             return (
               <div className="notes-archive-popover" role="region" aria-label="Archive options">
                 <div className="notes-zone-popover-head">
                   <span>
                     {isPaidTask
                       ? 'How much did you make?'
-                      : `Archive in ${note.project} as:`}
+                      : `Archive in ${note.project}`}
                   </span>
                   <button
                     type="button"
@@ -849,19 +952,166 @@ export const IdeasHubView: React.FC = () => {
                   </div>
                 )}
 
+                {/* Time tracking summary / retroactive calendar time prompt */}
+                {activeTimerForNote ? (
+                  <div className="notes-archive-timer-notice">
+                    <span className="ops-timer-pulse" aria-hidden="true" />
+                    <span>
+                      Timer running ({formatTimerClock(timerNowMs - activeTimerForNote.startedAtMs)}) — will stop &amp; log to calendar automatically.
+                    </span>
+                  </div>
+                ) : !archiveShowTimeLog ? (
+                  <div className="notes-archive-logged-row">
+                    <span className="notes-archive-logged-badge">
+                      <Check size={12} strokeWidth={2.8} />
+                      <span>
+                        {completedLoggedBlocksForNote.length} session
+                        {completedLoggedBlocksForNote.length === 1 ? '' : 's'} already logged
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      className="notes-space-change-dur"
+                      onClick={() => setArchiveShowTimeLog(true)}
+                    >
+                      + Log more time
+                    </button>
+                  </div>
+                ) : (
+                  <div className="notes-archive-time-card">
+                    <div className="notes-archive-time-head">
+                      <span className="notes-archive-time-title">
+                        <Clock size={12} />
+                        <span>How long did you spend?</span>
+                      </span>
+                      <span className="notes-archive-time-opt">Optional · logs to calendar</span>
+                    </div>
+
+                    <div className="notes-archive-dur-chips">
+                      {[15, 30, 45, 60, 90, 120].map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          className={`notes-archive-dur-chip ${
+                            archiveDurationDraft === String(m) ? 'is-active' : ''
+                          }`.trim()}
+                          onClick={() => selectArchiveDuration(m)}
+                        >
+                          {m < 60 ? `${m}m` : m === 90 ? '1.5h' : `${m / 60}h`}
+                        </button>
+                      ))}
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min={5}
+                        max={600}
+                        className="notes-archive-dur-input"
+                        placeholder="Min"
+                        aria-label="Minutes spent on this task"
+                        value={archiveDurationDraft}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setArchiveDurationDraft(v);
+                          const n = Math.round(Number(v));
+                          if (
+                            !archiveLogTimeTouched &&
+                            archiveLogDate === todayIso &&
+                            Number.isFinite(n) &&
+                            n >= 5
+                          ) {
+                            setArchiveLogStartTime(defaultRetroStartTime(n));
+                          }
+                        }}
+                      />
+                    </div>
+
+                    {hasValidArchiveDur && (
+                      <div className="notes-archive-when-wrap">
+                        <div className="notes-archive-when-row">
+                          <div className="notes-archive-day-pills">
+                            <button
+                              type="button"
+                              className={`notes-archive-day-pill ${
+                                archiveLogDate === todayIso ? 'is-active' : ''
+                              }`.trim()}
+                              onClick={() => setArchiveLogDate(todayIso)}
+                            >
+                              Today
+                            </button>
+                            <button
+                              type="button"
+                              className={`notes-archive-day-pill ${
+                                archiveLogDate === yesterdayIso ? 'is-active' : ''
+                              }`.trim()}
+                              onClick={() => setArchiveLogDate(yesterdayIso)}
+                            >
+                              Yesterday
+                            </button>
+                            <input
+                              type="date"
+                              className="notes-archive-date-input"
+                              aria-label="Day you worked on this"
+                              value={archiveLogDate}
+                              onChange={(e) => {
+                                if (e.target.value) setArchiveLogDate(e.target.value);
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="notes-archive-start-row">
+                          <label className="notes-archive-time-label">
+                            <span>Started</span>
+                            <input
+                              type="time"
+                              className="notes-archive-time-input"
+                              aria-label="Time of day you started"
+                              value={archiveLogStartTime}
+                              onChange={(e) => {
+                                if (e.target.value) {
+                                  setArchiveLogStartTime(e.target.value);
+                                  setArchiveLogTimeTouched(true);
+                                }
+                              }}
+                            />
+                          </label>
+                          {archiveEndTime && (
+                            <span className="notes-archive-range-preview">
+                              → {formatFriendlyTime(archiveEndTime)}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            className="notes-archive-place-btn"
+                            onClick={() => commitArchiveChoice('completed', true)}
+                            title="Archive and visually drag onto that day's calendar"
+                          >
+                            <Calendar size={12} />
+                            <span>Place on Calendar</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="notes-archive-choice-row">
                   <button
                     type="button"
                     className="notes-archive-choice-btn is-complete"
-                    onClick={() => commitArchiveChoice('completed')}
+                    onClick={() => commitArchiveChoice('completed', false)}
                   >
                     <Check size={14} strokeWidth={2.8} />
-                    <span>Complete</span>
+                    <span>
+                      {!activeTimerForNote && archiveShowTimeLog && hasValidArchiveDur
+                        ? 'Complete & Log'
+                        : 'Complete'}
+                    </span>
                   </button>
                   <button
                     type="button"
                     className="notes-archive-choice-btn is-incomplete"
-                    onClick={() => commitArchiveChoice('not-completed')}
+                    onClick={() => commitArchiveChoice('not-completed', false)}
                   >
                     <Archive size={14} />
                     <span>Not Complete</span>
@@ -971,6 +1221,49 @@ export const IdeasHubView: React.FC = () => {
                 )}
               </button>
 
+              {/* Start Task / Live Running Timer Pill (supports multiple simultaneous tasks!) */}
+              {activeTimerForNote ? (
+                <div className="notes-timer-running-group">
+                  <button
+                    type="button"
+                    className="notes-timer-btn is-running"
+                    onClick={() => actions.stopTaskTimer(note.id)}
+                    title="Stop timer and log this session to your calendar"
+                  >
+                    <Square size={10} fill="currentColor" />
+                    <span>
+                      Stop · {formatTimerClock(timerNowMs - activeTimerForNote.startedAtMs)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="notes-timer-discard-btn"
+                    aria-label="Cancel timer without logging"
+                    title="Discard timer"
+                    onClick={() => actions.discardTaskTimer(note.id)}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="notes-timer-btn"
+                  onClick={() => {
+                    if (!note.title.trim() && bodyValue.trim()) {
+                      actions.updateIdea(note.id, {
+                        title: extractFirstStepHint(bodyValue) || 'Focus Work',
+                      });
+                    }
+                    actions.startTaskTimer(note.id);
+                  }}
+                  title="Start a timer for this task — stops directly onto your calendar"
+                >
+                  <Play size={11} fill="currentColor" />
+                  <span>Start Task</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 className={`notes-schedule-btn ${scheduledBlock ? 'is-scheduled' : ''}`.trim()}
@@ -979,11 +1272,22 @@ export const IdeasHubView: React.FC = () => {
                     setZonePickerOpen(false);
                     return;
                   }
-                  setCustomSpaceMinsDraft('');
-                  setEmptySpaceStep(scheduledBlock ? 'pick-slot' : 'ask-duration');
+                  setArchivePromptOpen(false);
+                  setSpaceDurationUnit('min');
+                  setSpaceDurationDraft(
+                    typeof note.estimatedMinutes === 'number' && note.estimatedMinutes >= 15
+                      ? String(note.estimatedMinutes)
+                      : ''
+                  );
+                  setSpaceCustomDateDraft(scheduledBlock?.date || todayIso);
+                  setEmptySpaceStep('ask-duration');
                   setZonePickerOpen(true);
+                  window.setTimeout(() => {
+                    spaceDurationInputRef.current?.focus();
+                    spaceDurationInputRef.current?.select();
+                  }, 30);
                 }}
-                title="Schedule into real open calendar space or Senior Privileges"
+                title="Type length, pick a day, and place directly on the day calendar"
               >
                 {scheduledBlock ? <Check size={12} /> : <CalendarPlus size={12} />}
                 <span>
@@ -1037,236 +1341,242 @@ export const IdeasHubView: React.FC = () => {
             </button>
           )}
 
-          {/* Inline Empty Space Picker Popover (Step 1: Ask Duration -> Step 2: Pick Real Space) */}
-          {zonePickerOpen && (
-            <div className="notes-zone-popover" role="region" aria-label="Schedule in Empty Space">
-              <div className="notes-zone-popover-head">
-                <span>
-                  {emptySpaceStep === 'ask-duration'
-                    ? 'How long should this take?'
-                    : 'Choose an Empty Space'}
-                </span>
-                <button
-                  type="button"
-                  className="notes-icon-btn is-sm"
-                  aria-label="Close Empty Space picker"
-                  onClick={() => setZonePickerOpen(false)}
-                >
-                  <X size={14} />
-                </button>
-              </div>
+          {/* Interactive Empty Space -> Day Calendar Placement Popover
+              Step 1: Type length -> Step 2: Pick day -> Jumps to Day Calendar at earliest open spot to drag/move */}
+          {zonePickerOpen && (() => {
+            const parsedRaw = Number(spaceDurationDraft.trim());
+            const resolvedTypedMins =
+              spaceDurationDraft.trim() !== '' && Number.isFinite(parsedRaw) && parsedRaw > 0
+                ? Math.round(spaceDurationUnit === 'hr' ? parsedRaw * 60 : parsedRaw)
+                : 0;
+            const isTypedValid = resolvedTypedMins >= 5 && resolvedTypedMins <= 480;
 
-              {emptySpaceStep === 'ask-duration' ? (
-                <div className="notes-space-ask-wrap">
-                  <div className="notes-space-ask-grid" role="group" aria-label="How long should this take?">
-                    {[
-                      { mins: 15, label: '15 min' },
-                      { mins: 30, label: '30 min' },
-                      { mins: 45, label: '45 min' },
-                      { mins: 60, label: '1 hr' },
-                      { mins: 90, label: '1.5 hr' },
-                      { mins: 120, label: '2 hr' },
-                    ].map((opt) => (
-                      <button
-                        key={opt.mins}
-                        type="button"
-                        className={`notes-space-ask-btn ${
-                          spaceDurationMins === opt.mins ? 'is-suggested' : ''
-                        }`.trim()}
-                        onClick={() => {
-                          setSpaceDurationMins(opt.mins);
-                          setVisibleSpacesCount(6);
-                          actions.updateIdea(note.id, { estimatedMinutes: opt.mins });
-                          setEmptySpaceStep('pick-slot');
-                        }}
-                      >
-                        <Clock size={13} />
-                        <span>{opt.label}</span>
-                      </button>
-                    ))}
-                  </div>
+            const launchDayPlacement = (chosenDate: string) => {
+              const cleanTitle =
+                note.title.trim() || extractFirstStepHint(bodyValue) || 'Focus Work';
+              if (!note.title.trim()) {
+                actions.updateIdea(note.id, { title: cleanTitle });
+              }
+              const clampedDur = Math.max(15, Math.min(480, spaceDurationMins));
+              actions.updateIdea(note.id, { estimatedMinutes: clampedDur });
+              setZonePickerOpen(false);
+              actions.beginCalendarPlacement({
+                ideaId: note.id,
+                title: cleanTitle,
+                date: chosenDate,
+                durationMinutes: clampedDur,
+                completed: false,
+                returnTab: 'ideas',
+              });
+            };
 
-                  <form
-                    className="notes-space-custom-form"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const parsed = Math.round(Number(customSpaceMinsDraft));
-                      if (!Number.isFinite(parsed) || parsed < 10) return;
-                      const clamped = Math.max(15, Math.min(360, parsed));
-                      setSpaceDurationMins(clamped);
-                      setVisibleSpacesCount(6);
-                      actions.updateIdea(note.id, { estimatedMinutes: clamped });
-                      setCustomSpaceMinsDraft('');
-                      setEmptySpaceStep('pick-slot');
-                    }}
+            return (
+              <div className="notes-zone-popover" role="region" aria-label="Move to calendar">
+                <div className="notes-zone-popover-head">
+                  <span>
+                    {emptySpaceStep === 'ask-duration'
+                      ? 'How long will this take?'
+                      : 'What day?'}
+                  </span>
+                  <button
+                    type="button"
+                    className="notes-icon-btn is-sm"
+                    aria-label="Close calendar planner"
+                    onClick={() => setZonePickerOpen(false)}
                   >
-                    <input
-                      type="number"
-                      inputMode="numeric"
-                      min={15}
-                      max={360}
-                      className="notes-space-custom-input"
-                      placeholder="Custom minutes…"
-                      aria-label="Custom minutes"
-                      value={customSpaceMinsDraft}
-                      onChange={(e) => setCustomSpaceMinsDraft(e.target.value)}
-                    />
-                    <button
-                      type="submit"
-                      className="notes-space-custom-go"
-                      disabled={!customSpaceMinsDraft.trim() || Number(customSpaceMinsDraft) < 10}
-                    >
-                      Find space
-                    </button>
-                  </form>
+                    <X size={14} />
+                  </button>
                 </div>
-              ) : (
-                <>
-                  {/* Chosen duration summary bar with 1-tap Change */}
-                  <div className="notes-space-chosen-bar">
-                    <span className="notes-space-chosen-pill">
-                      <Clock size={12} />
-                      <span>
-                        {spaceDurationMins < 60
-                          ? `${spaceDurationMins} min`
-                          : spaceDurationMins % 60 === 0
-                          ? `${spaceDurationMins / 60} hr`
-                          : `${Math.floor(spaceDurationMins / 60)}h ${spaceDurationMins % 60}m`}
-                      </span>
-                    </span>
+
+                {scheduledBlock && (
+                  <div className="notes-scheduled-banner">
                     <button
                       type="button"
-                      className="notes-space-change-dur"
-                      onClick={() => setEmptySpaceStep('ask-duration')}
+                      className="notes-scheduled-jump"
+                      onClick={() => {
+                        actions.setSelectedDate(scheduledBlock.date);
+                        actions.setScheduleViewMode('day');
+                        actions.setActiveTab('schedule');
+                      }}
                     >
-                      Change length
+                      <Calendar size={14} />
+                      <span>
+                        {scheduledBlock.date === todayIso
+                          ? 'Today'
+                          : scheduledBlock.date === tomorrowIso
+                          ? 'Tomorrow'
+                          : formatShortDate(scheduledBlock.date)}{' '}
+                        · {formatFriendlyTime(scheduledBlock.startTime)}–
+                        {formatFriendlyTime(scheduledBlock.endTime)}
+                      </span>
+                      <ChevronRight size={14} />
                     </button>
-                  </div>
-
-                  {scheduledBlock && (
-                    <div className="notes-scheduled-banner">
+                    <div className="notes-scheduled-actions">
                       <button
                         type="button"
-                        className="notes-scheduled-jump"
+                        className="notes-unschedule-btn"
                         onClick={() => {
-                          actions.setSelectedDate(scheduledBlock.date);
-                          actions.setScheduleViewMode('day');
-                          actions.setActiveTab('schedule');
+                          actions.unscheduleIdea(note.id);
+                          setZonePickerOpen(false);
                         }}
                       >
-                        <Calendar size={14} />
-                        <span>
-                          {scheduledBlock.date === todayIso
-                            ? 'Today'
-                            : scheduledBlock.date === tomorrowIso
-                            ? 'Tomorrow'
-                            : formatShortDate(scheduledBlock.date)}{' '}
-                          · {formatFriendlyTime(scheduledBlock.startTime)}–
-                          {formatFriendlyTime(scheduledBlock.endTime)}
-                        </span>
-                        <ChevronRight size={14} />
+                        Remove
                       </button>
-                      <div className="notes-scheduled-actions">
+                    </div>
+                  </div>
+                )}
+
+                {emptySpaceStep === 'ask-duration' ? (
+                  <form
+                    className="notes-space-type-form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!isTypedValid) return;
+                      const clamped = Math.max(15, Math.min(480, resolvedTypedMins));
+                      setSpaceDurationMins(clamped);
+                      setEmptySpaceStep('pick-day');
+                    }}
+                  >
+                    <div className="notes-space-type-row">
+                      <input
+                        ref={spaceDurationInputRef}
+                        type="number"
+                        inputMode={spaceDurationUnit === 'hr' ? 'decimal' : 'numeric'}
+                        step={spaceDurationUnit === 'hr' ? '0.25' : '5'}
+                        min={spaceDurationUnit === 'hr' ? 0.25 : 5}
+                        max={spaceDurationUnit === 'hr' ? 8 : 480}
+                        className="notes-space-type-input"
+                        placeholder={
+                          spaceDurationUnit === 'hr' ? 'Hours (e.g. 1.5)' : 'Minutes (e.g. 45)'
+                        }
+                        aria-label={
+                          spaceDurationUnit === 'hr'
+                            ? 'Duration in hours'
+                            : 'Duration in minutes'
+                        }
+                        value={spaceDurationDraft}
+                        onChange={(e) => setSpaceDurationDraft(e.target.value)}
+                      />
+                      <div className="notes-space-unit-toggle" role="group" aria-label="Duration unit">
                         <button
                           type="button"
-                          className="notes-next-slot-btn"
+                          className={`notes-space-unit-btn ${
+                            spaceDurationUnit === 'min' ? 'is-active' : ''
+                          }`.trim()}
                           onClick={() => {
-                            actions.assignIdeaToNextEmptyZone(note.id, todayIso, spaceDurationMins);
+                            if (spaceDurationUnit === 'hr' && spaceDurationDraft.trim()) {
+                              const hrs = Number(spaceDurationDraft);
+                              if (Number.isFinite(hrs) && hrs > 0) {
+                                setSpaceDurationDraft(String(Math.round(hrs * 60)));
+                              }
+                            }
+                            setSpaceDurationUnit('min');
                           }}
                         >
-                          Try later space
+                          min
                         </button>
                         <button
                           type="button"
-                          className="notes-unschedule-btn"
+                          className={`notes-space-unit-btn ${
+                            spaceDurationUnit === 'hr' ? 'is-active' : ''
+                          }`.trim()}
                           onClick={() => {
-                            actions.unscheduleIdea(note.id);
-                            setZonePickerOpen(false);
+                            if (spaceDurationUnit === 'min' && spaceDurationDraft.trim()) {
+                              const mins = Number(spaceDurationDraft);
+                              if (Number.isFinite(mins) && mins > 0) {
+                                const hrs = Math.round((mins / 60) * 4) / 4;
+                                setSpaceDurationDraft(String(hrs || 0.25));
+                              }
+                            }
+                            setSpaceDurationUnit('hr');
                           }}
                         >
-                          Remove
+                          hr
                         </button>
                       </div>
                     </div>
-                  )}
 
-                  <div className="notes-zone-options">
-                    {availableEmptySpaces.slice(0, visibleSpacesCount).map((slot, idx) => {
-                      const isCurrentSlot =
-                        scheduledBlock &&
-                        scheduledBlock.date === slot.date &&
-                        scheduledBlock.startTime === slot.startTime;
-                      const dayLabel =
-                        slot.date === todayIso
-                          ? 'Today'
-                          : slot.date === tomorrowIso
-                          ? 'Tomorrow'
-                          : formatShortDate(slot.date);
-                      return (
-                        <button
-                          key={slot.id}
-                          type="button"
-                          className={`notes-zone-option ${
-                            idx === 0 && !scheduledBlock ? 'is-auto' : ''
-                          } ${isCurrentSlot ? 'is-current' : ''}`.trim()}
-                          onClick={() => {
-                            if (!note.title.trim()) {
-                              actions.updateIdea(note.id, {
-                                title: extractFirstStepHint(bodyValue) || 'Focus Work',
-                              });
-                            }
-                            actions.scheduleIdeaInEmptySpace(note.id, {
-                              date: slot.date,
-                              startTime: slot.startTime,
-                              endTime: slot.endTime,
-                              label: slot.label,
-                            });
-                            setZonePickerOpen(false);
-                          }}
-                        >
-                          <div className="notes-space-option-left">
-                            <span className="notes-zone-day">{dayLabel}</span>
-                            <span
-                              className={`notes-space-tag ${
-                                slot.source === 'senior-privileges' ? 'is-sp' : 'is-open'
-                              }`.trim()}
-                            >
-                              {slot.label}
-                            </span>
-                          </div>
-                          <div className="notes-space-option-right">
-                            <span className="notes-zone-time">
-                              {formatFriendlyTime(slot.startTime)} –{' '}
-                              {formatFriendlyTime(slot.endTime)}
-                            </span>
-                            <span className="notes-space-free">
-                              {formatWindowFreeLabel(slot.windowMinutes)}
-                            </span>
-                          </div>
-                        </button>
-                      );
-                    })}
-
-                    {availableEmptySpaces.length === 0 && (
-                      <div className="notes-space-empty">
-                        No open gaps found in the next 2 weeks.
-                      </div>
-                    )}
-
-                    {availableEmptySpaces.length > visibleSpacesCount && (
+                    <div className="notes-space-type-footer">
+                      <span className="notes-space-type-hint">
+                        Next, choose a day to see your calendar and drag it into place.
+                      </span>
+                      <button
+                        type="submit"
+                        className="notes-space-next-btn"
+                        disabled={!isTypedValid}
+                      >
+                        <span>Pick Day</span>
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="notes-space-day-step">
+                    <div className="notes-space-chosen-bar">
+                      <span className="notes-space-chosen-pill">
+                        <Clock size={12} />
+                        <span>{formatDurationMinutesLabel(spaceDurationMins)}</span>
+                      </span>
                       <button
                         type="button"
-                        className="notes-space-more-btn"
-                        onClick={() => setVisibleSpacesCount((prev) => prev + 6)}
+                        className="notes-space-change-dur"
+                        onClick={() => {
+                          setEmptySpaceStep('ask-duration');
+                          window.setTimeout(() => {
+                            spaceDurationInputRef.current?.focus();
+                            spaceDurationInputRef.current?.select();
+                          }, 25);
+                        }}
                       >
-                        Show later empty spaces
+                        Change length
                       </button>
-                    )}
+                    </div>
+
+                    <div className="notes-space-day-grid" role="group" aria-label="Choose day">
+                      {upcomingPlacementDays.map((d) => (
+                        <button
+                          key={d.iso}
+                          type="button"
+                          className={`notes-space-day-btn ${
+                            d.iso === todayIso ? 'is-today' : ''
+                          }`.trim()}
+                          onClick={() => launchDayPlacement(d.iso)}
+                        >
+                          <span className="notes-space-day-main">{d.label}</span>
+                          <span className="notes-space-day-sub">{d.sub}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <form
+                      className="notes-space-custom-form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (spaceCustomDateDraft) {
+                          launchDayPlacement(spaceCustomDateDraft);
+                        }
+                      }}
+                    >
+                      <input
+                        type="date"
+                        className="notes-space-custom-input"
+                        aria-label="Pick another date"
+                        value={spaceCustomDateDraft}
+                        onChange={(e) => setSpaceCustomDateDraft(e.target.value)}
+                      />
+                      <button
+                        type="submit"
+                        className="notes-space-custom-go"
+                        disabled={!spaceCustomDateDraft}
+                      >
+                        Open Day
+                      </button>
+                    </form>
                   </div>
-                </>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            );
+          })()}
 
           <textarea
             ref={titleInputRef}
@@ -1559,6 +1869,16 @@ export const IdeasHubView: React.FC = () => {
                           <span className="notes-folder-name">{proj}</span>
                           {!editingFolders && (
                             <>
+                              {state.activeTimers.some((t) => {
+                                const live = allNotes.find((n) => n.id === t.ideaId);
+                                return (live?.project ?? t.project) === proj;
+                              }) && (
+                                <span
+                                  className="notes-folder-live-dot"
+                                  title="Task timer running in this folder"
+                                  aria-label="Running timer"
+                                />
+                              )}
                               <span className="notes-folder-count">{count}</span>
                               <ChevronRight size={16} className="notes-chevron" />
                             </>
@@ -1849,6 +2169,16 @@ export const IdeasHubView: React.FC = () => {
                     <span className="notes-item-title">
                       {item.title.trim() || 'New Note'}
                     </span>
+                    {!isArchiveFolder && activeTimerByIdeaId.has(item.id) && (
+                      <span className="notes-mini-badge is-running-timer">
+                        <span className="ops-timer-pulse" aria-hidden="true" />
+                        <span>
+                          {formatTimerClock(
+                            timerNowMs - activeTimerByIdeaId.get(item.id)!.startedAtMs
+                          )}
+                        </span>
+                      </span>
+                    )}
                     {isArchiveFolder && (
                       <span
                         className={`notes-mini-badge ${

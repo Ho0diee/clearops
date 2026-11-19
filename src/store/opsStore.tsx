@@ -8,6 +8,7 @@ import React, {
   useState,
 } from 'react';
 import type {
+  ActiveTaskTimer,
   CalendarBlock,
   CloudSyncStatus,
   ConfidenceLevel,
@@ -17,6 +18,7 @@ import type {
   OpsState,
   PacingUpdateLog,
   ParsedLiveInput,
+  PendingCalendarPlacement,
   ReminderItem,
   RouteTab,
   ScheduleViewMode,
@@ -42,7 +44,7 @@ import {
   interpretScheduleInput,
   parseProgressiveVoiceDraft,
 } from './scheduleAi';
-import { findAvailableEmptySpaces } from './emptySpaceFinder';
+import { findAvailableEmptySpaces, findEarliestOpenSlotForDay } from './emptySpaceFinder';
 import { useSchoolworkExtractorBridge } from './schoolworkBridge';
 import {
   getEasternNow,
@@ -294,6 +296,88 @@ function sortBlocks(blocks: CalendarBlock[]): CalendarBlock[] {
   });
 }
 
+function getLocalDateAndTime(ms: number): { date: string; time: string; mins: number } {
+  const d = new Date(ms);
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate()
+  ).padStart(2, '0')}`;
+  const mins = d.getHours() * 60 + d.getMinutes();
+  const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return { date, time, mins };
+}
+
+function formatDurationShort(mins: number): string {
+  const safe = Math.max(1, Math.round(mins));
+  if (safe < 60) return `${safe}m`;
+  const h = Math.floor(safe / 60);
+  const m = safe % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+function minsToHHMM(total: number): string {
+  const clamped = Math.max(0, Math.min(24 * 60, Math.round(total)));
+  if (clamped >= 24 * 60) return '24:00';
+  return `${String(Math.floor(clamped / 60)).padStart(2, '0')}:${String(clamped % 60).padStart(
+    2,
+    '0'
+  )}`;
+}
+
+function buildLoggedBlockFromTimer(
+  timer: ActiveTaskTimer,
+  idea: IdeaItem | undefined,
+  nowMs: number
+): { block: CalendarBlock; elapsedMins: number } {
+  const nowIso = new Date(nowMs).toISOString();
+  const elapsedMs = Math.max(0, nowMs - timer.startedAtMs);
+  const elapsedMins = Math.max(1, Math.round(elapsedMs / 60_000));
+  const startParts = getLocalDateAndTime(timer.startedAtMs);
+  const endParts = getLocalDateAndTime(nowMs);
+
+  let blockDate = timer.startedDate || startParts.date;
+  let startMins = startParts.mins;
+  const visualSpan = Math.max(15, Math.min(12 * 60, elapsedMins));
+  let endMins = startMins + visualSpan;
+
+  if (endParts.date !== blockDate && endParts.mins > visualSpan) {
+    blockDate = endParts.date;
+    endMins = Math.max(15, endParts.mins);
+    startMins = Math.max(0, endMins - visualSpan);
+  } else if (endMins > 24 * 60) {
+    endMins = 24 * 60;
+    startMins = Math.max(0, endMins - visualSpan);
+  }
+
+  const startTime = minsToHHMM(startMins);
+  const endTime = minsToHHMM(endMins);
+  const cleanTitle = (idea?.title || timer.title).trim() || 'Focus Work';
+  const baseNotes = idea?.notes?.trim() || '';
+  const trackedLine =
+    elapsedMins < 15
+      ? `Tracked ${elapsedMins}m (${formatFriendlyTime(startParts.time)}–${formatFriendlyTime(
+          endParts.time
+        )})`
+      : '';
+  const finalNotes = [trackedLine, baseNotes].filter(Boolean).join('\n\n') || undefined;
+
+  return {
+    elapsedMins,
+    block: {
+      id: makeId('blk'),
+      date: blockDate,
+      startTime,
+      endTime,
+      title: cleanTitle,
+      kind: 'empty-zone',
+      completed: true,
+      assignedIdeaId: timer.ideaId,
+      notes: finalNotes,
+      startingStepHint: idea?.startingStep || undefined,
+      updatedAt: nowIso,
+    },
+  };
+}
+
 function normalizeProjectRanks(ideas: IdeaItem[], project: string): IdeaItem[] {
   const projectActive = ideas
     .filter((i) => i.project === project && i.status !== 'completed')
@@ -429,6 +513,8 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             ...parsed,
             blocks: nextBlocks,
             reminders: nextReminders,
+            activeTimers: Array.isArray(parsed.activeTimers) ? parsed.activeTimers : [],
+            pendingPlacement: null,
             selectedDate: shouldRollToToday ? liveToday : parsed.selectedDate || liveToday,
             siteConfig: {
               ...DEFAULT_SITE_CONFIG,
@@ -514,7 +600,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   useEffect(() => {
     try {
-      const { toastMessage: _omit, ...persisted } = state;
+      const { toastMessage: _omit, pendingPlacement: _omitPlacement, ...persisted } = state;
       const envelope: PersistedOpsEnvelope = {
         ...persisted,
         _cleanSlateVersion: CLEAN_SLATE_VERSION,
@@ -1221,6 +1307,244 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         showToast('Removed from calendar');
       },
 
+      startTaskTimer: (ideaId: string) => {
+        const existing = stateRef.current.activeTimers.find((t) => t.ideaId === ideaId);
+        if (existing) return existing;
+        const idea = stateRef.current.ideas.find((i) => i.id === ideaId);
+        if (!idea) return null;
+
+        const nowMs = Date.now();
+        const { date, time } = getLocalDateAndTime(nowMs);
+        const timer: ActiveTaskTimer = {
+          id: makeId('tmr'),
+          ideaId: idea.id,
+          title: idea.title.trim() || 'Untitled Task',
+          project: idea.project,
+          startedAtMs: nowMs,
+          startedDate: date,
+          startedTime: time,
+          updatedAt: new Date(nowMs).toISOString(),
+        };
+
+        setState((prev) => ({
+          ...prev,
+          activeTimers: [...prev.activeTimers.filter((t) => t.ideaId !== ideaId), timer],
+        }));
+        showToast(`Started timer for "${timer.title}"`);
+        return timer;
+      },
+
+      stopTaskTimer: (ideaId: string) => {
+        const timer = stateRef.current.activeTimers.find((t) => t.ideaId === ideaId);
+        if (!timer) return null;
+        const idea = stateRef.current.ideas.find((i) => i.id === ideaId);
+        const nowMs = Date.now();
+        const { block, elapsedMins } = buildLoggedBlockFromTimer(timer, idea, nowMs);
+
+        if (tombstonesRef.current) {
+          tombstonesRef.current = {
+            ...tombstonesRef.current,
+            timers: {
+              ...(tombstonesRef.current.timers ?? {}),
+              [timer.id]: nowMs,
+            },
+          };
+          saveLocalTombstones(tombstonesRef.current);
+        }
+
+        setState((prev) => ({
+          ...prev,
+          activeTimers: prev.activeTimers.filter((t) => t.id !== timer.id),
+          blocks: sortBlocks([...prev.blocks, block]),
+        }));
+
+        showToast(
+          `Logged "${block.title}" (${formatDurationShort(elapsedMins)}) · ${formatFriendlyTime(
+            block.startTime
+          )}–${formatFriendlyTime(block.endTime)}`
+        );
+        return block;
+      },
+
+      discardTaskTimer: (ideaId: string) => {
+        const timer = stateRef.current.activeTimers.find((t) => t.ideaId === ideaId);
+        if (!timer) return;
+        const nowMs = Date.now();
+        if (tombstonesRef.current) {
+          tombstonesRef.current = {
+            ...tombstonesRef.current,
+            timers: {
+              ...(tombstonesRef.current.timers ?? {}),
+              [timer.id]: nowMs,
+            },
+          };
+          saveLocalTombstones(tombstonesRef.current);
+        }
+        setState((prev) => ({
+          ...prev,
+          activeTimers: prev.activeTimers.filter((t) => t.id !== timer.id),
+        }));
+        showToast(`Canceled timer for "${timer.title}"`);
+      },
+
+      logIdeaTimeToCalendar: (ideaId, slot) => {
+        const idea = stateRef.current.ideas.find((i) => i.id === ideaId);
+        if (!idea) return null;
+        const nowIso = new Date().toISOString();
+        const block: CalendarBlock = {
+          id: makeId('blk'),
+          date: slot.date,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+          title: idea.title.trim() || 'Focus Work',
+          kind: 'empty-zone',
+          completed: slot.completed ?? true,
+          assignedIdeaId: idea.id,
+          notes: idea.notes?.trim() || undefined,
+          startingStepHint: idea.startingStep || undefined,
+          updatedAt: nowIso,
+        };
+        setState((prev) => ({
+          ...prev,
+          blocks: sortBlocks([...prev.blocks, block]),
+        }));
+        showToast(
+          `Logged "${block.title}" on ${formatShortDate(slot.date)} · ${formatFriendlyTime(
+            slot.startTime
+          )}–${formatFriendlyTime(slot.endTime)}`
+        );
+        return block;
+      },
+
+      beginCalendarPlacement: (input) => {
+        const idea = stateRef.current.ideas.find((i) => i.id === input.ideaId);
+        const cleanDur = Math.max(15, Math.min(480, Math.round(input.durationMinutes || 60)));
+        const isCompletedLog = Boolean(input.completed);
+        const existing = isCompletedLog
+          ? undefined
+          : stateRef.current.blocks.find(
+              (b) => b.assignedIdeaId === input.ideaId && !b.completed
+            );
+
+        let startTime = input.startTime;
+        let endTime = input.endTime;
+        let sourceLabel: string | undefined;
+
+        if (!startTime || !endTime) {
+          const earliest = findEarliestOpenSlotForDay({
+            blocks: stateRef.current.blocks,
+            targetDate: input.date,
+            todayIso: getTodayISO(),
+            durationMinutes: cleanDur,
+            excludeBlockId: existing?.id,
+            preferRetroactive: Boolean(input.preferRetroactive),
+          });
+          startTime = earliest.startTime;
+          endTime = earliest.endTime;
+          sourceLabel = earliest.label;
+        }
+
+        const placement: PendingCalendarPlacement = {
+          ideaId: input.ideaId,
+          title: (input.title ?? idea?.title ?? '').trim() || 'Focus Work',
+          notes: idea?.notes?.trim() || undefined,
+          startingStepHint: idea?.startingStep || undefined,
+          date: input.date,
+          startTime,
+          endTime,
+          durationMinutes: cleanDur,
+          completed: isCompletedLog,
+          existingBlockId: existing?.id,
+          sourceLabel,
+          returnTab: input.returnTab,
+        };
+
+        setState((prev) => ({
+          ...prev,
+          selectedDate: input.date,
+          scheduleViewMode: 'day',
+          activeTab: 'schedule',
+          pendingPlacement: placement,
+        }));
+      },
+
+      updateCalendarPlacement: (patch) => {
+        setState((prev) => {
+          if (!prev.pendingPlacement) return prev;
+          const next = { ...prev.pendingPlacement, ...patch };
+          return {
+            ...prev,
+            selectedDate: patch.date ?? prev.selectedDate,
+            pendingPlacement: next,
+          };
+        });
+      },
+
+      commitCalendarPlacement: () => {
+        const p = stateRef.current.pendingPlacement;
+        if (!p) return null;
+        const nowIso = new Date().toISOString();
+        const existing = p.existingBlockId
+          ? stateRef.current.blocks.find((b) => b.id === p.existingBlockId)
+          : undefined;
+
+        let committed: CalendarBlock;
+        if (existing && !p.completed) {
+          committed = {
+            ...existing,
+            title: p.title,
+            date: p.date,
+            startTime: p.startTime,
+            endTime: p.endTime,
+            notes: p.notes ?? existing.notes,
+            startingStepHint: p.startingStepHint ?? existing.startingStepHint,
+            updatedAt: nowIso,
+          };
+          setState((prev) => ({
+            ...prev,
+            pendingPlacement: null,
+            selectedDate: p.date,
+            blocks: sortBlocks(prev.blocks.map((b) => (b.id === existing.id ? committed : b))),
+          }));
+        } else {
+          committed = {
+            id: makeId('blk'),
+            date: p.date,
+            startTime: p.startTime,
+            endTime: p.endTime,
+            title: p.title,
+            kind: 'empty-zone',
+            completed: p.completed,
+            assignedIdeaId: p.ideaId,
+            notes: p.notes,
+            startingStepHint: p.startingStepHint,
+            updatedAt: nowIso,
+          };
+          setState((prev) => ({
+            ...prev,
+            pendingPlacement: null,
+            selectedDate: p.date,
+            blocks: sortBlocks([...prev.blocks, committed]),
+          }));
+        }
+
+        showToast(
+          `${p.completed ? 'Logged' : existing ? 'Moved' : 'Placed'} "${committed.title}" · ${formatShortDate(
+            p.date
+          )} ${formatFriendlyTime(p.startTime)}–${formatFriendlyTime(p.endTime)}`
+        );
+        return committed;
+      },
+
+      cancelCalendarPlacement: () => {
+        const returnTab = stateRef.current.pendingPlacement?.returnTab;
+        setState((prev) => ({
+          ...prev,
+          pendingPlacement: null,
+          ...(returnTab ? { activeTab: returnTab } : {}),
+        }));
+      },
+
       assignIdeaToNextEmptyZone: (ideaId: string, fromDate?: string, durationMinutes?: number) => {
         const idea = state.ideas.find((i) => i.id === ideaId);
         if (!idea || idea.status === 'waiting-on') return null;
@@ -1769,15 +2093,49 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       archiveIdea: (ideaId, outcome = 'completed', earnedAmountDollars) => {
         let archivedTitle = '';
+        let loggedFromTimerMins: number | null = null;
         const cleanEarned =
           typeof earnedAmountDollars === 'number' && Number.isFinite(earnedAmountDollars)
             ? Math.max(0, Math.round(earnedAmountDollars * 100) / 100)
             : undefined;
+        const nowMs = Date.now();
+        const nowIso = new Date(nowMs).toISOString();
+
+        // Check if an active timer is running for this idea; if so, stop & log it onto the calendar!
+        const runningTimer = stateRef.current.activeTimers.find((t) => t.ideaId === ideaId);
+        const currentIdea = stateRef.current.ideas.find((i) => i.id === ideaId);
+        const timerResult = runningTimer
+          ? buildLoggedBlockFromTimer(runningTimer, currentIdea, nowMs)
+          : null;
+        if (timerResult) {
+          loggedFromTimerMins = timerResult.elapsedMins;
+        }
+
+        // Tombstone any running timer AND any uncompleted future scheduled blocks for this archived idea
+        const uncompletedBlockIds = stateRef.current.blocks
+          .filter((b) => b.assignedIdeaId === ideaId && !b.completed)
+          .map((b) => b.id);
+        if (tombstonesRef.current && (runningTimer || uncompletedBlockIds.length > 0)) {
+          const nextBlockTombs = { ...tombstonesRef.current.blocks };
+          for (const bid of uncompletedBlockIds) {
+            nextBlockTombs[bid] = nowMs;
+          }
+          const nextTimerTombs = { ...(tombstonesRef.current.timers ?? {}) };
+          if (runningTimer) {
+            nextTimerTombs[runningTimer.id] = nowMs;
+          }
+          tombstonesRef.current = {
+            ...tombstonesRef.current,
+            blocks: nextBlockTombs,
+            timers: nextTimerTombs,
+          };
+          saveLocalTombstones(tombstonesRef.current);
+        }
+
         setState((prev) => {
           const target = prev.ideas.find((i) => i.id === ideaId);
           if (!target || target.status === 'completed') return prev;
           archivedTitle = target.title.trim() || 'Untitled Note';
-          const nowIso = new Date().toISOString();
           const updatedIdeas = prev.ideas.map((i) =>
             i.id === ideaId
               ? {
@@ -1790,19 +2148,18 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 }
               : i
           );
-          const cleanedBlocks = prev.blocks.map((b) =>
-            b.assignedIdeaId === ideaId && !b.completed
-              ? {
-                  ...b,
-                  title: 'Empty Zone — Open Focus Slot',
-                  assignedIdeaId: undefined,
-                  startingStepHint: undefined,
-                }
-              : b
+          const remainingBlocks = prev.blocks.filter(
+            (b) => !(b.assignedIdeaId === ideaId && !b.completed)
           );
+          const nextBlocks = timerResult
+            ? sortBlocks([...remainingBlocks, timerResult.block])
+            : remainingBlocks;
           return {
             ...prev,
-            blocks: cleanedBlocks,
+            activeTimers: runningTimer
+              ? prev.activeTimers.filter((t) => t.id !== runningTimer.id)
+              : prev.activeTimers,
+            blocks: nextBlocks,
             ideas: normalizeProjectRanks(updatedIdeas, target.project),
           };
         });
@@ -1811,10 +2168,14 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             cleanEarned !== undefined
               ? ` · $${cleanEarned % 1 === 0 ? cleanEarned.toFixed(0) : cleanEarned.toFixed(2)}`
               : '';
+          const timerSuffix =
+            loggedFromTimerMins !== null
+              ? ` · Logged ${formatDurationShort(loggedFromTimerMins)}`
+              : '';
           showToast(
             outcome === 'completed'
-              ? `Archived "${archivedTitle}" as Complete${earnedSuffix}`
-              : `Archived "${archivedTitle}" as Not Complete${earnedSuffix}`
+              ? `Archived "${archivedTitle}" as Complete${earnedSuffix}${timerSuffix}`
+              : `Archived "${archivedTitle}" as Not Complete${earnedSuffix}${timerSuffix}`
           );
         }
       },
@@ -1857,29 +2218,38 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       deleteIdea: (ideaId) => {
+        const nowMs = Date.now();
+        const orphanTimers = stateRef.current.activeTimers.filter((t) => t.ideaId === ideaId);
+        const orphanBlocks = stateRef.current.blocks.filter(
+          (b) => b.assignedIdeaId === ideaId && !b.completed
+        );
         if (tombstonesRef.current) {
+          const nextTimerTombs = { ...(tombstonesRef.current.timers ?? {}) };
+          orphanTimers.forEach((t) => {
+            nextTimerTombs[t.id] = nowMs;
+          });
+          const nextBlockTombs = { ...tombstonesRef.current.blocks };
+          orphanBlocks.forEach((b) => {
+            nextBlockTombs[b.id] = nowMs;
+          });
           tombstonesRef.current = {
             ...tombstonesRef.current,
-            ideas: { ...tombstonesRef.current.ideas, [ideaId]: Date.now() },
+            ideas: { ...tombstonesRef.current.ideas, [ideaId]: nowMs },
+            timers: nextTimerTombs,
+            blocks: nextBlockTombs,
           };
           saveLocalTombstones(tombstonesRef.current);
         }
         setState((prev) => {
           const target = prev.ideas.find((i) => i.id === ideaId);
           const remaining = prev.ideas.filter((i) => i.id !== ideaId);
-          const cleanedBlocks = prev.blocks.map((b) =>
-            b.assignedIdeaId === ideaId
-              ? {
-                  ...b,
-                  title: 'Empty Zone — Open Focus Slot',
-                  assignedIdeaId: undefined,
-                  startingStepHint: undefined,
-                }
-              : b
+          const remainingBlocks = prev.blocks.filter(
+            (b) => !(b.assignedIdeaId === ideaId && !b.completed)
           );
           return {
             ...prev,
-            blocks: cleanedBlocks,
+            activeTimers: prev.activeTimers.filter((t) => t.ideaId !== ideaId),
+            blocks: remainingBlocks,
             ideas: target ? normalizeProjectRanks(remaining, target.project) : remaining,
           };
         });

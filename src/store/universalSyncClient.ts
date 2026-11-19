@@ -73,6 +73,7 @@ export function loadLocalTombstones(): SyncTombstones {
       pacedGoals: parsed.pacedGoals ?? {},
       offloadedTasks: parsed.offloadedTasks ?? {},
       checkups: parsed.checkups ?? {},
+      timers: parsed.timers ?? {},
     };
   } catch {
     return createEmptyTombstones();
@@ -150,6 +151,7 @@ export function extractSyncPayloadFromState(
     hourlyRateDollars: state.hourlyRateDollars,
     projects: state.projects,
     ideas: state.ideas,
+    activeTimers: state.activeTimers,
     userBlocks,
     ohchsDelayedDates,
     userReminders,
@@ -263,6 +265,7 @@ export function applySyncPayloadToState(
     hourlyRateDollars: payload.hourlyRateDollars ?? prev.hourlyRateDollars,
     projects: payload.projects?.length ? payload.projects : prev.projects,
     ideas: payload.ideas ?? prev.ideas,
+    activeTimers: Array.isArray(payload.activeTimers) ? payload.activeTimers : prev.activeTimers,
     blocks: sortBlocks([...finalOhchsBlocks, ...pureUserBlocks]),
     reminders: allReminders,
     checkups: payload.checkups ?? prev.checkups,

@@ -22,6 +22,7 @@ import {
   Compass,
   ExternalLink,
   Hourglass,
+  MoveVertical,
   Palette,
   Sparkles,
   Trash2,
@@ -29,6 +30,7 @@ import {
 } from 'lucide-react';
 import { Badge, Button } from '../../components/ui';
 import { addDaysISO, formatShortDate, getWeekDatesISO, useOpsStore } from '../../store/opsStore';
+import { findEarliestOpenSlotForDay } from '../../store/emptySpaceFinder';
 import { inferWhyFromTitle } from '../../store/scheduleAi';
 import { getBlockingBottleneck } from '../../store/ideaBlocking';
 import { OHCHS_BY_DATE } from '../../store/ohchsSchedule';
@@ -47,6 +49,7 @@ import {
 import type {
   CalendarBlock,
   EventColorId,
+  PendingCalendarPlacement,
   ReminderItem,
   VoiceScheduleDraft,
   WhyCategory,
@@ -644,6 +647,20 @@ type ActiveGridDrag =
       anchorMins: number;
       startMins: number;
       endMins: number;
+    }
+  | {
+      kind: 'place-move';
+      grabOffsetMins: number;
+      durationMins: number;
+      date: string;
+      startMins: number;
+      endMins: number;
+    }
+  | {
+      kind: 'place-resize';
+      date: string;
+      startMins: number;
+      endMins: number;
     };
 
 interface CreateSheetDraft {
@@ -1108,6 +1125,7 @@ interface CalendarPaneProps {
   fallbackDraftIso?: string;
   activeDrag?: ActiveGridDrag | null;
   createPreview?: CreateSheetDraft | null;
+  pendingPlacement?: PendingCalendarPlacement | null;
   interactive?: boolean;
   onBlockPointerDown?: (e: React.PointerEvent, block: CalendarBlock) => void;
   onResizePointerDown?: (
@@ -1116,6 +1134,8 @@ interface CalendarPaneProps {
     edge: 'resize-start' | 'resize-end'
   ) => void;
   onReminderPointerDown?: (e: React.PointerEvent, rem: ReminderItem) => void;
+  onPlacementPointerDown?: (e: React.PointerEvent) => void;
+  onPlacementResizePointerDown?: (e: React.PointerEvent) => void;
   onOpenBlock: (id: string) => void;
   onOpenReminder: (id: string) => void;
 }
@@ -1136,17 +1156,20 @@ const CalendarPane = memo<CalendarPaneProps>(
     fallbackDraftIso,
     activeDrag,
     createPreview,
+    pendingPlacement,
     interactive = false,
     onBlockPointerDown,
     onResizePointerDown,
     onReminderPointerDown,
+    onPlacementPointerDown,
+    onPlacementResizePointerDown,
     onOpenBlock,
     onOpenReminder,
   }) => {
     const draggedBlockId =
       activeDrag && (activeDrag.kind === 'move-block' || activeDrag.kind === 'resize-start' || activeDrag.kind === 'resize-end')
         ? activeDrag.block.id
-        : null;
+        : pendingPlacement?.existingBlockId ?? null;
     const draggedRemId =
       activeDrag && activeDrag.kind === 'move-reminder' ? activeDrag.reminder.id : null;
 
@@ -1721,6 +1744,63 @@ const CalendarPane = memo<CalendarPaneProps>(
                   style={{ top: ((nowMin - startHour * 60) / 60) * hourHeight }}
                 />
               )}
+
+              {/* Interactive Task Placement Card (0ms direct drag + bottom resize) */}
+              {interactive &&
+                pendingPlacement &&
+                (() => {
+                  const isDraggingPlacement =
+                    activeDrag &&
+                    (activeDrag.kind === 'place-move' || activeDrag.kind === 'place-resize');
+                  const liveDate = isDraggingPlacement ? activeDrag.date : pendingPlacement.date;
+                  if (liveDate !== iso) return null;
+                  const sMins = isDraggingPlacement
+                    ? activeDrag.startMins
+                    : toMin(pendingPlacement.startTime);
+                  const eMins = isDraggingPlacement
+                    ? activeDrag.endMins
+                    : Math.max(sMins + 15, toMin(pendingPlacement.endTime));
+                  const top = ((sMins - startHour * 60) / 60) * hourHeight;
+                  const height = Math.max(48, ((eMins - sMins) / 60) * hourHeight - 2);
+                  const spanMins = Math.max(15, eMins - sMins);
+                  const durLabel =
+                    spanMins < 60
+                      ? `${spanMins}m`
+                      : spanMins % 60 === 0
+                      ? `${spanMins / 60}h`
+                      : `${Math.floor(spanMins / 60)}h ${spanMins % 60}m`;
+                  return (
+                    <div
+                      className={`gcal-placement-card ${
+                        isDraggingPlacement ? 'is-dragging' : ''
+                      } ${pendingPlacement.completed ? 'is-log' : ''}`.trim()}
+                      style={{ top, height }}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Drag ${pendingPlacement.title} to move time (${fmtTime(
+                        fromMin(sMins)
+                      )} to ${fmtTime(fromMin(eMins))})`}
+                      onPointerDown={onPlacementPointerDown}
+                      onClick={(ev) => ev.stopPropagation()}
+                    >
+                      <div className="gcal-placement-card-head">
+                        <span className="gcal-placement-title">{pendingPlacement.title}</span>
+                        <span className="gcal-placement-drag-chip">
+                          <MoveVertical size={11} />
+                          <span>Drag</span>
+                        </span>
+                      </div>
+                      <span className="gcal-placement-time">
+                        {fmtTime(fromMin(sMins))} – {fmtTime(fromMin(eMins))} · {durLabel}
+                      </span>
+                      <span
+                        className="gcal-placement-resize"
+                        aria-hidden="true"
+                        onPointerDown={onPlacementResizePointerDown}
+                      />
+                    </div>
+                  );
+                })()}
             </div>
           );
         })}
@@ -1785,7 +1865,7 @@ export const CalendarGrid: React.FC<{
     vx: number;
     axis: 'none' | 'x' | 'y';
     stageWidth: number;
-    originKind: 'empty' | 'block' | 'reminder' | 'resize';
+    originKind: 'empty' | 'block' | 'reminder' | 'resize' | 'placement';
     targetBlock?: CalendarBlock;
     targetReminder?: ReminderItem;
     resizeEdge?: 'resize-start' | 'resize-end';
@@ -1930,6 +2010,20 @@ export const CalendarGrid: React.FC<{
         const hi = Math.min(24 * 60, Math.max(cur.anchorMins + 30, snapped));
         if (lo !== cur.startMins || hi !== cur.endMins) {
           setActiveDrag({ ...cur, startMins: lo, endMins: hi });
+        }
+      } else if (cur.kind === 'place-move') {
+        const nextStart = Math.max(
+          0,
+          Math.min(24 * 60 - cur.durationMins, snapMin(rawMins - cur.grabOffsetMins, 15))
+        );
+        const nextEnd = nextStart + cur.durationMins;
+        if (nextStart !== cur.startMins || date !== cur.date) {
+          setActiveDrag({ ...cur, date, startMins: nextStart, endMins: nextEnd });
+        }
+      } else if (cur.kind === 'place-resize') {
+        const nextEnd = Math.max(cur.startMins + 15, Math.min(24 * 60, snapMin(rawMins, 15)));
+        if (nextEnd !== cur.endMins) {
+          setActiveDrag({ ...cur, endMins: nextEnd });
         }
       }
     },
@@ -2141,6 +2235,42 @@ export const CalendarGrid: React.FC<{
     const y = ((toMin(liveDraft.startTime) - startHour * 60) / 60) * hourHeight - 56;
     scrollRef.current.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
   }, [liveDraft?.startTime, liveDraft?.date, state.scheduleViewMode, startHour, hourHeight]);
+
+  // Smoothly scroll straight to the interactive Placement Card when entering Placement Mode or changing day
+  const lastScrolledPlacementKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const p = state.pendingPlacement;
+    if (!p || !scrollRef.current) {
+      lastScrolledPlacementKeyRef.current = null;
+      return;
+    }
+    const key = `${p.ideaId}|${p.date}`;
+    if (lastScrolledPlacementKeyRef.current === key) return;
+    lastScrolledPlacementKeyRef.current = key;
+    const y = ((toMin(p.startTime) - startHour * 60) / 60) * hourHeight - 72;
+    scrollRef.current.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+  }, [state.pendingPlacement, startHour, hourHeight]);
+
+  // If the user switches days in the calendar header/swipe while in Placement Mode, move the card to that day's earliest open slot
+  useEffect(() => {
+    const p = state.pendingPlacement;
+    if (!p || p.date === state.selectedDate) return;
+    const earliest = findEarliestOpenSlotForDay({
+      blocks: state.blocks,
+      targetDate: state.selectedDate,
+      todayIso,
+      durationMinutes: p.durationMinutes,
+      excludeBlockId: p.existingBlockId,
+      preferRetroactive: p.completed,
+    });
+    actions.updateCalendarPlacement({
+      date: state.selectedDate,
+      startTime: earliest.startTime,
+      endTime: earliest.endTime,
+      sourceLabel: earliest.label,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.selectedDate]);
 
   const openBlock = openBlockId ? state.blocks.find((b) => b.id === openBlockId) ?? null : null;
   const openReminder = openReminderId
@@ -2520,6 +2650,120 @@ export const CalendarGrid: React.FC<{
     [finalizePendingGlide, engageMoveReminder]
   );
 
+  const handlePlacementPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      const p = state.pendingPlacement;
+      if (!p) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+      finalizePendingGlide();
+      clearHoldTimer();
+
+      const pointerId = e.pointerId;
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+      lastPointerClientRef.current = { x: clientX, y: clientY };
+
+      const { rawMins } = resolveGridPoint(clientX, clientY);
+      const origStart = toMin(p.startTime);
+      const origEnd = Math.max(origStart + 15, toMin(p.endTime));
+      const duration = origEnd - origStart;
+      const grabOffset = Math.max(0, Math.min(duration, rawMins - origStart));
+
+      gestureRef.current = {
+        pointerId,
+        pointerType: e.pointerType,
+        captured: false,
+        startX: clientX,
+        startY: clientY,
+        lastX: clientX,
+        lastTime: performance.now(),
+        vx: 0,
+        axis: 'y',
+        stageWidth: stageRef.current?.clientWidth || 320,
+        originKind: 'placement',
+      };
+
+      if (scrollRef.current) {
+        try {
+          scrollRef.current.setPointerCapture(pointerId);
+          gestureRef.current.captured = true;
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        navigator.vibrate?.(8);
+      } catch {
+        /* ignore */
+      }
+      setCreateDraft(null);
+      setActiveDrag({
+        kind: 'place-move',
+        grabOffsetMins: grabOffset,
+        durationMins: duration,
+        date: p.date,
+        startMins: origStart,
+        endMins: origEnd,
+      });
+    },
+    [state.pendingPlacement, finalizePendingGlide, resolveGridPoint]
+  );
+
+  const handlePlacementResizePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      const p = state.pendingPlacement;
+      if (!p) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.stopPropagation();
+      e.preventDefault();
+      finalizePendingGlide();
+      clearHoldTimer();
+
+      const pointerId = e.pointerId;
+      lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
+      const origStart = toMin(p.startTime);
+      const origEnd = Math.max(origStart + 15, toMin(p.endTime));
+
+      gestureRef.current = {
+        pointerId,
+        pointerType: e.pointerType,
+        captured: false,
+        startX: e.clientX,
+        startY: e.clientY,
+        lastX: e.clientX,
+        lastTime: performance.now(),
+        vx: 0,
+        axis: 'y',
+        stageWidth: stageRef.current?.clientWidth || 320,
+        originKind: 'placement',
+      };
+
+      if (scrollRef.current) {
+        try {
+          scrollRef.current.setPointerCapture(pointerId);
+          gestureRef.current.captured = true;
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        navigator.vibrate?.(8);
+      } catch {
+        /* ignore */
+      }
+      setCreateDraft(null);
+      setActiveDrag({
+        kind: 'place-resize',
+        date: p.date,
+        startMins: origStart,
+        endMins: origEnd,
+      });
+    },
+    [state.pendingPlacement, finalizePendingGlide]
+  );
+
   const onScrollPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     const target = e.target as HTMLElement | null;
@@ -2546,6 +2790,9 @@ export const CalendarGrid: React.FC<{
       stageWidth: stageRef.current?.clientWidth || 320,
       originKind: 'empty',
     };
+
+    // In Placement Mode, tapping empty space jumps the placement card there — don't trigger sweep-create
+    if (state.pendingPlacement) return;
 
     // Require holding the empty calendar background (380ms) to create/sweep a new event (never on quick tap!)
     holdTimerRef.current = window.setTimeout(() => {
@@ -2690,6 +2937,14 @@ export const CalendarGrid: React.FC<{
           }
         } else if (drag.kind === 'sweep-create') {
           openNewEventSheet(drag.date, drag.startMins, drag.endMins);
+        } else if (drag.kind === 'place-move' || drag.kind === 'place-resize') {
+          actions.updateCalendarPlacement({
+            date: drag.date,
+            startTime: fromMin(drag.startMins),
+            endTime: fromMin(drag.endMins),
+            durationMinutes: Math.max(15, drag.endMins - drag.startMins),
+            sourceLabel: 'Custom spot',
+          });
         }
       }
       return;
@@ -2697,14 +2952,29 @@ export const CalendarGrid: React.FC<{
 
     if (scrollRef.current) scrollRef.current.style.overflowY = '';
 
-    // 2. Direct tap-open guarantee for ALL event & reminder sizes (even 5m/10m/15m/30m micro chips):
-    //    If pointerdown landed on a block, resize edge, or reminder and released without dragging/swiping,
-    //    open its edit sheet immediately even if :active scale or thumb roll shifted pointerup slightly!
+    // 2. Direct tap-open guarantee for ALL event & reminder sizes (even 5m/10m/15m/30m micro chips)
+    //    OR in Placement Mode, tapping any empty time on the day grid jumps the placement card right there!
     if (!cancelled && g.axis === 'none') {
+      if (state.pendingPlacement && g.originKind === 'empty') {
+        const { date, rawMins } = resolveGridPoint(e.clientX, e.clientY);
+        const dur = Math.max(15, state.pendingPlacement.durationMinutes);
+        const nextStart = Math.max(0, Math.min(24 * 60 - dur, snapMin(rawMins, 15)));
+        actions.updateCalendarPlacement({
+          date,
+          startTime: fromMin(nextStart),
+          endTime: fromMin(nextStart + dur),
+          sourceLabel: 'Custom spot',
+        });
+        return;
+      }
       if ((g.originKind === 'block' || g.originKind === 'resize') && g.targetBlock) {
-        handleOpenBlock(g.targetBlock.id);
+        if (!state.pendingPlacement) {
+          handleOpenBlock(g.targetBlock.id);
+        }
       } else if (g.originKind === 'reminder' && g.targetReminder) {
-        handleOpenReminder(g.targetReminder.id);
+        if (!state.pendingPlacement) {
+          handleOpenReminder(g.targetReminder.id);
+        }
       }
       return;
     }
@@ -2940,10 +3210,13 @@ export const CalendarGrid: React.FC<{
                     fallbackDraftIso={state.selectedDate}
                     activeDrag={activeDrag}
                     createPreview={createDraft}
+                    pendingPlacement={state.pendingPlacement}
                     interactive
                     onBlockPointerDown={handleBlockPointerDown}
                     onResizePointerDown={handleResizePointerDown}
                     onReminderPointerDown={handleReminderPointerDown}
+                    onPlacementPointerDown={handlePlacementPointerDown}
+                    onPlacementResizePointerDown={handlePlacementResizePointerDown}
                     onOpenBlock={handleOpenBlock}
                     onOpenReminder={handleOpenReminder}
                   />
@@ -2972,6 +3245,100 @@ export const CalendarGrid: React.FC<{
           </div>
         </div>
       </div>
+
+      {/* Interactive Day-Calendar Placement Dock (shown while moving a note onto the calendar) */}
+      {state.pendingPlacement && (() => {
+        const p = state.pendingPlacement;
+        const isDraggingPlacement =
+          activeDrag && (activeDrag.kind === 'place-move' || activeDrag.kind === 'place-resize');
+        const liveStartMins = isDraggingPlacement ? activeDrag.startMins : toMin(p.startTime);
+        const liveEndMins = isDraggingPlacement
+          ? activeDrag.endMins
+          : Math.max(liveStartMins + 15, toMin(p.endTime));
+        const liveDate = isDraggingPlacement ? activeDrag.date : p.date;
+        const spanMins = Math.max(15, liveEndMins - liveStartMins);
+        const durLabel =
+          spanMins < 60
+            ? `${spanMins}m`
+            : spanMins % 60 === 0
+            ? `${spanMins / 60}h`
+            : `${Math.floor(spanMins / 60)}h ${spanMins % 60}m`;
+        const nudgePlacement = (deltaMins: number) => {
+          const nextStart = Math.max(0, Math.min(24 * 60 - spanMins, liveStartMins + deltaMins));
+          actions.updateCalendarPlacement({
+            startTime: fromMin(nextStart),
+            endTime: fromMin(nextStart + spanMins),
+            sourceLabel: 'Custom spot',
+          });
+        };
+
+        return (
+          <div
+            className={`gcal-placement-dock ${p.completed ? 'is-log' : ''}`.trim()}
+            role="region"
+            aria-label="Place task on calendar"
+          >
+            <div className="gcal-placement-dock-info">
+              <div className="gcal-placement-dock-top">
+                <span className="gcal-placement-dock-tag">
+                  {p.completed ? 'Log time' : 'Place on calendar'}
+                </span>
+                {p.sourceLabel && (
+                  <span className="gcal-placement-dock-hint">{p.sourceLabel}</span>
+                )}
+              </div>
+              <div className="gcal-placement-dock-title">{p.title}</div>
+              <div className="gcal-placement-dock-time">
+                {liveDate === todayIso ? 'Today' : formatShortDate(liveDate)} ·{' '}
+                {fmtTime(fromMin(liveStartMins))} – {fmtTime(fromMin(liveEndMins))} ({durLabel})
+              </div>
+            </div>
+
+            <div className="gcal-placement-dock-actions">
+              <div className="gcal-placement-nudge-group">
+                <button
+                  type="button"
+                  className="gcal-placement-nudge"
+                  onClick={() => nudgePlacement(-15)}
+                  aria-label="Move 15 minutes earlier"
+                  title="15m earlier"
+                >
+                  −15m
+                </button>
+                <button
+                  type="button"
+                  className="gcal-placement-nudge"
+                  onClick={() => nudgePlacement(15)}
+                  aria-label="Move 15 minutes later"
+                  title="15m later"
+                >
+                  +15m
+                </button>
+              </div>
+              <button
+                type="button"
+                className="gcal-placement-cancel"
+                onClick={() => actions.cancelCalendarPlacement()}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="gcal-placement-confirm"
+                onClick={() => {
+                  const committed = actions.commitCalendarPlacement();
+                  if (committed) {
+                    setLocalFlashId(committed.id);
+                  }
+                }}
+              >
+                <Check size={15} strokeWidth={2.8} />
+                <span>{p.completed ? 'Log Here' : 'Place Here'}</span>
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Google Calendar-style Tap/Sweep New Event Creation Sheet */}
       {createDraft &&

@@ -104,6 +104,36 @@ export interface IdeaItem {
   earnedAmountDollars?: number;
 }
 
+export interface ActiveTaskTimer {
+  id: string;
+  ideaId: string;
+  title: string;
+  project: string;
+  /** Epoch ms when the timer started */
+  startedAtMs: number;
+  /** Local YYYY-MM-DD when started */
+  startedDate: string;
+  /** Local HH:MM when started */
+  startedTime: string;
+  updatedAt?: string;
+}
+
+export interface PendingCalendarPlacement {
+  ideaId: string;
+  title: string;
+  notes?: string;
+  startingStepHint?: string;
+  date: string; // YYYY-MM-DD
+  startTime: string; // HH:MM
+  endTime: string; // HH:MM
+  durationMinutes: number;
+  /** false = scheduling upcoming task into open space; true = retroactive time log on archive */
+  completed: boolean;
+  existingBlockId?: string;
+  sourceLabel?: string;
+  returnTab?: RouteTab;
+}
+
 export interface CheckupBenchmark {
   id: string;
   label: string;
@@ -239,6 +269,8 @@ export interface OpsState {
   reminders: ReminderItem[];
   ideas: IdeaItem[];
   projects: string[];
+  activeTimers: ActiveTaskTimer[];
+  pendingPlacement: PendingCalendarPlacement | null;
   checkups: ProjectCheckup[];
   pacedGoals: PacedGoal[];
   pacingLogs: PacingUpdateLog[];
@@ -283,6 +315,36 @@ export interface OpsActions {
     }
   ) => CalendarBlock | null;
   unscheduleIdea: (ideaId: string) => void;
+  startTaskTimer: (ideaId: string) => ActiveTaskTimer | null;
+  stopTaskTimer: (ideaId: string) => CalendarBlock | null;
+  discardTaskTimer: (ideaId: string) => void;
+  logIdeaTimeToCalendar: (
+    ideaId: string,
+    slot: {
+      date: string;
+      startTime: string;
+      endTime: string;
+      completed?: boolean;
+    }
+  ) => CalendarBlock | null;
+  beginCalendarPlacement: (input: {
+    ideaId: string;
+    title?: string;
+    date: string;
+    durationMinutes: number;
+    startTime?: string;
+    endTime?: string;
+    completed?: boolean;
+    preferRetroactive?: boolean;
+    returnTab?: RouteTab;
+  }) => void;
+  updateCalendarPlacement: (
+    patch: Partial<
+      Pick<PendingCalendarPlacement, 'date' | 'startTime' | 'endTime' | 'durationMinutes' | 'sourceLabel'>
+    >
+  ) => void;
+  commitCalendarPlacement: () => CalendarBlock | null;
+  cancelCalendarPlacement: () => void;
   parseLiveCommand: (rawText: string) => ParsedLiveInput | null;
   submitLiveCommand: (rawText: string) => ParsedLiveInput | null;
   parseVoiceDraft: (rawText: string) => VoiceScheduleDraft | null;

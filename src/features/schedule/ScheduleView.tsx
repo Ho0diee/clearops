@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { CalendarGrid } from './CalendarGrid';
 import { ScheduleChat } from './ScheduleChat';
+import { useOpsStore } from '../../store/opsStore';
 import type { ParsedLiveInput, VoiceScheduleDraft } from '../../types/schema';
 
 /**
@@ -9,6 +10,7 @@ import type { ParsedLiveInput, VoiceScheduleDraft } from '../../types/schema';
  * pops to the target day & time in real time and shows filled vs missing slots.
  */
 export const ScheduleView: React.FC = () => {
+  const { state } = useOpsStore();
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [liveDraft, setLiveDraft] = useState<VoiceScheduleDraft | null>(null);
 
@@ -28,7 +30,9 @@ export const ScheduleView: React.FC = () => {
   return (
     <div className="sched-page">
       <CalendarGrid highlightId={highlightId} liveDraft={liveDraft} />
-      <ScheduleChat onDraftChange={setLiveDraft} onAdded={handleAdded} />
+      {!state.pendingPlacement && (
+        <ScheduleChat onDraftChange={setLiveDraft} onAdded={handleAdded} />
+      )}
     </div>
   );
 };

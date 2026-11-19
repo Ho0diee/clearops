@@ -20,6 +20,7 @@ import { PacingRoiView } from './features/pacing';
 import { ReflectionDrawer } from './features/reflection';
 import { SiteConfigView } from './features/config';
 import { AlertMonitor } from './components/AlertMonitor';
+import { ActiveTimersBar } from './components/ActiveTimersBar';
 
 const ClearOpsWorkspace: React.FC = () => {
   const { state, actions, syncStatus } = useOpsStore();
@@ -219,6 +220,8 @@ const ClearOpsWorkspace: React.FC = () => {
           </div>
         </div>
       </header>
+
+      <ActiveTimersBar />
 
       <main className={`ops-main ${state.activeTab === 'schedule' ? 'is-schedule' : ''}`.trim()}>
         {state.activeTab === 'schedule' && <ScheduleView />}

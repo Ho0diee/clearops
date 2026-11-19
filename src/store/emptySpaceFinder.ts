@@ -308,3 +308,128 @@ export function formatWindowFreeLabel(mins: number): string {
   const m = mins % 60;
   return m === 0 ? `${h}h free` : `${h}h ${m}m free`;
 }
+
+/**
+ * Finds the earliest usable open slot on ONE specific target date (works for today,
+ * future dates, and past dates for retroactive time logging).
+ * Treats Senior Privileges periods and blank gaps as open; skips busy classes/events.
+ */
+export function findEarliestOpenSlotForDay(opts: {
+  blocks: CalendarBlock[];
+  targetDate: string;
+  todayIso: string;
+  durationMinutes: number;
+  nowMinutes?: number;
+  excludeBlockId?: string;
+  preferRetroactive?: boolean;
+  dayStartMin?: number;
+  dayEndMin?: number;
+}): {
+  startTime: string;
+  endTime: string;
+  label: string;
+  source: 'senior-privileges' | 'open-space' | 'fallback';
+} {
+  const {
+    blocks,
+    targetDate,
+    todayIso,
+    durationMinutes,
+    nowMinutes = getLiveLocalMinutes(),
+    excludeBlockId,
+    preferRetroactive = false,
+    dayStartMin = 7 * 60 + 30,
+    dayEndMin = 22 * 60,
+  } = opts;
+
+  const desiredDur = Math.max(15, Math.min(480, Math.round(durationMinutes)));
+
+  // For retroactive logging on Today ("I just finished this"), default to ending right now
+  if (preferRetroactive && targetDate === todayIso) {
+    const snappedEnd = Math.max(
+      dayStartMin + desiredDur,
+      Math.min(24 * 60, Math.round(nowMinutes / 5) * 5)
+    );
+    const snappedStart = Math.max(0, snappedEnd - desiredDur);
+    return {
+      startTime: fromMinutes(snappedStart),
+      endTime: fromMinutes(Math.min(24 * 60, snappedStart + desiredDur)),
+      label: 'Just finished',
+      source: 'open-space',
+    };
+  }
+
+  const dayBlocks = blocks.filter(
+    (b) => b.date === targetDate && b.id !== excludeBlockId
+  );
+
+  const busyRaw: Interval[] = [];
+  const seniorPrivRaw: Interval[] = [];
+
+  for (const b of dayBlocks) {
+    const s = toMinutes(b.startTime);
+    const e = Math.max(s + 10, toMinutes(b.endTime));
+    if (isSeniorPrivilegesBlock(b)) {
+      seniorPrivRaw.push({ start: s, end: e });
+      continue;
+    }
+    if (isLegacyEmptyZonePlaceholder(b)) {
+      continue;
+    }
+    busyRaw.push({ start: s, end: e });
+  }
+
+  const busyMerged = mergeIntervals(busyRaw, 0);
+  const seniorPrivMerged = mergeIntervals(seniorPrivRaw, 10);
+
+  const [y, m, d] = targetDate.split('-').map(Number);
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  const isWeekend = dow === 0 || dow === 6;
+
+  let earliest = isWeekend ? Math.max(dayStartMin, 8 * 60) : dayStartMin;
+  if (!preferRetroactive && targetDate === todayIso) {
+    earliest = Math.max(earliest, ceilToStep(nowMinutes + 5, 15));
+  }
+
+  if (earliest + desiredDur <= dayEndMin) {
+    const freeIntervals = subtractIntervals({ start: earliest, end: dayEndMin }, busyMerged);
+    const fullFit = freeIntervals.find((f) => f.end - f.start >= desiredDur);
+    if (fullFit) {
+      const start = fullFit.start;
+      const end = start + desiredDur;
+      const inSP = seniorPrivMerged.some(
+        (sp) => getOverlapMinutes({ start, end }, sp) >= Math.min(desiredDur, 20)
+      );
+      return {
+        startTime: fromMinutes(start),
+        endTime: fromMinutes(end),
+        label: inSP ? 'Senior Privileges' : 'Earliest open slot',
+        source: inSP ? 'senior-privileges' : 'open-space',
+      };
+    }
+
+    // No full-fit gap: pick the earliest partial gap (>= 15m) so user sees the open window
+    const partialFit = freeIntervals.find((f) => f.end - f.start >= 15);
+    if (partialFit) {
+      const start = Math.min(partialFit.start, 24 * 60 - desiredDur);
+      return {
+        startTime: fromMinutes(start),
+        endTime: fromMinutes(Math.min(24 * 60, start + desiredDur)),
+        label: 'Earliest opening',
+        source: 'open-space',
+      };
+    }
+  }
+
+  // Fallback for fully booked day or late evening: place cleanly inside visible hours
+  const fallbackStart = Math.max(
+    dayStartMin,
+    Math.min(24 * 60 - desiredDur, Math.min(earliest, dayEndMin - desiredDur))
+  );
+  return {
+    startTime: fromMinutes(fallbackStart),
+    endTime: fromMinutes(Math.min(24 * 60, fallbackStart + desiredDur)),
+    label: 'Drag to place',
+    source: 'fallback',
+  };
+}

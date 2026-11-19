@@ -1,4 +1,5 @@
 import type {
+  ActiveTaskTimer,
   CalendarBlock,
   DailyReflectionEntry,
   IdeaItem,
@@ -26,6 +27,7 @@ export interface SyncTombstones {
   pacedGoals: Record<string, number>;
   offloadedTasks: Record<string, number>;
   checkups: Record<string, number>;
+  timers?: Record<string, number>;
 }
 
 export interface SchoolDelayRecord {
@@ -42,6 +44,7 @@ export interface UniversalSyncPayload {
   hourlyRateDollars: number;
   projects: string[];
   ideas: IdeaItem[];
+  activeTimers?: ActiveTaskTimer[];
   /** All non-OHCHS user blocks PLUS any customized OHCHS blocks */
   userBlocks: CalendarBlock[];
   /** Snow-day / late-start bell schedule overrides keyed by YYYY-MM-DD */
@@ -69,6 +72,7 @@ export function createEmptyTombstones(): SyncTombstones {
     pacedGoals: {},
     offloadedTasks: {},
     checkups: {},
+    timers: {},
   };
 }
 
@@ -174,6 +178,7 @@ export function mergeTombstones(
     pacedGoals: mergeRecordMax(a?.pacedGoals, b?.pacedGoals),
     offloadedTasks: mergeRecordMax(a?.offloadedTasks, b?.offloadedTasks),
     checkups: mergeRecordMax(a?.checkups, b?.checkups),
+    timers: mergeRecordMax(a?.timers, b?.timers),
   };
 }
 
@@ -370,6 +375,7 @@ export function computePayloadContentFingerprint(payload: UniversalSyncPayload):
     hourlyRateDollars: payload.hourlyRateDollars,
     projects: payload.projects ?? [],
     ideas: sortById(payload.ideas),
+    activeTimers: sortById(payload.activeTimers),
     userBlocks: sortById(payload.userBlocks),
     ohchsDelayedDates: canonicalizeObjectKeys(payload.ohchsDelayedDates),
     userReminders: sortById(payload.userReminders),
@@ -390,6 +396,7 @@ export function computePayloadContentFingerprint(payload: UniversalSyncPayload):
       pacedGoals: canonicalizeObjectKeys(tb?.pacedGoals),
       offloadedTasks: canonicalizeObjectKeys(tb?.offloadedTasks),
       checkups: canonicalizeObjectKeys(tb?.checkups),
+      timers: canonicalizeObjectKeys(tb?.timers),
     },
   });
 }
@@ -574,6 +581,11 @@ export function mergeUniversalPayload(
   ).filter((r) => shouldIncludeOhchsReminderInSync(r, refTodayIso, mergedDelays, nowMs));
 
   // Merge other collections
+  const mergedTimers = mergeByIdLww(
+    a.activeTimers ?? [],
+    b.activeTimers ?? [],
+    tombstones.timers ?? {}
+  ).sort((x, y) => x.startedAtMs - y.startedAtMs);
   const mergedCheckups = mergeByIdLww(a.checkups ?? [], b.checkups ?? [], tombstones.checkups);
   const mergedGoals = mergeByIdLww(a.pacedGoals ?? [], b.pacedGoals ?? [], tombstones.pacedGoals);
   const mergedLogs = mergeByIdLww(a.pacingLogs ?? [], b.pacingLogs ?? [], {});
@@ -621,6 +633,7 @@ export function mergeUniversalPayload(
       primaryMeta.hourlyRateDollars ?? secondaryMeta.hourlyRateDollars ?? 85,
     projects: finalProjects,
     ideas: mergedIdeas,
+    activeTimers: mergedTimers,
     userBlocks: mergedUserBlocks,
     ohchsDelayedDates: mergedDelays,
     userReminders: mergedUserReminders,
