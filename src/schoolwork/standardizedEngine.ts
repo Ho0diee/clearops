@@ -489,10 +489,9 @@ function findHeaderIndex(notes: string, headers: string[]): number {
 }
 
 function findAutoDueStartIndex(notes: string): number {
-  const legacyIdx = findHeaderIndex(notes, [LEGACY_DEADLINES_HEADER, LEGACY_DUE_SECTION_HEADER]);
-  if (legacyIdx >= 0) return legacyIdx;
+  let best = findHeaderIndex(notes, [LEGACY_DEADLINES_HEADER, LEGACY_DUE_SECTION_HEADER]);
 
-  // Find trailing direct due/test/check block ("Due: ...", "Test: ...", "✓ ...") outside "In class:"
+  // Also find earliest direct due/test/check block ("Due: ...", "Test: ...", "✓ ...") outside "In class:"
   const inClassIdx = findHeaderIndex(notes, [
     AUTO_INCLASS_SECTION_HEADER,
     LEGACY_INCLASS_SECTION_HEADER,
@@ -509,11 +508,12 @@ function findAutoDueStartIndex(notes: string): number {
       inClassSection = false;
     }
     if (!inClassSection && DIRECT_DUE_LINE_REGEX.test(trimmed)) {
-      return offset;
+      if (best === -1 || offset < best) best = offset;
+      break;
     }
     offset += raw.length + 1;
   }
-  return -1;
+  return best;
 }
 
 function stripAutoDueSection(notes: string | undefined): string {
