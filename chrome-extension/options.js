@@ -126,4 +126,19 @@ document.getElementById('syncBtn').addEventListener('click', () => {
   });
 });
 
+document.getElementById('wipeBtn').addEventListener('click', () => {
+  const ok = window.confirm(
+    'Wipe all auto-synced schoolwork blocks, in-class tags, and schoolwork notes from Intuition (airbnb710.com)? Your personal events, alerts, classes, and notes stay untouched.'
+  );
+  if (!ok) return;
+  statusEl.textContent = 'Wiping all auto-synced schoolwork data from Intuition...';
+  chrome.runtime.sendMessage({ type: 'WIPE_SCHOOLWORK_FROM_OPTIONS' }, async (res) => {
+    if (!res || !res.ok) {
+      await renderStatus('Wipe Error: ' + (res?.error || 'Could not wipe data'));
+    } else {
+      await renderStatus('Cleaned! ' + (res.summary || 'Wiped all auto-synced schoolwork data.'));
+    }
+  });
+});
+
 load();

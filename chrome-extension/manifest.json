@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Intuition — Eco, Math, Lit & Physics Auto-Sync",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Expands & reads Google Classroom Classwork + Stream (Lit, Pre-Calc, Honors Physics) and Eco Slide + Audiobook Sheet every 6 hours into Intuition (airbnb710.com).",
   "permissions": ["activeTab", "scripting", "storage", "notifications", "alarms", "tabs"],
   "host_permissions": [

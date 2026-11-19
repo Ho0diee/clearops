@@ -22,6 +22,7 @@ import {
   getEasternNow,
   reconcileSchoolworkLifecycle,
   SCHOOL_COURSES,
+  stripAllAutoSchoolworkSections,
   type SchoolCourseId,
   type StandardizedExtractedAssignment,
 } from './standardizedEngine.js';
@@ -783,5 +784,114 @@ export async function runAutomatedSchoolworkPipeline(options?: {
     ok: true,
     ...writeRes,
     summary: finalSummary,
+  };
+}
+
+/**
+ * Cleanly wipes ONLY auto-synced schoolwork items (`sch-hw-*`, `sch-idea-*`, and auto-injected
+ * In-Class / Homework sections on OHCHS class blocks) across all synced devices via tombstones,
+ * while leaving 100% of personal events, alerts, classes, and notes untouched.
+ */
+export async function wipeSyncedSchoolworkData(): Promise<{
+  ok: boolean;
+  wipedBlocks: number;
+  wipedIdeas: number;
+  cleanedClasses: number;
+  summary: string;
+}> {
+  const wipeOnce = async (useIfMatch: boolean) => {
+    const current = await readWorkspaceBlob();
+    if (!current.payload) {
+      return { wipedBlocks: 0, wipedIdeas: 0, cleanedClasses: 0 };
+    }
+
+    const base = current.payload;
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const nextTombstones = structuredClone(base.tombstones ?? createEmptyTombstones());
+
+    let wipedBlocks = 0;
+    let cleanedClasses = 0;
+    const nextUserBlocks = [];
+
+    for (const blk of base.userBlocks ?? []) {
+      if (blk.id.startsWith('sch-hw-')) {
+        nextTombstones.blocks[blk.id] = nowMs;
+        wipedBlocks += 1;
+        continue;
+      }
+      if (
+        blk.id.startsWith('ohchs-') &&
+        blk.notes &&
+        (blk.notes.includes('--- Homework & Deadlines ---') ||
+          blk.notes.includes('--- In-Class Work ---'))
+      ) {
+        const cleanedNotes = stripAllAutoSchoolworkSections(blk.notes);
+        cleanedClasses += 1;
+        nextUserBlocks.push({
+          ...blk,
+          notes: cleanedNotes,
+          alertOffsetMinutes: undefined,
+          updatedAt: nowIso,
+        });
+        continue;
+      }
+      nextUserBlocks.push(blk);
+    }
+
+    let wipedIdeas = 0;
+    const nextIdeas = [];
+    for (const idea of base.ideas ?? []) {
+      if (idea.id.startsWith('sch-idea-')) {
+        nextTombstones.ideas[idea.id] = nowMs;
+        wipedIdeas += 1;
+        continue;
+      }
+      nextIdeas.push(idea);
+    }
+
+    const updatedPayload: UniversalSyncPayload = {
+      ...base,
+      updatedAtMs: nowMs,
+      userBlocks: nextUserBlocks,
+      ideas: nextIdeas,
+      tombstones: nextTombstones,
+    };
+
+    const merged = mergeUniversalPayload(current.payload, updatedPayload);
+    await put(WORKSPACE_BLOB_PATH, JSON.stringify(merged), {
+      access: 'private',
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType: 'application/json',
+      ...(useIfMatch && current.etag ? { ifMatch: current.etag } : {}),
+    });
+
+    return { wipedBlocks, wipedIdeas, cleanedClasses };
+  };
+
+  let res: { wipedBlocks: number; wipedIdeas: number; cleanedClasses: number };
+  try {
+    res = await wipeOnce(true);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (err instanceof BlobPreconditionFailedError || /etag|precondition|412/i.test(msg)) {
+      res = await wipeOnce(false);
+    } else {
+      throw err;
+    }
+  }
+
+  const cfg = await loadAutomationConfig();
+  cfg.lastHashByCourse = {};
+  cfg.lastRunAt = new Date().toISOString();
+  const summary = `Wiped ${res.wipedBlocks} auto-synced homework block(s), ${res.wipedIdeas} schoolwork note(s), and cleaned ${res.cleanedClasses} class entry note(s).`;
+  cfg.lastSummary = summary;
+  await saveAutomationConfig(cfg);
+
+  return {
+    ok: true,
+    ...res,
+    summary,
   };
 }

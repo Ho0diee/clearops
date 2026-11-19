@@ -318,6 +318,16 @@ function stripAutoDueSection(notes: string | undefined): string {
   return notes.slice(0, idx).trim();
 }
 
+export function stripAllAutoSchoolworkSections(notes: string | undefined): string | undefined {
+  if (!notes) return undefined;
+  let cleaned = stripAutoDueSection(notes);
+  const inClassIdx = cleaned.indexOf(AUTO_INCLASS_SECTION_HEADER);
+  if (inClassIdx >= 0) {
+    cleaned = cleaned.slice(0, inClassIdx).trim();
+  }
+  return cleaned || undefined;
+}
+
 function upsertInClassSection(notes: string | undefined, lines: string[]): string | undefined {
   const withoutDue = stripAutoDueSection(notes);
   const dueIdx = notes ? notes.indexOf(AUTO_DUE_SECTION_HEADER) : -1;

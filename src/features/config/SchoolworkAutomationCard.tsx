@@ -7,6 +7,7 @@ import {
   Play,
   RefreshCw,
   Settings2,
+  Trash2,
 } from 'lucide-react';
 import {
   Badge,
@@ -228,6 +229,33 @@ export const SchoolworkAutomationCard: React.FC = () => {
     }
   };
 
+  const handleWipeSyncedSchoolwork = async () => {
+    const confirmed = window.confirm(
+      'Wipe all auto-synced schoolwork blocks, in-class tags, and schoolwork notes? Your personal events, alerts, classes, and notes will stay untouched.'
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      const resp = await fetch(`${apiBase}/api/schoolwork/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'wipe-schoolwork' }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        await actions.syncNow();
+        actions.showToast(data.summary || 'Wiped all auto-synced schoolwork data');
+        await loadStatus();
+      } else {
+        actions.showToast(data.error || 'Wipe failed');
+      }
+    } catch {
+      actions.showToast('Could not reach Vercel schoolwork endpoint');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const isReady = Boolean(status?.hasGeminiKey);
 
   return (
@@ -374,6 +402,16 @@ export const SchoolworkAutomationCard: React.FC = () => {
                 onClick={handleRunRolloverNow}
               >
                 Run Rollover Check Now
+              </Button>
+
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={busy}
+                iconLeft={<Trash2 size={14} />}
+                onClick={handleWipeSyncedSchoolwork}
+              >
+                Wipe Synced Schoolwork
               </Button>
             </div>
           </div>

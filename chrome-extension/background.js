@@ -1037,10 +1037,29 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Ensure alarm exists whenever the service worker wakes up
 void ensureAutoSyncAlarm(false);
 
-// Also allow manual click & schedule inspection from Options page
+// Also allow manual click, wipe, & schedule inspection from Options page
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'RUN_SYNC_FROM_OPTIONS') {
     runFullSync(null).then((res) => sendResponse(res));
+    return true;
+  }
+  if (msg?.type === 'WIPE_SCHOOLWORK_FROM_OPTIONS') {
+    getConfig()
+      .then((cfg) => postToIntuition(cfg.vercelUrl, { action: 'wipe-schoolwork' }))
+      .then(async (res) => {
+        await chrome.storage.local.set({
+          lastRun: {
+            ok: true,
+            at: new Date().toISOString(),
+            summary: res.summary || 'Wiped all auto-synced schoolwork data.',
+            sources: [],
+          },
+        });
+        sendResponse(res);
+      })
+      .catch((err) =>
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) })
+      );
     return true;
   }
   if (msg?.type === 'GET_ALARM_STATUS') {

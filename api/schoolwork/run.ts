@@ -3,6 +3,7 @@ import {
   resolveCredentials,
   runAutomatedSchoolworkPipeline,
   saveAutomationConfig,
+  wipeSyncedSchoolworkData,
 } from '../../src/schoolwork/cloudSyncRunner.js';
 import type { SchoolCourseId } from '../../src/schoolwork/standardizedEngine.js';
 
@@ -90,6 +91,11 @@ export async function POST(request: Request): Promise<Response> {
       }
       await saveAutomationConfig(cfg);
       return Response.json({ ok: true, message: 'Saved automation settings' }, { status: 200, headers });
+    }
+
+    if (action === 'wipe-schoolwork') {
+      const res = await wipeSyncedSchoolworkData();
+      return Response.json(res, { status: 200, headers });
     }
 
     if (action === 'webhook-ingest' || action === 'test-raw-slide') {
