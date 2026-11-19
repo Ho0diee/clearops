@@ -267,13 +267,14 @@ function buildClassroomViewUrl(classId, accountSelector, view) {
 }
 
 /**
- * Opens a brand-new background tab directly at `url` and waits until Chrome finishes
- * loading AND any instant redirect settles (no stale-tab race!).
+ * Opens a brand-new tab directly at `url` with `active: true` so Google Classroom's Wiz SPA
+ * actually hydrates (hidden `active: false` tabs freeze on "Skip to main content..."),
+ * waits until Chrome finishes loading AND any instant redirect settles.
  */
 async function openFreshTabAtUrl(url, timeoutMs = 24000) {
   let tab = null;
   try {
-    tab = await chrome.tabs.create({ url, active: false });
+    tab = await chrome.tabs.create({ url, active: true });
     if (!tab?.id) return { ok: false, tabId: null, finalUrl: url };
     const tabId = tab.id;
 
@@ -322,15 +323,31 @@ async function openFreshTabAtUrl(url, timeoutMs = 24000) {
   }
 }
 
+async function getCurrentActiveTabId() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    return tab?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function restoreTabFocus(tabId) {
+  if (!tabId) return;
+  await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+}
+
 /**
  * Inspects Chrome's signed-in Google Classroom slots (/u/0/h, /u/1/h, /u/2/h) to detect:
  * - Which email is signed into each slot
  * - Which slot actually contains the user's configured classes (Lit, Pre-Calc, Physics)!
  */
 async function detectSchoolClassroomSlot(targetClassIds) {
+  const origTabId = await getCurrentActiveTabId();
   const checks = [];
   const wantedIds = (targetClassIds || []).filter(Boolean);
 
+  try {
   for (const slot of [0, 1, 2]) {
     let tabId = null;
     try {
@@ -473,6 +490,9 @@ async function detectSchoolClassroomSlot(targetClassIds) {
         await chrome.tabs.remove(tabId).catch(() => {});
       }
     }
+  }
+  } finally {
+    await restoreTabFocus(origTabId);
   }
 
   // Pick slot with the most matched class IDs (or most total classes as fallback)
@@ -1044,6 +1064,7 @@ async function runFullSync(activeTab) {
   }
   isSyncing = true;
   setBadge('...', '#2563EB');
+  const origTabId = activeTab?.id ?? (await getCurrentActiveTabId());
 
   try {
     const cfg = await getConfig();
@@ -1337,6 +1358,7 @@ async function runFullSync(activeTab) {
     setTimeout(() => setBadge('', '#DC2626'), 6000);
     return { ok: false, error: msg };
   } finally {
+    await restoreTabFocus(origTabId);
     isSyncing = false;
   }
 }
