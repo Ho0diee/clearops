@@ -14,6 +14,7 @@ import {
   Bell,
   Check,
   ChevronLeft,
+  ChevronRight,
   ExternalLink,
   Sparkles,
   Trash2,
@@ -25,6 +26,7 @@ import { inferWhyFromTitle } from '../../store/scheduleAi';
 import { getBlockingBottleneck } from '../../store/ideaBlocking';
 import { OHCHS_BY_DATE } from '../../store/ohchsSchedule';
 import {
+  EVENT_COLOR_HEX,
   EVENT_COLOR_OPTIONS,
   formatAlertBadgeCompact,
   formatAlertOffsetShort,
@@ -212,48 +214,176 @@ interface CreateSheetDraft {
   alertOffsetMinutes?: number;
 }
 
-const DURATION_PRESETS: { label: string; mins: number }[] = [
-  { label: '15m', mins: 15 },
-  { label: '30m', mins: 30 },
-  { label: '45m', mins: 45 },
-  { label: '1h', mins: 60 },
-  { label: '1.5h', mins: 90 },
-  { label: '2h', mins: 120 },
+const DURATION_DROPDOWN_OPTIONS: { label: string; mins: number }[] = [
+  { label: '15 min', mins: 15 },
+  { label: '30 min', mins: 30 },
+  { label: '45 min', mins: 45 },
+  { label: '1 hr', mins: 60 },
+  { label: '1.5 hr', mins: 90 },
+  { label: '2 hr', mins: 120 },
+  { label: '3 hr', mins: 180 },
+  { label: '4 hr', mins: 240 },
 ];
 
-const QuickDurationRow: React.FC<{
+const ALERT_DROPDOWN_OPTIONS: { label: string; value: string }[] = [
+  { label: 'Off', value: 'off' },
+  { label: 'At start', value: '0' },
+  { label: '5m before', value: '5' },
+  { label: '10m before', value: '10' },
+  { label: '15m before', value: '15' },
+  { label: '30m before', value: '30' },
+  { label: '1h before', value: '60' },
+  { label: '2h before', value: '120' },
+  { label: '1d before', value: '1440' },
+  { label: 'Custom…', value: 'custom' },
+];
+
+const STANDARD_ALERT_VALUES = new Set(['0', '5', '10', '15', '30', '60', '120', '1440']);
+
+function formatDurationLabel(mins: number): string {
+  if (mins < 60) return `${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem === 0 ? `${hrs} hr` : `${hrs}h ${rem}m`;
+}
+
+function resolveWhyDefaultHex(why?: WhyCategory): string {
+  switch (why) {
+    case 'School':
+      return '#2563EB';
+    case 'Health':
+      return '#0D9488';
+    case 'Family':
+      return '#D97706';
+    default:
+      return '#4F46E5';
+  }
+}
+
+const MoveDayControl: React.FC<{
+  date: string;
+  ariaLabel: string;
+  onChangeDate: (nextDate: string) => void;
+}> = ({ date, ariaLabel, onChangeDate }) => (
+  <div className="gcal-day-row">
+    <button
+      type="button"
+      className="gcal-day-step-btn"
+      aria-label="Move to previous day"
+      title="Previous day"
+      onClick={() => onChangeDate(addDaysISO(date, -1))}
+    >
+      <ChevronLeft size={16} />
+    </button>
+    <input
+      type="date"
+      className="ui-input gcal-day-input"
+      aria-label={ariaLabel}
+      value={date}
+      onChange={(e) => {
+        if (e.target.value) onChangeDate(e.target.value);
+      }}
+    />
+    <button
+      type="button"
+      className="gcal-day-step-btn"
+      aria-label="Move to next day"
+      title="Next day"
+      onClick={() => onChangeDate(addDaysISO(date, 1))}
+    >
+      <ChevronRight size={16} />
+    </button>
+  </div>
+);
+
+const TimeAndLengthRow: React.FC<{
   startTime: string;
   endTime: string;
-  onSetEndTime: (nextEndTime: string) => void;
-}> = ({ startTime, endTime, onSetEndTime }) => {
+  onChangeStart: (nextStart: string) => void;
+  onChangeEnd: (nextEnd: string) => void;
+}> = ({ startTime, endTime, onChangeStart, onChangeEnd }) => {
   const sMin = toMin(startTime);
   const eMin = Math.max(sMin + 5, toMin(endTime));
   const curDur = eMin - sMin;
+  const isPreset = DURATION_DROPDOWN_OPTIONS.some((o) => o.mins === curDur);
 
   return (
-    <div className="gcal-duration-row" aria-label="Quick event duration">
-      {DURATION_PRESETS.map((p) => {
-        const active = Math.abs(curDur - p.mins) <= 2;
-        return (
-          <button
-            key={p.label}
-            type="button"
-            className={`gcal-pill-chip is-compact ${active ? 'is-active' : ''}`.trim()}
-            onClick={() => onSetEndTime(fromMin(Math.min(24 * 60, sMin + p.mins)))}
-          >
-            {p.label}
-          </button>
-        );
-      })}
-      <button
-        type="button"
-        className="gcal-pill-chip is-compact"
-        title="Extend end time by 30 minutes"
-        onClick={() => onSetEndTime(fromMin(Math.min(24 * 60, eMin + 30)))}
-      >
-        +30m
-      </button>
+    <div className="gcal-time-dropdown-grid">
+      <label className="gcal-mini-field">
+        <span className="gcal-mini-label">Starts</span>
+        <input
+          type="time"
+          className="ui-input gcal-compact-input"
+          aria-label="Event start time"
+          value={startTime === '24:00' ? '23:59' : startTime}
+          onChange={(e) => {
+            if (e.target.value) onChangeStart(e.target.value);
+          }}
+        />
+      </label>
+
+      <label className="gcal-mini-field">
+        <span className="gcal-mini-label">Ends</span>
+        <input
+          type="time"
+          className="ui-input gcal-compact-input"
+          aria-label="Event end time"
+          value={endTime === '24:00' ? '23:59' : endTime}
+          onChange={(e) => {
+            if (e.target.value) onChangeEnd(e.target.value);
+          }}
+        />
+      </label>
+
+      <label className="gcal-mini-field">
+        <span className="gcal-mini-label">Length</span>
+        <select
+          className="ui-select gcal-compact-select"
+          aria-label="Event duration"
+          value={String(curDur)}
+          onChange={(e) => {
+            const mins = Number(e.target.value);
+            if (Number.isFinite(mins) && mins > 0) {
+              onChangeEnd(fromMin(Math.min(24 * 60, sMin + mins)));
+            }
+          }}
+        >
+          {!isPreset && <option value={String(curDur)}>{formatDurationLabel(curDur)}</option>}
+          {DURATION_DROPDOWN_OPTIONS.map((opt) => (
+            <option key={opt.mins} value={String(opt.mins)}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </label>
     </div>
+  );
+};
+
+const AutoResizeDescription: React.FC<{
+  value: string;
+  onChange: (next: string) => void;
+}> = ({ value, onChange }) => {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const nextH = Math.min(340, Math.max(88, el.scrollHeight + 4));
+    el.style.height = `${nextH}px`;
+  }, [value]);
+
+  return (
+    <textarea
+      ref={ref}
+      className="ui-textarea gcal-desc-input"
+      rows={3}
+      placeholder="Add description, links, or notes…"
+      aria-label="Event description"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
   );
 };
 
@@ -296,6 +426,9 @@ function extractClickableLinks(text: string | undefined): Array<{ url: string; l
 }
 
 const EventEnrichmentFields: React.FC<{
+  whyCategory?: WhyCategory;
+  showWhySelect?: boolean;
+  onWhyChange?: (why: WhyCategory) => void;
   customColor?: EventColorId;
   notes?: string;
   alertOffsetMinutes?: number;
@@ -303,6 +436,9 @@ const EventEnrichmentFields: React.FC<{
   onNotesChange: (notes: string) => void;
   onAlertChange: (offsetMins: number | undefined) => void;
 }> = ({
+  whyCategory,
+  showWhySelect,
+  onWhyChange,
   customColor,
   notes,
   alertOffsetMinutes,
@@ -311,62 +447,147 @@ const EventEnrichmentFields: React.FC<{
   onAlertChange,
 }) => {
   const hasAlert = typeof alertOffsetMinutes === 'number';
+  const isCustomAlert = hasAlert && !STANDARD_ALERT_VALUES.has(String(alertOffsetMinutes));
+  const [customAlertOpen, setCustomAlertOpen] = useState(isCustomAlert);
   const noteLinks = useMemo(() => extractClickableLinks(notes), [notes]);
+
+  useEffect(() => {
+    if (isCustomAlert) setCustomAlertOpen(true);
+    else if (!hasAlert) setCustomAlertOpen(false);
+  }, [isCustomAlert, hasAlert]);
+
+  const alertSelectValue = !hasAlert
+    ? 'off'
+    : customAlertOpen || isCustomAlert
+    ? 'custom'
+    : String(alertOffsetMinutes);
+
+  const activeColorHex = customColor
+    ? EVENT_COLOR_HEX[customColor]
+    : resolveWhyDefaultHex(whyCategory);
 
   return (
     <div className="gcal-enrichment-group">
-      {/* Custom Color Swatches (beyond the 'Why') */}
-      <div className="gcal-field-block">
-        <div className="gcal-field-label-row">
-          <span className="gcal-field-label">Color</span>
-          {customColor && (
-            <span className="gcal-field-status">
-              {EVENT_COLOR_OPTIONS.find((c) => c.id === customColor)?.label}
-            </span>
-          )}
-        </div>
-        <div className="gcal-color-row" role="radiogroup" aria-label="Event color">
-          <button
-            type="button"
-            className={`gcal-color-auto ${!customColor ? 'is-active' : ''}`.trim()}
-            onClick={() => onColorChange(undefined)}
-            title="Use default Why color"
+      {/* Compact Dropdowns Row: Alert + Color (+ Why when baseline event) */}
+      <div className={`gcal-options-grid ${showWhySelect ? 'has-three' : ''}`.trim()}>
+        <label className="gcal-mini-field">
+          <span className="gcal-mini-label">
+            <Bell size={11} />
+            <span>Alert</span>
+          </span>
+          <select
+            className={`ui-select gcal-compact-select ${hasAlert ? 'is-active-value' : ''}`.trim()}
+            aria-label="Event alert"
+            value={alertSelectValue}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'off') {
+                setCustomAlertOpen(false);
+                onAlertChange(undefined);
+                return;
+              }
+              requestNotificationPermissionIfNeeded();
+              if (v === 'custom') {
+                setCustomAlertOpen(true);
+                if (!hasAlert) onAlertChange(20);
+                return;
+              }
+              setCustomAlertOpen(false);
+              onAlertChange(Number(v));
+            }}
           >
-            Why
-          </button>
-          {EVENT_COLOR_OPTIONS.map((opt) => {
-            const selected = customColor === opt.id;
-            return (
-              <button
-                key={opt.id}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                aria-label={`Color: ${opt.label}`}
-                title={opt.label}
-                className={`gcal-color-dot ${selected ? 'is-selected' : ''}`.trim()}
-                style={{ backgroundColor: opt.hex }}
-                onClick={() => onColorChange(selected ? undefined : opt.id)}
-              >
-                {selected && <Check size={12} strokeWidth={3} color="#FFFFFF" />}
-              </button>
-            );
-          })}
-        </div>
+            {ALERT_DROPDOWN_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="gcal-mini-field">
+          <span className="gcal-mini-label">Color</span>
+          <div className="gcal-color-select-wrap">
+            <span
+              className="gcal-select-color-dot"
+              style={{ backgroundColor: activeColorHex }}
+              aria-hidden="true"
+            />
+            <select
+              className="ui-select gcal-compact-select has-leading-dot"
+              aria-label="Event color"
+              value={customColor ?? 'auto'}
+              onChange={(e) => {
+                const v = e.target.value;
+                onColorChange(v === 'auto' ? undefined : (v as EventColorId));
+              }}
+            >
+              <option value="auto">By Why</option>
+              {EVENT_COLOR_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </label>
+
+        {showWhySelect && onWhyChange && (
+          <label className="gcal-mini-field">
+            <span className="gcal-mini-label">Why</span>
+            <select
+              className="ui-select gcal-compact-select"
+              aria-label="Event Why category"
+              value={whyCategory || 'Organization'}
+              onChange={(e) => onWhyChange(e.target.value as WhyCategory)}
+            >
+              {WHY_CATEGORIES.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
-      {/* Description / Notes */}
+      {/* Only show custom lead-time input when Custom alert is picked */}
+      {hasAlert && (customAlertOpen || isCustomAlert) && (
+        <div className="gcal-alert-custom-row">
+          <span className="gcal-sheet-meta">Alert</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={10080}
+            className="ui-input gcal-alert-mins-input"
+            aria-label="Minutes before event for alert"
+            value={alertOffsetMinutes}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === '') {
+                onAlertChange(0);
+                return;
+              }
+              const parsed = Math.max(0, Math.min(10080, Math.round(Number(raw) || 0)));
+              onAlertChange(parsed);
+            }}
+          />
+          <span className="gcal-sheet-meta">min before start</span>
+        </div>
+      )}
+
+      {hasAlert && isIosDevice() && !isStandalonePwa() && (
+        <div className="gcal-push-hint">
+          Tip: Add Intuition to Home Screen via Safari Share to get alerts when closed.
+        </div>
+      )}
+
+      {/* Roomy, Crystal-Clear, Auto-Expanding Description */}
       <div className="gcal-field-block">
-        <textarea
-          className="ui-textarea gcal-desc-input"
-          rows={2}
-          placeholder="Add description…"
-          aria-label="Event description"
-          value={notes ?? ''}
-          onChange={(e) => onNotesChange(e.target.value)}
-        />
+        <span className="gcal-mini-label">Description</span>
+        <AutoResizeDescription value={notes ?? ''} onChange={onNotesChange} />
         {noteLinks.length > 0 && (
-          <div className="ops-row-wrap" style={{ marginTop: 6 }}>
+          <div className="ops-row-wrap" style={{ marginTop: 4 }}>
             {noteLinks.map((lnk) => (
               <a
                 key={lnk.url}
@@ -381,69 +602,6 @@ const EventEnrichmentFields: React.FC<{
                 <ExternalLink size={12} />
               </a>
             ))}
-          </div>
-        )}
-      </div>
-
-      {/* Alert Controls (At start OR earlier) */}
-      <div className="gcal-field-block">
-        <div className="gcal-field-label-row">
-          <span className="gcal-field-label">
-            <Bell size={12} />
-            <span>Alert</span>
-          </span>
-          <span className={`gcal-field-status ${hasAlert ? 'is-on' : ''}`.trim()}>
-            {hasAlert ? formatAlertOffsetShort(alertOffsetMinutes!) : 'Off'}
-          </span>
-        </div>
-        <div className="gcal-alert-pills">
-          {ALERT_PRESETS.map((p) => {
-            const active =
-              p.value === undefined ? !hasAlert : alertOffsetMinutes === p.value;
-            return (
-              <button
-                key={p.label}
-                type="button"
-                className={`gcal-pill-chip is-compact ${active ? 'is-active' : ''}`.trim()}
-                onClick={() => {
-                  if (typeof p.value === 'number') {
-                    requestNotificationPermissionIfNeeded();
-                  }
-                  onAlertChange(p.value);
-                }}
-              >
-                {p.label}
-              </button>
-            );
-          })}
-        </div>
-        {hasAlert && (
-          <div className="gcal-alert-custom-row">
-            <span className="gcal-sheet-meta">Lead time:</span>
-            <input
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={10080}
-              className="ui-input gcal-alert-mins-input"
-              aria-label="Minutes before event for alert"
-              value={alertOffsetMinutes}
-              onChange={(e) => {
-                const raw = e.target.value;
-                if (raw === '') {
-                  onAlertChange(0);
-                  return;
-                }
-                const parsed = Math.max(0, Math.min(10080, Math.round(Number(raw) || 0)));
-                onAlertChange(parsed);
-              }}
-            />
-            <span className="gcal-sheet-meta">min before (0 = at start)</span>
-          </div>
-        )}
-        {hasAlert && isIosDevice() && !isStandalonePwa() && (
-          <div className="gcal-push-hint">
-            Tip: Add Intuition to Home Screen via Safari Share to get alerts when the app is closed.
           </div>
         )}
       </div>
@@ -580,9 +738,19 @@ const CalendarPane = memo<CalendarPaneProps>(
                   nextStartMin === null || ((nextStartMin - e) / 60) * hourHeight >= 8;
                 const isSlotDraftTarget =
                   draftOnThisDay?.mode === 'fill-slot' && draftOnThisDay.targetBlockId === block.id;
+                const isUpdateDraftMatch =
+                  liveDraft?.mode === 'update-event' && liveDraft.targetBlockId === block.id;
+                const isVoiceMoveSource = Boolean(
+                  isUpdateDraftMatch &&
+                    liveDraft &&
+                    ((liveDraft.date && liveDraft.date !== block.date) ||
+                      (liveDraft.startTime && liveDraft.startTime !== block.startTime) ||
+                      (liveDraft.endTime && liveDraft.endTime !== block.endTime))
+                );
                 const isUpdateDraftTarget =
                   draftOnThisDay?.mode === 'update-event' &&
-                  draftOnThisDay.targetBlockId === block.id;
+                  draftOnThisDay.targetBlockId === block.id &&
+                  !isVoiceMoveSource;
 
                 const effectiveBlock: CalendarBlock = isUpdateDraftTarget
                   ? {
@@ -628,7 +796,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                       showBottomHandle && height < 38 && hasSpaceBelow ? 'is-small-expandable' : ''
                     } ${block.id === highlightId ? 'is-flash' : ''} ${
                       isSlotDraftTarget || isUpdateDraftTarget ? 'is-voice-slot-target' : ''
-                    } ${isBeingDragged ? 'is-drag-origin' : ''}`.trim()}
+                    } ${isBeingDragged || isVoiceMoveSource ? 'is-drag-origin' : ''}`.trim()}
                     style={{
                       top,
                       height,
@@ -800,9 +968,20 @@ const CalendarPane = memo<CalendarPaneProps>(
                 );
               })()}
 
-              {/* Live Progressive Voice Event / Empty-Zone Draft Block */}
+              {/* Live Progressive Voice Event / Empty-Zone / Move-Event Draft Block */}
               {draftOnThisDay &&
-                (draftOnThisDay.mode === 'event' || draftOnThisDay.mode === 'empty-zone') &&
+                (draftOnThisDay.mode === 'event' ||
+                  draftOnThisDay.mode === 'empty-zone' ||
+                  (draftOnThisDay.mode === 'update-event' &&
+                    (() => {
+                      const orig = blocks.find((b) => b.id === draftOnThisDay.targetBlockId);
+                      return Boolean(
+                        !orig ||
+                          orig.date !== draftOnThisDay.date ||
+                          orig.startTime !== draftOnThisDay.startTime ||
+                          (draftOnThisDay.endTime && orig.endTime !== draftOnThisDay.endTime)
+                      );
+                    })())) &&
                 draftOnThisDay.startTime && (() => {
                   const s = toMin(draftOnThisDay.startTime);
                   const hasEnd = Boolean(draftOnThisDay.endTime);
@@ -2269,87 +2448,70 @@ export const CalendarGrid: React.FC<{
                 ))}
               </div>
 
-              <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
-                <input
-                  type="date"
-                  className="ui-input gcal-compact-field"
-                  aria-label="Date"
-                  value={createDraft.date}
-                  onChange={(e) =>
-                    e.target.value &&
-                    setCreateDraft((prev) => (prev ? { ...prev, date: e.target.value } : prev))
+              <div className="gcal-sheet-stack" style={{ marginTop: 10 }}>
+                <MoveDayControl
+                  date={createDraft.date}
+                  ariaLabel="Event date"
+                  onChangeDate={(nextDate) =>
+                    setCreateDraft((prev) => (prev ? { ...prev, date: nextDate } : prev))
                   }
                 />
-                <input
-                  type="time"
-                  className="ui-input gcal-compact-field"
-                  aria-label="Start time"
-                  value={createDraft.startTime === '24:00' ? '23:59' : createDraft.startTime}
-                  onChange={(e) => {
-                    const nextStart = e.target.value;
-                    if (!nextStart) return;
-                    setCreateDraft((prev) => {
-                      if (!prev) return prev;
-                      const sMin = toMin(nextStart);
-                      const eMin = toMin(prev.endTime);
-                      return {
-                        ...prev,
-                        startTime: nextStart,
-                        endTime: eMin <= sMin ? fromMin(Math.min(24 * 60, sMin + 60)) : prev.endTime,
-                      };
-                    });
-                  }}
-                />
-                {createDraft.mode !== 'reminder' && (
-                  <>
-                    <span className="gcal-sheet-meta">–</span>
+
+                {createDraft.mode === 'reminder' ? (
+                  <label className="gcal-mini-field">
+                    <span className="gcal-mini-label">Time</span>
                     <input
                       type="time"
-                      className="ui-input gcal-compact-field"
-                      aria-label="End time"
-                      value={createDraft.endTime === '24:00' ? '23:59' : createDraft.endTime}
+                      className="ui-input gcal-compact-input"
+                      aria-label="Reminder time"
+                      value={createDraft.startTime === '24:00' ? '23:59' : createDraft.startTime}
                       onChange={(e) =>
                         e.target.value &&
-                        setCreateDraft((prev) => (prev ? { ...prev, endTime: e.target.value } : prev))
+                        setCreateDraft((prev) =>
+                          prev ? { ...prev, startTime: e.target.value } : prev
+                        )
                       }
                     />
-                  </>
+                  </label>
+                ) : (
+                  <TimeAndLengthRow
+                    startTime={createDraft.startTime}
+                    endTime={createDraft.endTime}
+                    onChangeStart={(nextStart) => {
+                      setCreateDraft((prev) => {
+                        if (!prev) return prev;
+                        const prevDur = Math.max(
+                          15,
+                          toMin(prev.endTime) - toMin(prev.startTime)
+                        );
+                        const sMin = toMin(nextStart);
+                        const eMin = toMin(prev.endTime);
+                        return {
+                          ...prev,
+                          startTime: nextStart,
+                          endTime:
+                            eMin <= sMin
+                              ? fromMin(Math.min(24 * 60, sMin + prevDur))
+                              : prev.endTime,
+                        };
+                      });
+                    }}
+                    onChangeEnd={(nextEnd) =>
+                      setCreateDraft((prev) => (prev ? { ...prev, endTime: nextEnd } : prev))
+                    }
+                  />
                 )}
               </div>
 
               {createDraft.mode !== 'reminder' && (
-                <QuickDurationRow
-                  startTime={createDraft.startTime}
-                  endTime={createDraft.endTime}
-                  onSetEndTime={(nextEndTime) =>
-                    setCreateDraft((prev) => (prev ? { ...prev, endTime: nextEndTime } : prev))
-                  }
-                />
-              )}
-
-              {createDraft.mode === 'event' && (
-                <div className="gcal-type-pills" style={{ marginTop: 10 }}>
-                  {WHY_CATEGORIES.map((cat) => (
-                    <button
-                      key={cat}
-                      type="button"
-                      className={`gcal-pill-chip is-why-${cat.toLowerCase()} ${
-                        createDraft.whyCategory === cat ? 'is-active' : ''
-                      }`.trim()}
-                      onClick={() =>
-                        setCreateDraft((prev) =>
-                          prev ? { ...prev, whyCategory: cat, manualWhy: true } : prev
-                        )
-                      }
-                    >
-                      {cat}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {createDraft.mode !== 'reminder' && (
                 <EventEnrichmentFields
+                  whyCategory={createDraft.whyCategory}
+                  showWhySelect={createDraft.mode === 'event'}
+                  onWhyChange={(whyCategory) =>
+                    setCreateDraft((prev) =>
+                      prev ? { ...prev, whyCategory, manualWhy: true } : prev
+                    )
+                  }
                   customColor={createDraft.customColor}
                   notes={createDraft.notes}
                   alertOffsetMinutes={createDraft.alertOffsetMinutes}
@@ -2418,68 +2580,46 @@ export const CalendarGrid: React.FC<{
                 </button>
               </div>
 
-              <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
-                <input
-                  type="date"
-                  className="ui-input gcal-compact-field"
-                  aria-label="Event date"
-                  value={openBlock.date}
-                  onChange={(e) =>
-                    e.target.value &&
-                    actions.updateCalendarBlock(openBlock.id, { date: e.target.value })
-                  }
+              <div className="gcal-sheet-stack" style={{ marginTop: 10 }}>
+                <MoveDayControl
+                  date={openBlock.date}
+                  ariaLabel="Event date"
+                  onChangeDate={(nextDate) => {
+                    actions.updateCalendarBlock(openBlock.id, { date: nextDate });
+                    actions.setSelectedDate(nextDate);
+                    actions.showToast(`Moved to ${formatShortDate(nextDate)}`);
+                  }}
                 />
-                <input
-                  type="time"
-                  className="ui-input gcal-compact-field"
-                  aria-label="Event start time"
-                  value={openBlock.startTime === '24:00' ? '23:59' : openBlock.startTime}
-                  onChange={(e) =>
-                    e.target.value &&
-                    actions.updateCalendarBlock(openBlock.id, { startTime: e.target.value })
-                  }
-                />
-                <span className="gcal-sheet-meta">–</span>
-                <input
-                  type="time"
-                  className="ui-input gcal-compact-field"
-                  aria-label="Event end time"
-                  value={openBlock.endTime === '24:00' ? '23:59' : openBlock.endTime}
-                  onChange={(e) =>
-                    e.target.value &&
-                    actions.updateCalendarBlock(openBlock.id, { endTime: e.target.value })
+
+                <TimeAndLengthRow
+                  startTime={openBlock.startTime}
+                  endTime={openBlock.endTime}
+                  onChangeStart={(nextStart) => {
+                    const prevDur = Math.max(
+                      15,
+                      toMin(openBlock.endTime) - toMin(openBlock.startTime)
+                    );
+                    const sMin = toMin(nextStart);
+                    const eMin = toMin(openBlock.endTime);
+                    actions.updateCalendarBlock(openBlock.id, {
+                      startTime: nextStart,
+                      ...(eMin <= sMin
+                        ? { endTime: fromMin(Math.min(24 * 60, sMin + prevDur)) }
+                        : {}),
+                    });
+                  }}
+                  onChangeEnd={(nextEnd) =>
+                    actions.updateCalendarBlock(openBlock.id, { endTime: nextEnd })
                   }
                 />
               </div>
 
-              <QuickDurationRow
-                startTime={openBlock.startTime}
-                endTime={openBlock.endTime}
-                onSetEndTime={(nextEndTime) =>
-                  actions.updateCalendarBlock(openBlock.id, { endTime: nextEndTime })
-                }
-              />
-
-              {openBlock.kind === 'baseline' && (
-                <div className="gcal-type-pills" style={{ marginTop: 10 }}>
-                  {WHY_CATEGORIES.map((cat) => (
-                    <button
-                      key={cat}
-                      type="button"
-                      className={`gcal-pill-chip is-why-${cat.toLowerCase()} ${
-                        (openBlock.whyCategory || 'Organization') === cat ? 'is-active' : ''
-                      }`.trim()}
-                      onClick={() =>
-                        actions.updateCalendarBlock(openBlock.id, { whyCategory: cat })
-                      }
-                    >
-                      {cat}
-                    </button>
-                  ))}
-                </div>
-              )}
-
               <EventEnrichmentFields
+                whyCategory={openBlock.whyCategory}
+                showWhySelect={openBlock.kind === 'baseline'}
+                onWhyChange={(whyCategory) =>
+                  actions.updateCalendarBlock(openBlock.id, { whyCategory })
+                }
                 customColor={openBlock.customColor}
                 notes={openBlock.notes}
                 alertOffsetMinutes={openBlock.alertOffsetMinutes}
@@ -2672,27 +2812,29 @@ export const CalendarGrid: React.FC<{
                 </button>
               </div>
 
-              <div className="gcal-inline-time-row" style={{ marginTop: 12 }}>
-                <input
-                  type="date"
-                  className="ui-input gcal-compact-field"
-                  aria-label="Reminder date"
-                  value={openReminder.date}
-                  onChange={(e) =>
-                    e.target.value &&
-                    actions.updateReminder(openReminder.id, { date: e.target.value })
-                  }
+              <div className="gcal-sheet-stack" style={{ marginTop: 10 }}>
+                <MoveDayControl
+                  date={openReminder.date}
+                  ariaLabel="Reminder date"
+                  onChangeDate={(nextDate) => {
+                    actions.updateReminder(openReminder.id, { date: nextDate });
+                    actions.setSelectedDate(nextDate);
+                    actions.showToast(`Moved to ${formatShortDate(nextDate)}`);
+                  }}
                 />
-                <input
-                  type="time"
-                  className="ui-input gcal-compact-field"
-                  aria-label="Reminder time"
-                  value={openReminder.time}
-                  onChange={(e) =>
-                    e.target.value &&
-                    actions.updateReminder(openReminder.id, { time: e.target.value })
-                  }
-                />
+                <label className="gcal-mini-field">
+                  <span className="gcal-mini-label">Time</span>
+                  <input
+                    type="time"
+                    className="ui-input gcal-compact-input"
+                    aria-label="Reminder time"
+                    value={openReminder.time}
+                    onChange={(e) =>
+                      e.target.value &&
+                      actions.updateReminder(openReminder.id, { time: e.target.value })
+                    }
+                  />
+                </label>
               </div>
 
               {(() => {

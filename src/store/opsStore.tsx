@@ -1098,29 +1098,49 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         if (parsed.mode === 'update-event' && parsed.targetBlockId) {
+          const nowIso = new Date().toISOString();
+          const prevTarget = state.blocks.find((b) => b.id === parsed.targetBlockId);
+          const movedSchedule = Boolean(
+            prevTarget &&
+              (prevTarget.date !== parsed.date ||
+                prevTarget.startTime !== parsed.startTime ||
+                (parsed.endTime && prevTarget.endTime !== parsed.endTime))
+          );
           setState((prev) => ({
             ...prev,
             selectedDate: parsed.date,
             activeTab: 'schedule',
-            blocks: prev.blocks.map((b) =>
-              b.id === parsed.targetBlockId
-                ? {
-                    ...b,
-                    ...(parsed.customColor !== undefined ? { customColor: parsed.customColor } : {}),
-                    ...(parsed.notes !== undefined ? { notes: parsed.notes } : {}),
-                    ...(parsed.alertOffsetMinutes !== undefined
-                      ? {
-                          alertOffsetMinutes:
-                            parsed.alertOffsetMinutes === null
-                              ? undefined
-                              : parsed.alertOffsetMinutes,
-                        }
-                      : {}),
-                  }
-                : b
+            blocks: sortBlocks(
+              prev.blocks.map((b) =>
+                b.id === parsed.targetBlockId
+                  ? {
+                      ...b,
+                      date: parsed.date,
+                      startTime: parsed.startTime,
+                      ...(parsed.endTime ? { endTime: parsed.endTime } : {}),
+                      ...(parsed.customColor !== undefined ? { customColor: parsed.customColor } : {}),
+                      ...(parsed.notes !== undefined ? { notes: parsed.notes } : {}),
+                      ...(parsed.alertOffsetMinutes !== undefined
+                        ? {
+                            alertOffsetMinutes:
+                              parsed.alertOffsetMinutes === null
+                                ? undefined
+                                : parsed.alertOffsetMinutes,
+                          }
+                        : {}),
+                      updatedAt: nowIso,
+                    }
+                  : b
+              )
             ),
           }));
-          showToast(`Updated "${parsed.title}"`);
+          showToast(
+            movedSchedule
+              ? `Moved "${parsed.title}" to ${formatShortDate(parsed.date)} (${parsed.startTime}${
+                  parsed.endTime ? `–${parsed.endTime}` : ''
+                })`
+              : `Updated "${parsed.title}"`
+          );
           return parsed;
         }
 
@@ -1225,29 +1245,49 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         if (draft.mode === 'update-event' && draft.targetBlockId) {
+          const nowIso = new Date().toISOString();
+          const prevTarget = state.blocks.find((b) => b.id === draft.targetBlockId);
+          const movedSchedule = Boolean(
+            prevTarget &&
+              (prevTarget.date !== draft.date ||
+                prevTarget.startTime !== draft.startTime ||
+                (draft.endTime && prevTarget.endTime !== draft.endTime))
+          );
           setState((prev) => ({
             ...prev,
             selectedDate: draft.date!,
             activeTab: 'schedule',
-            blocks: prev.blocks.map((b) =>
-              b.id === draft.targetBlockId
-                ? {
-                    ...b,
-                    ...(draft.customColor !== undefined ? { customColor: draft.customColor } : {}),
-                    ...(draft.notes !== undefined ? { notes: draft.notes } : {}),
-                    ...(draft.alertOffsetMinutes !== undefined
-                      ? {
-                          alertOffsetMinutes:
-                            draft.alertOffsetMinutes === null
-                              ? undefined
-                              : draft.alertOffsetMinutes,
-                        }
-                      : {}),
-                  }
-                : b
+            blocks: sortBlocks(
+              prev.blocks.map((b) =>
+                b.id === draft.targetBlockId
+                  ? {
+                      ...b,
+                      date: draft.date!,
+                      startTime: draft.startTime!,
+                      ...(draft.endTime ? { endTime: draft.endTime } : {}),
+                      ...(draft.customColor !== undefined ? { customColor: draft.customColor } : {}),
+                      ...(draft.notes !== undefined ? { notes: draft.notes } : {}),
+                      ...(draft.alertOffsetMinutes !== undefined
+                        ? {
+                            alertOffsetMinutes:
+                              draft.alertOffsetMinutes === null
+                                ? undefined
+                                : draft.alertOffsetMinutes,
+                          }
+                        : {}),
+                      updatedAt: nowIso,
+                    }
+                  : b
+              )
             ),
           }));
-          showToast(`Updated "${draft.title}"`);
+          showToast(
+            movedSchedule
+              ? `Moved "${draft.title}" to ${formatShortDate(draft.date!)} (${draft.startTime}${
+                  draft.endTime ? `–${draft.endTime}` : ''
+                })`
+              : `Updated "${draft.title}"`
+          );
           return {
             mode: 'update-event',
             title: draft.title,

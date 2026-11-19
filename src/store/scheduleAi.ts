@@ -1166,44 +1166,68 @@ function extractSpokenEventEnrichments(
 function findMatchingBlockForUpdate(
   rawSubject: string,
   explicitDate: string | undefined,
-  ctx: ScheduleAiContext
+  ctx: ScheduleAiContext,
+  explicitStartMins?: number | null
 ): CalendarBlock | undefined {
   const cleaned = rawSubject
     .replace(
-      /^(?:change|set|update|modify|edit|make|turn|put|add|give)(?:\s+(?:the|an?|my))?(?:\s+(?:color|description|details?|notes?|alert|alarm|notification))?(?:\s+(?:of|for|on|to))?\s+/i,
+      /^(?:(?:hey|ok|okay|please|actually|wait|instead|can\s+you|could\s+you)\s+)*(?:change|set|update|modify|edit|make|turn|put|add|give|move|reschedule|shift|push|bump|delay|postpone|rebook|relocate|switch)(?:\s+(?:the|an?|my))?(?:\s+(?:color|description|details?|notes?|alert|alarm|notification|time|date|day))?(?:\s+(?:of|for|on|to))?\s+/i,
       ''
     )
-    .replace(/^(?:for|on|to|of)\s+/i, '')
+    .replace(/^(?:the|my|an?|our|for|on|to|of)\s+/i, '')
+    .replace(/\b(?:event|block|appointment|session)\s*$/i, '')
     .trim();
 
   const candidateTitle = summarizePunchyTitle(cleaned) || cleaned;
   const needle = candidateTitle.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
-  if (needle.length < 3) return undefined;
+  const rawNeedle = cleaned.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+  const searchNeedle = needle.length >= 2 ? needle : rawNeedle;
+  if (searchNeedle.length < 2) return undefined;
+
+  const stopWords = new Set(['the', 'my', 'our', 'for', 'on', 'at', 'in', 'to', 'of', 'from', 'event', 'block', 'meeting', 'appointment']);
+  const needleWords = searchNeedle
+    .split(/\s+/)
+    .filter((w) => w.length >= 2 && !stopWords.has(w));
 
   const scoreBlock = (b: CalendarBlock): number => {
     const hay = b.title.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
     if (!hay) return 0;
     let score = 0;
-    if (hay === needle) score = 100;
-    else if (hay.startsWith(needle) || needle.startsWith(hay)) score = 85;
-    else if (hay.includes(needle) || needle.includes(hay)) score = 70;
-    else {
-      const words = needle.split(/\s+/).filter((w) => w.length >= 3);
-      const matched = words.filter((w) => hay.includes(w));
-      if (words.length > 0 && matched.length === words.length) score = 60;
+    if (hay === searchNeedle) score = 110;
+    else if (hay.startsWith(searchNeedle) || searchNeedle.startsWith(hay)) score = 90;
+    else if (hay.includes(searchNeedle) || searchNeedle.includes(hay)) score = 78;
+    else if (needleWords.length > 0) {
+      const matched = needleWords.filter((w) => hay.includes(w));
+      if (matched.length === needleWords.length) score = 72;
+      else if (matched.length > 0 && matched.length >= Math.ceil(needleWords.length * 0.6)) score = 60;
     }
     if (score === 0) return 0;
-    if (explicitDate && b.date === explicitDate) score += 50;
-    else if (!explicitDate && b.date === ctx.selectedDate) score += 35;
-    else if (!explicitDate && b.date === ctx.todayIso) score += 30;
-    else if (b.date >= ctx.todayIso) score += 15;
+
+    if (!b.completed) score += 8;
+    if (explicitDate && b.date === explicitDate) score += 55;
+    else if (!explicitDate && b.date === ctx.selectedDate) score += 38;
+    else if (!explicitDate && b.date === ctx.todayIso) score += 32;
+    else if (b.date >= ctx.todayIso) {
+      // Prefer closer upcoming occurrences over far-future repeating school blocks
+      const diffDays = Math.max(
+        0,
+        Math.round((Date.parse(`${b.date}T00:00:00Z`) - Date.parse(`${ctx.todayIso}T00:00:00Z`)) / 86400000)
+      );
+      score += Math.max(4, 24 - Math.min(20, diffDays));
+    }
+
+    if (typeof explicitStartMins === 'number') {
+      const bStart = toMinutes(b.startTime);
+      if (Math.abs(bStart - explicitStartMins) <= 15) score += 45;
+    }
     return score;
   };
 
   const pool = explicitDate ? ctx.blocks.filter((b) => b.date === explicitDate) : ctx.blocks;
+  const searchPool = pool.length > 0 ? pool : ctx.blocks;
   let best: CalendarBlock | undefined;
   let bestScore = 0;
-  for (const b of pool) {
+  for (const b of searchPool) {
     const s = scoreBlock(b);
     if (s > bestScore) {
       bestScore = s;
@@ -1211,6 +1235,240 @@ function findMatchingBlockForUpdate(
     }
   }
   return bestScore >= 60 ? best : undefined;
+}
+
+function tryParseMoveExistingEvent(
+  rawTrimmed: string,
+  workingNormalized: string,
+  enrich: SpokenEnrichmentResult,
+  globalPeriodHint: DayPeriodHint,
+  ctx: ScheduleAiContext
+): VoiceScheduleDraft | null {
+  const leadMoveRe =
+    /^\s*(?:(?:hey|ok|okay|please|actually|wait|instead|um|uh|can\s+you|could\s+you)\s+)*(move|reschedule|shift|push|bump|delay|postpone|rebook|relocate|switch|change|put)\s+(.+)$/i;
+  const leadMatch = workingNormalized.match(leadMoveRe);
+  if (!leadMatch) return null;
+
+  const verb = leadMatch[1].toLowerCase();
+  const rest = leadMatch[2].replace(/\binstead\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+  if (!rest) return null;
+
+  // Guard: "put X in next focus slot" belongs to fill-slot, not move-existing
+  if (/\b(?:focus\s*(?:slot|zone|block)|empty\s*(?:zone|slot|block)|open\s*slot)\b/i.test(rest)) {
+    return null;
+  }
+
+  // Guard: "change color/description/alert of X" belongs to enrichment update, not move-time
+  if (
+    (verb === 'change' || verb === 'put' || verb === 'switch') &&
+    /^(?:the\s+)?(?:color|description|details?|notes?|alert|alarm|notification|name|title)\b/i.test(rest)
+  ) {
+    return null;
+  }
+
+  // 1) Check relative shifts first:
+  //    "push dentist back 30 minutes", "move gym earlier by 1 hour", "move meeting back 2 days", "delay physics by 45 min"
+  const relativeRe =
+    /^(.+?)\s+(?:(back|later|forward|ahead|up|earlier)\s+(?:by\s+)?|(?:by\s+))(?:a|an|one|(\d{1,3}))\s+(minutes?|mins?|min|hours?|hrs?|hr|days?)(?:\s+(back|later|forward|ahead|up|earlier))?\s*$/i;
+  const relMatch = rest.match(relativeRe);
+  if (relMatch) {
+    const rawSubject = relMatch[1].trim();
+    const dirWord = (relMatch[2] || relMatch[5] || (verb === 'delay' || verb === 'postpone' || verb === 'push' ? 'back' : '')).toLowerCase();
+    const qty = relMatch[3] ? Number(relMatch[3]) : 1;
+    const unit = relMatch[4].toLowerCase();
+
+    if (dirWord && qty > 0) {
+      const srcPeriod = detectPeriodHint(rawSubject) ?? globalPeriodHint;
+      const srcTemp = extractClauseTemporals(rawSubject, ctx.todayIso, srcPeriod, null);
+      const srcDate = srcTemp.dates.length ? srcTemp.dates[srcTemp.dates.length - 1].date : undefined;
+      const subjectClean = (srcTemp.strippedFullText || rawSubject).replace(/\bfrom\s*$/i, '').trim();
+      const matched = findMatchingBlockForUpdate(subjectClean, srcDate, ctx, srcTemp.startMins);
+
+      if (matched) {
+        const isEarlier = dirWord === 'earlier' || dirWord === 'up';
+        const sign = isEarlier ? -1 : 1;
+        let nextDate = matched.date;
+        let nextStartTime = matched.startTime;
+        let nextEndTime = matched.endTime;
+
+        if (unit.startsWith('day')) {
+          nextDate = addDays(matched.date, sign * qty);
+        } else {
+          const deltaMins = (unit.startsWith('h') ? qty * 60 : qty) * sign;
+          const origStart = toMinutes(matched.startTime);
+          const origDur = Math.max(15, toMinutes(matched.endTime) - origStart);
+          const shiftedStart = Math.max(0, Math.min(24 * 60 - origDur, origStart + deltaMins));
+          nextStartTime = fromMinutes(shiftedStart);
+          nextEndTime = fromMinutes(Math.min(24 * 60, shiftedStart + origDur));
+        }
+
+        return {
+          rawTranscript: rawTrimmed,
+          mode: 'update-event',
+          targetBlockId: matched.id,
+          title: matched.title,
+          date: nextDate,
+          dateSpoken: true,
+          startTime: nextStartTime,
+          endTime: nextEndTime,
+          whyCategory: matched.whyCategory,
+          customColor: enrich.customColor ?? matched.customColor,
+          notes: enrich.notes ?? matched.notes,
+          alertOffsetMinutes:
+            enrich.alertOffsetMinutes === null
+              ? null
+              : enrich.alertOffsetMinutes ?? matched.alertOffsetMinutes,
+          missingFields: [],
+          nextPrompt: `Move "${matched.title}" — tap ✓ or press Enter`,
+          isComplete: true,
+        };
+      }
+    }
+  }
+
+  // 2) Split subject vs destination target ("move [subject] to [destination]" or "put [subject] on [destination]")
+  let subjectPart = rest;
+  let targetPart = '';
+
+  // Find the FIRST primary separator ("to"/"into", else "for"/"on") whose right side carries a date/time
+  // and isn't the middle "to" of a time range ("from 10am to 11:30am").
+  const sepCandidates: { idx: number; len: number; prep: string }[] = [];
+  const sepRe = /\s+(to|into|for|on)\s+/gi;
+  let sm: RegExpExecArray | null;
+  while ((sm = sepRe.exec(rest)) !== null) {
+    sepCandidates.push({ idx: sm.index, len: sm[0].length, prep: sm[1].toLowerCase() });
+  }
+
+  const orderedCandidates = [
+    ...sepCandidates.filter((c) => c.prep === 'to' || c.prep === 'into'),
+    ...sepCandidates.filter((c) => c.prep !== 'to' && c.prep !== 'into'),
+  ];
+
+  for (const cand of orderedCandidates) {
+    const left = rest.slice(0, cand.idx).trim();
+    const right = rest.slice(cand.idx + cand.len).trim();
+    if (!left || !right) continue;
+    // Skip the "to" inside a time range like "from 10am to 11:30am"
+    if (cand.prep === 'to' && /\bfrom\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*$/i.test(left)) {
+      continue;
+    }
+    const rightPeriod = detectPeriodHint(right) ?? globalPeriodHint;
+    const rightTemp = extractClauseTemporals(right, ctx.todayIso, rightPeriod, null);
+    const hasTemporal =
+      rightTemp.dates.length > 0 ||
+      rightTemp.startMins !== null ||
+      rightTemp.endMins !== null;
+
+    if (hasTemporal) {
+      subjectPart = left;
+      targetPart = right;
+      break;
+    }
+  }
+
+  // Fallback: if user is mid-sentence ("move dentist to...") with trailing "to"
+  if (!targetPart && /\s+to\s*$/i.test(rest)) {
+    subjectPart = rest.replace(/\s+to\s*$/i, '').trim();
+  }
+
+  // Extract optional source hints from subjectPart ("move Thursday's gym to Friday", "move my 3pm dentist to 5pm")
+  const srcPeriod = detectPeriodHint(subjectPart) ?? globalPeriodHint;
+  const srcTemp = extractClauseTemporals(subjectPart, ctx.todayIso, srcPeriod, null);
+  const srcDate = srcTemp.dates.length ? srcTemp.dates[srcTemp.dates.length - 1].date : undefined;
+  const cleanSubject = (srcTemp.strippedFullText || subjectPart)
+    .replace(/\bfrom\s*$/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  const matched = findMatchingBlockForUpdate(cleanSubject, srcDate, ctx, srcTemp.startMins);
+  if (!matched) return null;
+
+  // If user spoke "move dentist" without destination yet, guide them live!
+  if (!targetPart) {
+    const hasEnrichment =
+      enrich.customColor !== undefined ||
+      enrich.notes !== undefined ||
+      enrich.alertOffsetMinutes !== undefined;
+
+    if (!hasEnrichment) {
+      return {
+        rawTranscript: rawTrimmed,
+        mode: 'update-event',
+        targetBlockId: matched.id,
+        title: matched.title,
+        date: matched.date,
+        dateSpoken: false,
+        startTime: matched.startTime,
+        endTime: matched.endTime,
+        whyCategory: matched.whyCategory,
+        customColor: matched.customColor,
+        notes: matched.notes,
+        alertOffsetMinutes: matched.alertOffsetMinutes,
+        missingFields: ['date'],
+        nextPrompt: `Say new day or time for "${matched.title}"`,
+        isComplete: false,
+      };
+    }
+  }
+
+  const targetPeriod = detectPeriodHint(targetPart) ?? globalPeriodHint;
+  const targetTemp = extractClauseTemporals(targetPart, ctx.todayIso, targetPeriod, null);
+
+  const origStart = toMinutes(matched.startTime);
+  const origEnd = toMinutes(matched.endTime);
+  const origDur = Math.max(15, origEnd - origStart);
+
+  const nextDate = targetTemp.dates.length
+    ? targetTemp.dates[targetTemp.dates.length - 1].date
+    : matched.date;
+
+  let nextStartTime = matched.startTime;
+  let nextEndTime = matched.endTime;
+
+  if (targetTemp.startMins !== null && targetTemp.endMins !== null) {
+    nextStartTime = fromMinutes(targetTemp.startMins);
+    nextEndTime = fromMinutes(targetTemp.endMins);
+  } else if (targetTemp.startMins !== null) {
+    const dur = targetTemp.explicitDurationMins ?? origDur;
+    nextStartTime = fromMinutes(targetTemp.startMins);
+    nextEndTime = fromMinutes(Math.min(24 * 60, targetTemp.startMins + dur));
+  } else if (targetTemp.explicitDurationMins !== null) {
+    nextEndTime = fromMinutes(Math.min(24 * 60, origStart + targetTemp.explicitDurationMins));
+  }
+
+  const changedSchedule =
+    nextDate !== matched.date ||
+    nextStartTime !== matched.startTime ||
+    nextEndTime !== matched.endTime;
+  const hasEnrichment =
+    enrich.customColor !== undefined ||
+    enrich.notes !== undefined ||
+    enrich.alertOffsetMinutes !== undefined;
+
+  if (!changedSchedule && !hasEnrichment && targetPart) {
+    // User said "move dentist to 3pm" and it's already at 3pm, still allow confirming!
+  }
+
+  return {
+    rawTranscript: rawTrimmed,
+    mode: 'update-event',
+    targetBlockId: matched.id,
+    title: matched.title,
+    date: nextDate,
+    dateSpoken: true,
+    startTime: nextStartTime,
+    endTime: nextEndTime,
+    whyCategory: matched.whyCategory,
+    customColor: enrich.customColor ?? matched.customColor,
+    notes: enrich.notes ?? matched.notes,
+    alertOffsetMinutes:
+      enrich.alertOffsetMinutes === null
+        ? null
+        : enrich.alertOffsetMinutes ?? matched.alertOffsetMinutes,
+    missingFields: [],
+    nextPrompt: `Move "${matched.title}" — tap ✓ or press Enter`,
+    isComplete: true,
+  };
 }
 
 const REVISION_SPLIT_RE =
@@ -1238,6 +1496,18 @@ export function parseProgressiveVoiceDraft(
   const enrich = extractSpokenEventEnrichments(normalized, ctx.blocks);
   const workingNormalized = enrich.cleanedText || normalized;
   const globalPeriodHint = detectPeriodHint(workingNormalized);
+
+  // Check Move / Reschedule Existing Event Intent ("move Dentist to Friday at 3pm", "push Gym back 1 hour")
+  const moveDraft = tryParseMoveExistingEvent(
+    rawTrimmed,
+    workingNormalized,
+    enrich,
+    globalPeriodHint,
+    ctx
+  );
+  if (moveDraft) {
+    return moveDraft;
+  }
 
   // Check Slot-Placement Intent ("add ___ for the next focus slot")
   const slotTargetRegex =
