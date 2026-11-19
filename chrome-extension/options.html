@@ -126,6 +126,11 @@
       <label for="autoSyncHours">Auto-Sync Interval (Hours — set 0 to disable)</label>
       <input id="autoSyncHours" type="number" min="0" max="168" step="0.5" />
 
+      <label for="schoolAccount">
+        School Google Account (leave "auto", enter slot "0"/"1", or enter your exact school email)
+      </label>
+      <input id="schoolAccount" placeholder="auto (or e.g. your.name@msad17.org or 0 or 1)" />
+
       <h2>Specified Google Classroom Source Pages</h2>
 
       <label for="litClassroomUrl">Lit (Mr. Lauby) — Google Classroom URL</label>
@@ -162,6 +167,7 @@
 
       <div class="row">
         <button id="saveBtn" class="primary">Save Specified Pages</button>
+        <button id="detectBtn" class="secondary">Detect School Account</button>
         <button id="syncBtn" class="secondary">Run Full Sync Now</button>
         <button id="wipeBtn" class="danger">Wipe Synced Schoolwork</button>
       </div>

@@ -1,4 +1,5 @@
 const DEFAULTS = {
+  schoolAccount: 'auto',
   ecoSlideId: '1s0GUOKJdzfYvGJhxG7SHFZb-K9Cye0lDbdVtY7jutPI',
   audiobookSheetId: '154DtAbZXIeqVR-cUgyMDQJaOEnnhtHqWw4GnIUBAdg4',
   litClassroomUrl: 'https://classroom.google.com/u/1/w/ODc2NjEwODUwOTA2/t/all',
@@ -10,6 +11,7 @@ const DEFAULTS = {
 };
 
 const fields = [
+  'schoolAccount',
   'litClassroomUrl',
   'mathClassroomUrl',
   'physicsClassroomUrl',
@@ -112,6 +114,55 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   next.autoSyncHours = Number.isFinite(parsedHours) && parsedHours >= 0 ? parsedHours : 6;
   await chrome.storage.sync.set(next);
   await renderStatus('Saved specified source pages & schedule!');
+});
+
+document.getElementById('detectBtn').addEventListener('click', () => {
+  statusEl.textContent =
+    'Checking signed-in Google Classroom accounts (/u/0/, /u/1/, /u/2/) to find your school classes...';
+  const currentUrls = ['litClassroomUrl', 'mathClassroomUrl', 'physicsClassroomUrl']
+    .map((id) => document.getElementById(id).value.trim())
+    .filter(Boolean);
+  chrome.runtime.sendMessage(
+    { type: 'DETECT_SCHOOL_ACCOUNT', classroomUrls: currentUrls },
+    async (res) => {
+      if (!res) {
+        statusEl.textContent = 'Detection failed — reload the extension and try again.';
+        return;
+      }
+      const summaryLines = (res.checks || []).map(
+        (c) => `  /u/${c.slot}/ (${c.email || 'unknown'}) -> ${c.note}`
+      );
+      if (res.ok && res.chosenSlot !== null) {
+        const slot = String(res.chosenSlot);
+        const chosenVal = res.chosenEmail || slot;
+        document.getElementById('schoolAccount').value = chosenVal;
+        for (const id of ['litClassroomUrl', 'mathClassroomUrl', 'physicsClassroomUrl']) {
+          const el = document.getElementById(id);
+          const raw = el.value.trim();
+          const m = raw.match(/\/(?:c|w)\/([A-Za-z0-9_-]+)/);
+          if (m) {
+            el.value = `https://classroom.google.com/u/${slot}/w/${m[1]}/t/all`;
+          } else if (raw) {
+            el.value = raw.replace(/\/u\/\d+\//, `/u/${slot}/`);
+          }
+        }
+        await chrome.storage.sync.set({
+          schoolAccount: chosenVal,
+          litClassroomUrl: document.getElementById('litClassroomUrl').value.trim(),
+          mathClassroomUrl: document.getElementById('mathClassroomUrl').value.trim(),
+          physicsClassroomUrl: document.getElementById('physicsClassroomUrl').value.trim(),
+        });
+        await renderStatus(
+          `Detected school account: ${chosenVal} (/u/${slot}/) and saved!\n${summaryLines.join('\n')}`
+        );
+      } else {
+        statusEl.textContent =
+          `Could not find your school classes in any signed-in Classroom slot.\n` +
+          `${summaryLines.join('\n')}\n` +
+          `Open https://classroom.google.com in a tab first to make sure your school account is logged in.`;
+      }
+    }
+  );
 });
 
 document.getElementById('syncBtn').addEventListener('click', () => {

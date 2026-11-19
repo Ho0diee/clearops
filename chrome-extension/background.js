@@ -1,5 +1,6 @@
 const DEFAULTS = {
   vercelUrl: 'https://airbnb710.com/api/schoolwork/run',
+  schoolAccount: 'auto', // 'auto', '0', '1', '2', or your exact school email (e.g. name@msad17.org)
   ecoSlideId: '1s0GUOKJdzfYvGJhxG7SHFZb-K9Cye0lDbdVtY7jutPI',
   audiobookSheetId: '154DtAbZXIeqVR-cUgyMDQJaOEnnhtHqWw4GnIUBAdg4',
   litClassroomUrl: 'https://classroom.google.com/u/1/w/ODc2NjEwODUwOTA2/t/all',
@@ -13,6 +14,8 @@ const DEFAULTS = {
 const AUTO_SYNC_ALARM = 'intuition-auto-sync';
 const MAX_EXPAND_ROWS_PER_CLASS = 20;
 const MAX_DETAIL_PAGES_PER_COURSE = 6;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function getConfig() {
   const stored = await chrome.storage.sync.get(DEFAULTS);
@@ -75,24 +78,33 @@ function cleanSlideId(raw) {
 }
 
 /**
- * Fetches live CSV from your APES Audiobook Sheet across multi-login Chrome slots (/u/0..3/).
+ * Fetches live CSV from your APES Audiobook Sheet across multi-login Chrome slots (/u/0..3/ + authuser).
  */
-async function fetchLiveAudiobookCsv(sheetId) {
+async function fetchLiveAudiobookCsv(sheetId, schoolAccount) {
   if (!sheetId) return null;
   const cleanId = sheetId
     .replace(/^.*\/spreadsheets\/(?:u\/\d+\/)?d\//, '')
     .replace(/\/.*$/, '')
     .trim();
 
-  const urls = [
+  const urls = [];
+  const acct = String(schoolAccount || '').trim();
+  if (acct && acct.includes('@')) {
+    urls.push(
+      `https://docs.google.com/spreadsheets/d/${cleanId}/export?format=csv&gid=0&authuser=${encodeURIComponent(acct)}`
+    );
+  } else if (/^\d+$/.test(acct)) {
+    urls.push(`https://docs.google.com/spreadsheets/u/${acct}/d/${cleanId}/export?format=csv&gid=0`);
+  }
+  urls.push(
     `https://docs.google.com/spreadsheets/d/${cleanId}/export?format=csv&gid=0`,
     `https://docs.google.com/spreadsheets/u/0/d/${cleanId}/export?format=csv&gid=0`,
     `https://docs.google.com/spreadsheets/u/1/d/${cleanId}/export?format=csv&gid=0`,
     `https://docs.google.com/spreadsheets/u/2/d/${cleanId}/export?format=csv&gid=0`,
-    `https://docs.google.com/spreadsheets/u/3/d/${cleanId}/export?format=csv&gid=0`,
-  ];
+    `https://docs.google.com/spreadsheets/u/3/d/${cleanId}/export?format=csv&gid=0`
+  );
 
-  for (const url of urls) {
+  for (const url of Array.from(new Set(urls))) {
     try {
       const resp = await fetch(url, { credentials: 'include', redirect: 'follow' });
       if (!resp.ok) continue;
@@ -101,22 +113,30 @@ async function fetchLiveAudiobookCsv(sheetId) {
         return text;
       }
     } catch {
-      // Try next account slot
+      // Try next slot
     }
   }
   return null;
 }
 
 /**
- * Fetches a Google Slide deck as plain text across multi-login Chrome slots (/u/0..3/).
+ * Fetches a Google Slide deck as plain text across multi-login Chrome slots (/u/0..3/ + authuser).
  */
-async function fetchGoogleSlideTxt(slideId, preferredPrefix) {
+async function fetchGoogleSlideTxt(slideId, preferredPrefix, schoolAccount) {
   const cleanId = cleanSlideId(slideId);
   if (!cleanId) return null;
 
   const urls = [];
   if (preferredPrefix) {
     urls.push(`https://docs.google.com${preferredPrefix}/export/txt`);
+  }
+  const acct = String(schoolAccount || '').trim();
+  if (acct && acct.includes('@')) {
+    urls.push(
+      `https://docs.google.com/presentation/d/${cleanId}/export/txt?authuser=${encodeURIComponent(acct)}`
+    );
+  } else if (/^\d+$/.test(acct)) {
+    urls.push(`https://docs.google.com/presentation/u/${acct}/d/${cleanId}/export/txt`);
   }
   urls.push(
     `https://docs.google.com/presentation/d/${cleanId}/export/txt`,
@@ -234,322 +254,470 @@ function parseClassroomUrl(rawUrl) {
   };
 }
 
-function buildClassroomViewUrl(classId, slot, view) {
-  const prefix = `https://classroom.google.com/u/${slot}`;
-  return view === 'w' ? `${prefix}/w/${classId}/t/all` : `${prefix}/c/${classId}`;
+function buildClassroomViewUrl(classId, accountSelector, view) {
+  const sel = String(accountSelector ?? '0').trim();
+  if (sel.includes('@')) {
+    const path = view === 'w' ? `/w/${classId}/t/all` : `/c/${classId}`;
+    return `https://classroom.google.com${path}?authuser=${encodeURIComponent(sel)}`;
+  }
+  const slotNum = /^\d+$/.test(sel) ? sel : '0';
+  return view === 'w'
+    ? `https://classroom.google.com/u/${slotNum}/w/${classId}/t/all`
+    : `https://classroom.google.com/u/${slotNum}/c/${classId}`;
 }
 
 /**
- * Opens a fresh background tab directly at `url` (never about:blank!) and waits until it finishes
- * loading a real HTTP(S) page (or times out).
+ * Opens a brand-new background tab directly at `url` and waits until Chrome finishes
+ * loading AND any instant redirect settles (no stale-tab race!).
  */
-async function openTabAtUrl(url, timeoutMs = 24000) {
-  return new Promise((resolve) => {
-    let settled = false;
+async function openFreshTabAtUrl(url, timeoutMs = 24000) {
+  let tab = null;
+  try {
+    tab = await chrome.tabs.create({ url, active: false });
+    if (!tab?.id) return { ok: false, tabId: null, finalUrl: url };
+    const tabId = tab.id;
+
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        clearTimeout(timer);
+        resolve();
+      };
+      const onUpdated = (updatedId, changeInfo, tabInfo) => {
+        if (updatedId !== tabId) return;
+        if (changeInfo.status === 'complete' && /^https?:\/\//i.test(tabInfo?.url || '')) {
+          finish();
+        }
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      chrome.tabs
+        .get(tabId)
+        .then((t) => {
+          if (t?.status === 'complete' && /^https?:\/\//i.test(t.url || '')) finish();
+        })
+        .catch(finish);
+    });
+
+    // Give Google account redirects a moment to settle if still bouncing
+    await sleep(1200);
+    const settledTab = await chrome.tabs.get(tabId).catch(() => null);
+    if (settledTab?.status === 'loading') {
+      await sleep(2500);
+    }
+    const finalTab = await chrome.tabs.get(tabId).catch(() => null);
+    return {
+      ok: Boolean(finalTab?.id),
+      tabId,
+      finalUrl: finalTab?.url || url,
+    };
+  } catch {
+    if (tab?.id) {
+      await chrome.tabs.remove(tab.id).catch(() => {});
+    }
+    return { ok: false, tabId: null, finalUrl: url };
+  }
+}
+
+/**
+ * Inspects Chrome's signed-in Google Classroom slots (/u/0/h, /u/1/h, /u/2/h) to detect:
+ * - Which email is signed into each slot
+ * - Which slot actually contains the user's configured classes (Lit, Pre-Calc, Physics)!
+ */
+async function detectSchoolClassroomSlot(targetClassIds) {
+  const checks = [];
+  const wantedIds = (targetClassIds || []).filter(Boolean);
+
+  for (const slot of [0, 1, 2]) {
     let tabId = null;
-
-    const finish = (ok) => {
-      if (settled) return;
-      settled = true;
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-      clearTimeout(timer);
-      resolve({ ok, tabId });
-    };
-
-    const onUpdated = (updatedId, changeInfo, tabInfo) => {
-      if (updatedId !== tabId) return;
-      const curUrl = tabInfo?.url || '';
-      if (changeInfo.status === 'complete' && /^https?:\/\//i.test(curUrl)) {
-        finish(true);
-      }
-    };
-
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    chrome.tabs.onUpdated.addListener(onUpdated);
-
-    chrome.tabs
-      .create({ url, active: false })
-      .then((t) => {
-        tabId = t?.id ?? null;
-        if (!tabId) {
-          finish(false);
-          return;
-        }
-        if (t.status === 'complete' && /^https?:\/\//i.test(t.url || '')) {
-          finish(true);
-        }
-      })
-      .catch(() => finish(false));
-  });
-}
-
-/**
- * Navigates an existing tab to a new `url` and waits until the new URL finishes loading.
- */
-async function navigateTabToUrl(tabId, url, timeoutMs = 22000) {
-  return new Promise((resolve) => {
-    let settled = false;
-    let sawChange = false;
-
-    const finish = (ok) => {
-      if (settled) return;
-      settled = true;
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-      clearTimeout(timer);
-      resolve(ok);
-    };
-
-    const onUpdated = (updatedId, changeInfo, tabInfo) => {
-      if (updatedId !== tabId) return;
-      if (changeInfo.status === 'loading' || changeInfo.url) {
-        sawChange = true;
-      }
-      if (changeInfo.status === 'complete' && sawChange && /^https?:\/\//i.test(tabInfo?.url || '')) {
-        finish(true);
-      }
-    };
-
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    chrome.tabs.onUpdated.addListener(onUpdated);
-
-    chrome.tabs.update(tabId, { url }).catch(() => finish(false));
-  });
-}
-
-/**
- * Reads a Google Classroom Classwork (`/w/.../t/all`) or Stream (`/c/...`) page:
- * - Waits until REAL Classroom content inside `[role="main"]` (NOT just the sidebar!) finishes loading.
- * - Verifies the URL still belongs to `expectedClassId` (catches silent redirects to home on wrong /u/N/!).
- * - Scrolls and expands up to 20 collapsed assignment rows IN-PLACE so their full descriptions,
- *   due dates, posted dates, turned-in statuses, and "View instructions" (`/details`) links all load!
- */
-async function readClassroomOverview(tabId, expectedClassId, viewKind, maxExpandRows) {
-  const tabInfo = await chrome.tabs.get(tabId).catch(() => null);
-  const currentUrl = tabInfo?.url || '';
-
-  if (
-    currentUrl.includes('accounts.google.com') ||
-    currentUrl.includes('ServiceLogin')
-  ) {
-    return {
-      ok: false,
-      needsSignIn: true,
-      finalUrl: currentUrl,
-      error: 'Not signed in to Google',
-      detailLinks: [],
-      expandedCount: 0,
-    };
-  }
-
-  if (expectedClassId && !currentUrl.includes(expectedClassId)) {
-    return {
-      ok: false,
-      wrongAccountOrMissing: true,
-      finalUrl: currentUrl,
-      error: `Redirected away from class ${expectedClassId} (wrong Google account slot)`,
-      detailLinks: [],
-      expandedCount: 0,
-    };
-  }
-
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    args: [expectedClassId || '', viewKind, maxExpandRows],
-    func: async (classId, view, maxExpand) => {
-      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-      const getMain = () =>
-        document.querySelector('[role="main"]') ||
-        document.querySelector('main') ||
-        document.body;
-
-      // 1. Wait up to 14s for REAL Classroom content inside [role="main"] (not just sidebar!)
-      const start = Date.now();
-      while (Date.now() - start < 14000) {
-        const href = window.location.href;
-        if (classId && !href.includes(classId)) break;
-
-        const mainEl = getMain();
-        const mainTxt = (mainEl?.innerText || '').trim();
-        const itemCount = mainEl
-          ? mainEl.querySelectorAll('[data-stream-item-id], [data-item-id], ol li, [role="listitem"]').length
-          : 0;
-
-        if (
-          /class not found|don'?t have access|sign in to continue|create or join/i.test(mainTxt) &&
-          itemCount === 0 &&
-          Date.now() - start > 2500
-        ) {
-          break;
-        }
-
-        const hasMarkers =
-          /(Due\s|Posted\s|Edited\s|No due date|Turned in|Assigned|Missing|Graded|View instructions|Material|Assignment|Announce something)/i.test(
-            mainTxt
-          );
-        if ((itemCount >= 2 && mainTxt.length > 150) || (hasMarkers && mainTxt.length > 250)) {
-          break;
-        }
-        await sleep(350);
-      }
-      await sleep(1400);
-
-      const finalHref = window.location.href;
-      if (classId && !finalHref.includes(classId)) {
-        return {
-          ok: false,
-          wrongAccountOrMissing: true,
-          finalUrl: finalHref,
-          title: document.title,
-          error: 'Redirected to Classroom home (wrong account slot)',
-          detailLinks: [],
-          expandedCount: 0,
-        };
-      }
-
-      const mainRoot = getMain();
-      const preText = (mainRoot?.innerText || '').trim();
-      const rawItems = mainRoot
-        ? Array.from(mainRoot.querySelectorAll('li[data-stream-item-id], [data-stream-item-id]'))
-        : [];
+    try {
+      const homeUrl = `https://classroom.google.com/u/${slot}/h`;
+      const opened = await openFreshTabAtUrl(homeUrl, 18000);
+      tabId = opened.tabId;
+      if (!tabId) continue;
 
       if (
-        rawItems.length === 0 &&
-        preText.length < 1600 &&
-        /class not found|look for it in|you don'?t have access|sign in to continue|choose an account|create or join/i.test(
-          preText
-        )
+        opened.finalUrl.includes('accounts.google.com') ||
+        opened.finalUrl.includes('ServiceLogin')
       ) {
-        return {
-          ok: false,
-          wrongAccountOrMissing: true,
-          finalUrl: finalHref,
-          title: document.title,
-          error: preText.slice(0, 220),
-          detailLinks: [],
-          expandedCount: 0,
-        };
+        checks.push({
+          slot,
+          email: null,
+          finalUrl: opened.finalUrl,
+          matchedClassIds: [],
+          classCount: 0,
+          note: 'Not signed in',
+        });
+        continue;
       }
 
-      // 2. On Classwork (/w/.../t/all), scroll through & expand up to `maxExpand` assignment rows IN-PLACE
-      let expandedCount = 0;
-      if (view === 'w' && mainRoot) {
-        // Trigger lazy-loading for top section of Classwork
-        const candidateRows =
-          rawItems.length > 0
-            ? rawItems
-            : Array.from(mainRoot.querySelectorAll('ol > li, [role="listitem"]')).filter(
-                (li) => (li.innerText || '').trim().length > 12
-              );
-
-        const clickedEls = new Set();
-        for (const row of candidateRows.slice(0, maxExpand)) {
-          try {
-            row.scrollIntoView({ block: 'center', behavior: 'instant' });
-            await sleep(80);
-
-            // Prefer explicit collapsed aria-expanded button inside the row
-            let toggle =
-              row.querySelector('[aria-expanded="false"]:not([aria-label*="More options"]):not([aria-label*="Topic"])') ||
-              row.querySelector('[role="button"]:not([aria-label*="More options"]):not([aria-label*="options"]):not(a)') ||
-              row.querySelector('[tabindex="0"]:not(a):not([aria-label*="More options"])');
-
-            if (toggle && !clickedEls.has(toggle)) {
-              // Avoid collapsing already-expanded rows
-              if (toggle.getAttribute('aria-expanded') === 'true') continue;
-              clickedEls.add(toggle);
-              toggle.click();
-              expandedCount += 1;
-              await sleep(220);
-            }
-          } catch {
-            // ignore individual row error
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        args: [wantedIds],
+        func: async (idsToFind) => {
+          const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+          const start = Date.now();
+          while (Date.now() - start < 12000) {
+            const links = document.querySelectorAll('a[href*="/c/"]').length;
+            const txt = (document.body?.innerText || '').trim();
+            if (links > 0 || (txt.length > 200 && Date.now() - start > 3500)) break;
+            await wait(300);
           }
-        }
+          await wait(900);
 
-        if (expandedCount > 0) {
-          await sleep(1200);
-        }
-      }
+          // Extract signed-in email from Google account button aria-label or title
+          let email = null;
+          for (const el of Array.from(document.querySelectorAll('[aria-label], [title]'))) {
+            const lbl = `${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''}`;
+            const em = lbl.match(/([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/);
+            if (em) {
+              email = em[1];
+              break;
+            }
+          }
 
-      // Also expand any "Read more" / "Show more" / "View more" toggles on Stream or expanded cards
-      if (mainRoot) {
-        const moreBtns = Array.from(mainRoot.querySelectorAll('button, [role="button"]'))
-          .filter((el) => /^(read more|show more|view more)$/i.test((el.textContent || '').trim()))
-          .slice(0, 10);
-        for (const btn of moreBtns) {
-          try {
-            btn.click();
-            await sleep(140);
-          } catch {}
-        }
-        if (moreBtns.length > 0) await sleep(600);
-      }
-
-      // 3. Collect ALL unique assignment / question / material / post /details URLs in top-down order
-      const detailLinks = [];
-      const seenLinks = new Set();
-      const detailRegex =
-        /^https:\/\/classroom\.google\.com\/(?:u\/\d+\/)?c\/[A-Za-z0-9_-]+\/(?:a|sa|m|p)\/[A-Za-z0-9_-]+\/details/i;
-
-      const scanRoot = mainRoot || document.body;
-      for (const a of Array.from(scanRoot.querySelectorAll('a[href]'))) {
-        const cleanHref = (a.href || '').split('?')[0].split('#')[0];
-        if (detailRegex.test(cleanHref) && !seenLinks.has(cleanHref)) {
-          seenLinks.add(cleanHref);
-          detailLinks.push(cleanHref);
-        }
-      }
-
-      // 4. Extract FULL cleaned text from [role="main"] (preserving ALL expanded descriptions & Stream announcements!)
-      const cleanedLines = (scanRoot.innerText || '')
-        .replace(/\r/g, '')
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(
-          (l) =>
-            l &&
-            !/^(More options|Options|Add class comment|Send|Post|Skip to main content|Google apps|Main menu|Copy link|Report abuse)$/i.test(
-              l
+          const hrefs = Array.from(document.querySelectorAll('a[href*="/c/"]')).map(
+            (a) => a.href || ''
+          );
+          const uniqueClassIds = Array.from(
+            new Set(
+              hrefs
+                .map((h) => h.match(/\/c\/([A-Za-z0-9_-]+)/)?.[1])
+                .filter(Boolean)
             )
-        );
+          );
+          const matchedClassIds = idsToFind.filter((id) => uniqueClassIds.includes(id));
 
-      const finalText = cleanedLines.join('\n').slice(0, 48000);
+          return {
+            finalUrl: window.location.href,
+            email,
+            classCount: uniqueClassIds.length,
+            matchedClassIds,
+            sampleText: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 140),
+          };
+        },
+      });
 
-      return {
-        ok: finalText.length > 40,
-        finalUrl: finalHref,
-        title: document.title || 'Google Classroom',
-        text: finalText,
-        detailLinks,
-        expandedCount,
-        rowCount: rawItems.length,
-      };
-    },
-  });
-
-  return (
-    results?.[0]?.result || {
-      ok: false,
-      finalUrl: currentUrl,
-      error: 'No script result returned from Classroom overview',
-      detailLinks: [],
-      expandedCount: 0,
+      const info = results?.[0]?.result;
+      if (info) {
+        // Detect if Chrome bounced /u/2/ back to /u/0/ or /h (means slot 2 doesn't exist)
+        const actualSlotMatch = info.finalUrl.match(/\/u\/(\d+)\//);
+        const actualSlot = actualSlotMatch
+          ? Number(actualSlotMatch[1])
+          : /classroom\.google\.com\/h\b/i.test(info.finalUrl)
+            ? 0
+            : slot;
+        const normalizedEmail = (info.email || '').toLowerCase();
+        if (
+          (actualSlot !== slot && checks.some((c) => c.slot === actualSlot)) ||
+          (normalizedEmail && checks.some((c) => (c.email || '').toLowerCase() === normalizedEmail))
+        ) {
+          continue;
+        }
+        checks.push({
+          slot: actualSlot,
+          email: info.email,
+          finalUrl: info.finalUrl,
+          matchedClassIds: info.matchedClassIds || [],
+          classCount: info.classCount || 0,
+          note:
+            info.matchedClassIds?.length > 0
+              ? `Matched ${info.matchedClassIds.length}/${wantedIds.length} classes!`
+              : `${info.classCount || 0} class(es) visible`,
+        });
+      }
+    } catch (err) {
+      checks.push({
+        slot,
+        email: null,
+        finalUrl: `https://classroom.google.com/u/${slot}/h`,
+        matchedClassIds: [],
+        classCount: 0,
+        note: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      if (tabId) {
+        await chrome.tabs.remove(tabId).catch(() => {});
+      }
     }
-  );
+  }
+
+  // Pick slot with the most matched class IDs (or most total classes as fallback)
+  const best = [...checks].sort((a, b) => {
+    if (b.matchedClassIds.length !== a.matchedClassIds.length) {
+      return b.matchedClassIds.length - a.matchedClassIds.length;
+    }
+    return b.classCount - a.classCount;
+  })[0];
+
+  const chosenSlot =
+    best && (best.matchedClassIds.length > 0 || best.classCount > 0) ? best.slot : null;
+
+  return {
+    ok: chosenSlot !== null,
+    chosenSlot,
+    chosenEmail: best?.email || null,
+    checks,
+  };
 }
 
 /**
- * Opens an individual assignment/material `/details` page inside the reused tab
- * to pull any long/truncated teacher descriptions, due times, and class comments verbatim.
+ * Opens ONE fresh background tab for a single Classroom overview URL (`/w/.../t/all` or `/c/...`),
+ * waits for real Classroom content, expands up to 20 Classwork assignments IN-PLACE, extracts full text
+ * + `/details` links, and closes the tab cleanly.
  */
-async function readClassroomDetailPage(tabId, detailUrl) {
+async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, maxExpandRows) {
+  let tabId = null;
   try {
-    await navigateTabToUrl(tabId, detailUrl, 16000);
+    const opened = await openFreshTabAtUrl(url, 24000);
+    tabId = opened.tabId;
+    if (!tabId) {
+      return {
+        ok: false,
+        finalUrl: url,
+        error: 'Could not open background tab',
+        detailLinks: [],
+        expandedCount: 0,
+      };
+    }
+
+    const currentUrl = opened.finalUrl || url;
+    if (
+      currentUrl.includes('accounts.google.com') ||
+      currentUrl.includes('ServiceLogin')
+    ) {
+      return {
+        ok: false,
+        needsSignIn: true,
+        finalUrl: currentUrl,
+        error: `Redirected to Google Sign-In (${currentUrl.slice(0, 70)})`,
+        detailLinks: [],
+        expandedCount: 0,
+      };
+    }
+
+    const runExtract = () =>
+      chrome.scripting.executeScript({
+        target: { tabId },
+        args: [expectedClassId || '', viewKind, maxExpandRows],
+        func: async (classId, view, maxExpand) => {
+          const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+          const getMain = () =>
+            document.querySelector('[role="main"]') ||
+            document.querySelector('main') ||
+            document.body;
+
+          // Wait up to 20s for real Classroom content inside [role="main"]
+          const start = Date.now();
+          while (Date.now() - start < 20000) {
+            const href = window.location.href;
+            if (classId && !href.includes(classId) && Date.now() - start > 3000) break;
+
+            const mainEl = getMain();
+            const mainTxt = (mainEl?.innerText || '').trim();
+            const itemCount = mainEl
+              ? mainEl.querySelectorAll('[data-stream-item-id], [data-item-id], ol li, [role="listitem"]').length
+              : 0;
+
+            if (
+              /class not found|don'?t have access|sign in to continue|create or join/i.test(mainTxt) &&
+              itemCount === 0 &&
+              Date.now() - start > 3000
+            ) {
+              break;
+            }
+
+            const hasMarkers =
+              /(Due\s|Posted\s|Edited\s|No due date|Turned in|Assigned|Missing|Graded|View instructions|Material|Assignment|Announce something)/i.test(
+                mainTxt
+              );
+            if ((itemCount >= 2 && mainTxt.length > 140) || (hasMarkers && mainTxt.length > 220)) {
+              break;
+            }
+            await wait(350);
+          }
+          await wait(1400);
+
+          const finalHref = window.location.href;
+          const mainRoot = getMain();
+          const preText = (mainRoot?.innerText || document.body?.innerText || '').trim();
+          const snippet = preText.replace(/\s+/g, ' ').slice(0, 180);
+
+          if (classId && !finalHref.includes(classId)) {
+            return {
+              ok: false,
+              wrongAccountOrMissing: true,
+              finalUrl: finalHref,
+              title: document.title,
+              error: `Landed on ${finalHref} (not class ${classId}): "${snippet}"`,
+              detailLinks: [],
+              expandedCount: 0,
+            };
+          }
+
+          const rawItems = mainRoot
+            ? Array.from(mainRoot.querySelectorAll('li[data-stream-item-id], [data-stream-item-id]'))
+            : [];
+
+          if (
+            rawItems.length === 0 &&
+            preText.length < 1600 &&
+            /class not found|look for it in|you don'?t have access|sign in to continue|choose an account|create or join/i.test(
+              preText
+            )
+          ) {
+            return {
+              ok: false,
+              wrongAccountOrMissing: true,
+              finalUrl: finalHref,
+              title: document.title,
+              error: `Wrong account or missing class on ${finalHref}: "${snippet}"`,
+              detailLinks: [],
+              expandedCount: 0,
+            };
+          }
+
+          // Expand up to `maxExpand` Classwork rows IN-PLACE so full descriptions & due dates render
+          let expandedCount = 0;
+          if (view === 'w' && mainRoot) {
+            const candidateRows =
+              rawItems.length > 0
+                ? rawItems
+                : Array.from(mainRoot.querySelectorAll('ol > li, [role="listitem"]')).filter(
+                    (li) => (li.innerText || '').trim().length > 12
+                  );
+
+            const clickedEls = new Set();
+            for (const row of candidateRows.slice(0, maxExpand)) {
+              try {
+                row.scrollIntoView({ block: 'center', behavior: 'instant' });
+                await wait(80);
+
+                const toggle =
+                  row.querySelector('[aria-expanded="false"]:not([aria-label*="More options"]):not([aria-label*="Topic"])') ||
+                  row.querySelector('[role="button"]:not([aria-label*="More options"]):not([aria-label*="options"]):not(a)') ||
+                  row.querySelector('[tabindex="0"]:not(a):not([aria-label*="More options"])');
+
+                if (toggle && !clickedEls.has(toggle)) {
+                  if (toggle.getAttribute('aria-expanded') === 'true') continue;
+                  clickedEls.add(toggle);
+                  toggle.click();
+                  expandedCount += 1;
+                  await wait(220);
+                }
+              } catch {}
+            }
+
+            if (expandedCount > 0) {
+              await wait(1200);
+            }
+          }
+
+          // Click any "Read more" / "Show more" toggles
+          if (mainRoot) {
+            const moreBtns = Array.from(mainRoot.querySelectorAll('button, [role="button"]'))
+              .filter((el) => /^(read more|show more|view more)$/i.test((el.textContent || '').trim()))
+              .slice(0, 10);
+            for (const btn of moreBtns) {
+              try {
+                btn.click();
+                await wait(140);
+              } catch {}
+            }
+            if (moreBtns.length > 0) await wait(600);
+          }
+
+          // Collect ALL unique /details links
+          const detailLinks = [];
+          const seenLinks = new Set();
+          const detailRegex =
+            /^https:\/\/classroom\.google\.com\/(?:u\/\d+\/)?c\/[A-Za-z0-9_-]+\/(?:a|sa|m|p)\/[A-Za-z0-9_-]+\/details/i;
+
+          const scanRoot = mainRoot || document.body;
+          for (const a of Array.from(scanRoot.querySelectorAll('a[href]'))) {
+            const cleanHref = (a.href || '').split('?')[0].split('#')[0];
+            if (detailRegex.test(cleanHref) && !seenLinks.has(cleanHref)) {
+              seenLinks.add(cleanHref);
+              detailLinks.push(cleanHref);
+            }
+          }
+
+          const cleanedLines = (scanRoot.innerText || '')
+            .replace(/\r/g, '')
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(
+              (l) =>
+                l &&
+                !/^(More options|Options|Add class comment|Send|Post|Skip to main content|Google apps|Main menu|Copy link|Report abuse)$/i.test(
+                  l
+                )
+            );
+
+          const finalText = cleanedLines.join('\n').slice(0, 48000);
+
+          return {
+            ok: finalText.length > 40,
+            finalUrl: finalHref,
+            title: document.title || 'Google Classroom',
+            text: finalText,
+            detailLinks,
+            expandedCount,
+            rowCount: rawItems.length,
+          };
+        },
+      });
+
+    let results;
+    try {
+      results = await runExtract();
+    } catch {
+      await sleep(1800);
+      results = await runExtract();
+    }
+
+    return (
+      results?.[0]?.result || {
+        ok: false,
+        finalUrl: currentUrl,
+        error: `Empty script result on ${currentUrl}`,
+        detailLinks: [],
+        expandedCount: 0,
+      }
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      finalUrl: url,
+      error: err instanceof Error ? err.message : String(err),
+      detailLinks: [],
+      expandedCount: 0,
+    };
+  } finally {
+    if (tabId) {
+      await chrome.tabs.remove(tabId).catch(() => {});
+    }
+  }
+}
+
+/**
+ * Opens ONE fresh background tab for an assignment `/details` page, reads full description & comments,
+ * and closes it cleanly.
+ */
+async function scrapeClassroomDetailInFreshTab(detailUrl) {
+  let tabId = null;
+  try {
+    const opened = await openFreshTabAtUrl(detailUrl, 18000);
+    tabId = opened.tabId;
+    if (!tabId) return { ok: false, finalUrl: detailUrl, text: '' };
 
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       func: async () => {
-        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const getMain = () =>
           document.querySelector('[role="main"]') ||
           document.querySelector('main') ||
@@ -559,9 +727,9 @@ async function readClassroomDetailPage(tabId, detailUrl) {
         while (Date.now() - start < 8000) {
           const txt = (getMain()?.innerText || '').trim();
           if (txt.length > 100 && window.location.href.includes('/details')) break;
-          await sleep(250);
+          await wait(250);
         }
-        await sleep(900);
+        await wait(900);
 
         const mainRoot = getMain();
         const expanders = Array.from(mainRoot.querySelectorAll('button, [role="button"]'))
@@ -572,10 +740,10 @@ async function readClassroomDetailPage(tabId, detailUrl) {
         for (const btn of expanders) {
           try {
             btn.click();
-            await sleep(150);
+            await wait(150);
           } catch {}
         }
-        if (expanders.length > 0) await sleep(400);
+        if (expanders.length > 0) await wait(400);
 
         const text = (mainRoot.innerText || '')
           .replace(/\r/g, '')
@@ -601,142 +769,153 @@ async function readClassroomDetailPage(tabId, detailUrl) {
     return results?.[0]?.result || { ok: false, finalUrl: detailUrl, text: '' };
   } catch {
     return { ok: false, finalUrl: detailUrl, text: '' };
-  }
-}
-
-/**
- * Deep-scrapes a configured Google Classroom course using ONE background tab:
- * 1. Opens Classwork (`/w/<id>/t/all`) FIRST (detecting the right /u/N/ Google account slot cleanly)
- *    and expands up to 20 assignments IN-PLACE so descriptions, due dates, and statuses load fast.
- * 2. Navigates to Stream (`/c/<id>`) to catch teacher announcements (like "test is tomorrow!").
- * 3. Visits up to 6 newest `/details` pages for full untruncated instructions & class comments.
- */
-async function scrapeClassroomCourse(rawUrl, preferredSlotOverride = null) {
-  const parsed = parseClassroomUrl(rawUrl);
-  if (!parsed) return { ok: false, error: 'Empty Classroom URL' };
-
-  let tabId = null;
-  try {
-    if (!parsed.classId) {
-      const opened = await openTabAtUrl(parsed.rawUrl);
-      tabId = opened.tabId;
-      if (!tabId) return { ok: false, error: 'Could not open Classroom tab' };
-      const single = await readClassroomOverview(tabId, '', 'w', MAX_EXPAND_ROWS_PER_CLASS);
-      return {
-        ...single,
-        primarySourceUrl: single.finalUrl || parsed.rawUrl,
-        sourceUrls: [single.finalUrl || parsed.rawUrl],
-        detailCount: 0,
-        resolvedSlot: preferredSlotOverride,
-      };
-    }
-
-    const slotCandidates = Array.from(
-      new Set([
-        ...(preferredSlotOverride !== null ? [preferredSlotOverride] : []),
-        parsed.slot ?? 1,
-        0,
-        1,
-        2,
-      ])
-    );
-
-    // Always read Classwork (/w/.../t/all) FIRST so every assignment expands in-place!
-    let classworkRes = null;
-    let workingSlot = parsed.slot ?? 1;
-
-    for (const slot of slotCandidates) {
-      const tryUrl = buildClassroomViewUrl(parsed.classId, slot, 'w');
-      if (!tabId) {
-        const opened = await openTabAtUrl(tryUrl, 24000);
-        tabId = opened.tabId;
-        if (!tabId) return { ok: false, error: 'Could not open background tab' };
-      } else {
-        await navigateTabToUrl(tabId, tryUrl, 22000);
-      }
-
-      const res = await readClassroomOverview(
-        tabId,
-        parsed.classId,
-        'w',
-        MAX_EXPAND_ROWS_PER_CLASS
-      );
-      if (res.ok) {
-        classworkRes = res;
-        workingSlot = slot;
-        break;
-      }
-      if (!res.wrongAccountOrMissing && !res.needsSignIn) {
-        classworkRes = res;
-        break;
-      }
-    }
-
-    if (!classworkRes?.ok) {
-      return {
-        ok: false,
-        error:
-          classworkRes?.error ||
-          'Could not read Classroom Classwork page — make sure your school Google account is signed in.',
-        sourceUrls: [parsed.rawUrl],
-        detailCount: 0,
-        expandedCount: 0,
-        resolvedSlot: preferredSlotOverride,
-      };
-    }
-
-    // Read companion Stream (/c/<id>) to capture teacher announcements ("test is tomorrow!", etc.)
-    const streamUrl = buildClassroomViewUrl(parsed.classId, workingSlot, 'c');
-    await navigateTabToUrl(tabId, streamUrl, 20000);
-    const streamRes = await readClassroomOverview(tabId, parsed.classId, 'c', 0);
-
-    const parts = [
-      `=== SPECIFIED CLASSWORK PAGE (Expanded ${classworkRes.expandedCount || 0} assignments): ${classworkRes.finalUrl} ===\n${classworkRes.text}`,
-    ];
-    const sourceUrls = [classworkRes.finalUrl];
-
-    if (streamRes?.ok && streamRes.text) {
-      parts.push(
-        `=== CLASSROOM STREAM ANNOUNCEMENTS: ${streamRes.finalUrl} ===\n${streamRes.text}`
-      );
-      sourceUrls.push(streamRes.finalUrl);
-    }
-
-    // Visit top newest /details pages (Stream is strictly newest-first, followed by Classwork)
-    const uniqueDetailLinks = Array.from(
-      new Set([...(streamRes?.detailLinks || []), ...(classworkRes.detailLinks || [])])
-    ).slice(0, MAX_DETAIL_PAGES_PER_COURSE);
-
-    let detailCount = 0;
-    for (const dUrl of uniqueDetailLinks) {
-      const detailRes = await readClassroomDetailPage(tabId, dUrl);
-      if (detailRes?.ok && detailRes.text) {
-        parts.push(
-          `=== ASSIGNMENT DETAIL PAGE: ${detailRes.finalUrl} ===\n${detailRes.text}`
-        );
-        detailCount += 1;
-      }
-    }
-
-    const fullText = parts.join('\n\n').slice(0, 145000);
-
-    return {
-      ok: true,
-      title: classworkRes.title || 'Google Classroom',
-      primarySourceUrl: classworkRes.finalUrl,
-      sourceUrls,
-      expandedCount: classworkRes.expandedCount || 0,
-      detailCount,
-      charCount: fullText.length,
-      preview: fullText.slice(0, 700),
-      resolvedSlot: workingSlot,
-      text: fullText,
-    };
   } finally {
     if (tabId) {
       await chrome.tabs.remove(tabId).catch(() => {});
     }
   }
+}
+
+/**
+ * Scrapes a Google Classroom course using fresh tabs per view (zero stale-redirect race!):
+ * 1. Tries the exact detected/configured school account selector (email or /u/N/) FIRST,
+ *    with automatic fallback across /u/0/, /u/1/, /u/2/.
+ * 2. Reads Classwork (`/w/<id>/t/all`) with up to 20 assignments expanded IN-PLACE.
+ * 3. Reads Stream (`/c/<id>`) for teacher announcements ("test is tomorrow!").
+ * 4. Reads up to 6 newest `/details` pages for full untruncated descriptions & comments.
+ */
+async function scrapeClassroomCourse(rawUrl, accountSelectorHint) {
+  const parsed = parseClassroomUrl(rawUrl);
+  if (!parsed) return { ok: false, error: 'Empty Classroom URL' };
+
+  if (!parsed.classId) {
+    const single = await scrapeClassroomViewInFreshTab(
+      parsed.rawUrl,
+      '',
+      'w',
+      MAX_EXPAND_ROWS_PER_CLASS
+    );
+    return {
+      ...single,
+      primarySourceUrl: single.finalUrl || parsed.rawUrl,
+      sourceUrls: [single.finalUrl || parsed.rawUrl],
+      detailCount: 0,
+      resolvedAccount: accountSelectorHint,
+    };
+  }
+
+  const candidateSelectors = [];
+  const hint = String(accountSelectorHint ?? '').trim();
+  if (hint && hint !== 'auto') {
+    candidateSelectors.push(hint);
+  }
+  if (parsed.slot !== null && parsed.slot !== undefined) {
+    candidateSelectors.push(String(parsed.slot));
+  }
+  candidateSelectors.push('0', '1', '2');
+  const uniqueSelectors = Array.from(new Set(candidateSelectors));
+
+  let classworkRes = null;
+  let workingSelector = uniqueSelectors[0];
+  const attemptTrace = [];
+
+  for (const sel of uniqueSelectors) {
+    const tryUrl = buildClassroomViewUrl(parsed.classId, sel, 'w');
+    const res = await scrapeClassroomViewInFreshTab(
+      tryUrl,
+      parsed.classId,
+      'w',
+      MAX_EXPAND_ROWS_PER_CLASS
+    );
+    if (res.ok) {
+      classworkRes = res;
+      workingSelector = sel;
+      break;
+    }
+    attemptTrace.push(`[${sel}] ${res.error || res.finalUrl}`);
+    if (!res.wrongAccountOrMissing && !res.needsSignIn) {
+      classworkRes = res;
+      break;
+    }
+  }
+
+  if (!classworkRes?.ok) {
+    return {
+      ok: false,
+      error: `Failed across accounts: ${attemptTrace.join(' ; ')}`,
+      sourceUrls: [parsed.rawUrl],
+      detailCount: 0,
+      expandedCount: 0,
+      resolvedAccount: accountSelectorHint,
+    };
+  }
+
+  // Pull companion Stream (`/c/<id>`) using the exact same working account selector
+  const streamUrl = buildClassroomViewUrl(parsed.classId, workingSelector, 'c');
+  const streamRes = await scrapeClassroomViewInFreshTab(streamUrl, parsed.classId, 'c', 0);
+
+  const parts = [
+    `=== SPECIFIED CLASSWORK PAGE (Expanded ${classworkRes.expandedCount || 0} assignments): ${classworkRes.finalUrl} ===\n${classworkRes.text}`,
+  ];
+  const sourceUrls = [classworkRes.finalUrl];
+
+  if (streamRes?.ok && streamRes.text) {
+    parts.push(
+      `=== CLASSROOM STREAM ANNOUNCEMENTS: ${streamRes.finalUrl} ===\n${streamRes.text}`
+    );
+    sourceUrls.push(streamRes.finalUrl);
+  }
+
+  // Visit top newest `/details` pages for full untruncated descriptions & comments,
+  // ensuring every detail link targets the exact resolved school account slot
+  const resolvedSlotMatch = (classworkRes.finalUrl || '').match(/\/u\/(\d+)\//);
+  const resolvedSlot = resolvedSlotMatch ? resolvedSlotMatch[1] : /^\d+$/.test(String(workingSelector)) ? String(workingSelector) : null;
+
+  const normalizeDetailUrl = (rawDetail) => {
+    if (/\/u\/\d+\//.test(rawDetail)) return rawDetail;
+    if (resolvedSlot !== null) {
+      return rawDetail.replace(
+        /^https:\/\/classroom\.google\.com\//i,
+        `https://classroom.google.com/u/${resolvedSlot}/`
+      );
+    }
+    if (String(workingSelector || '').includes('@')) {
+      return `${rawDetail}?authuser=${encodeURIComponent(workingSelector)}`;
+    }
+    return rawDetail;
+  };
+
+  const uniqueDetailLinks = Array.from(
+    new Set(
+      [...(streamRes?.detailLinks || []), ...(classworkRes.detailLinks || [])].map(
+        normalizeDetailUrl
+      )
+    )
+  ).slice(0, MAX_DETAIL_PAGES_PER_COURSE);
+
+  let detailCount = 0;
+  for (const dUrl of uniqueDetailLinks) {
+    const detailRes = await scrapeClassroomDetailInFreshTab(dUrl);
+    if (detailRes?.ok && detailRes.text) {
+      parts.push(`=== ASSIGNMENT DETAIL PAGE: ${detailRes.finalUrl} ===\n${detailRes.text}`);
+      detailCount += 1;
+    }
+  }
+
+  const fullText = parts.join('\n\n').slice(0, 145000);
+
+  return {
+    ok: true,
+    title: classworkRes.title || 'Google Classroom',
+    primarySourceUrl: classworkRes.finalUrl,
+    sourceUrls,
+    expandedCount: classworkRes.expandedCount || 0,
+    detailCount,
+    charCount: fullText.length,
+    preview: fullText.slice(0, 700),
+    resolvedAccount: workingSelector,
+    text: fullText,
+  };
 }
 
 let isSyncing = false;
@@ -768,7 +947,7 @@ async function runFullSync(activeTab) {
       /^https:\/\/docs\.google\.com(\/presentation\/(?:u\/\d+\/)?d\/([a-zA-Z0-9_-]+))/
     );
 
-    const audiobookCsv = await fetchLiveAudiobookCsv(cfg.audiobookSheetId);
+    const audiobookCsv = await fetchLiveAudiobookCsv(cfg.audiobookSheetId, cfg.schoolAccount);
 
     let totalAdded = 0;
     let totalUpdated = 0;
@@ -822,7 +1001,11 @@ async function runFullSync(activeTab) {
 
     for (const target of slideTargets) {
       try {
-        let finalSlideText = await fetchGoogleSlideTxt(target.slideId, target.preferredPrefix);
+        let finalSlideText = await fetchGoogleSlideTxt(
+          target.slideId,
+          target.preferredPrefix,
+          cfg.schoolAccount
+        );
         let finalSlideTitle = target.slideTitle;
 
         if (!finalSlideText && target.allowTabDomFallback && activeTab?.id) {
@@ -877,7 +1060,7 @@ async function runFullSync(activeTab) {
     }
 
     // ------------------------------------------------------------------
-    // 2. Google Classroom targets (Lit, Math / Pre-Calc, Honors Physics)
+    // 2. Google Classroom targets (Lit, Pre-Calc, Honors Physics)
     // ------------------------------------------------------------------
     const classroomTargets = [
       {
@@ -897,13 +1080,22 @@ async function runFullSync(activeTab) {
       },
     ].filter((t) => Boolean(t.url));
 
-    let detectedSchoolSlot = null;
+    let accountSelector = String(cfg.schoolAccount || 'auto').trim();
+    if ((!accountSelector || accountSelector === 'auto') && classroomTargets.length > 0) {
+      const wantedIds = classroomTargets
+        .map((t) => parseClassroomUrl(t.url)?.classId)
+        .filter(Boolean);
+      const detected = await detectSchoolClassroomSlot(wantedIds);
+      if (detected.ok && detected.chosenSlot !== null) {
+        accountSelector = String(detected.chosenSlot);
+      }
+    }
 
     for (const target of classroomTargets) {
       try {
-        const scraped = await scrapeClassroomCourse(target.url, detectedSchoolSlot);
-        if (scraped.resolvedSlot !== null && scraped.resolvedSlot !== undefined) {
-          detectedSchoolSlot = scraped.resolvedSlot;
+        const scraped = await scrapeClassroomCourse(target.url, accountSelector);
+        if (scraped.resolvedAccount && scraped.resolvedAccount !== 'auto') {
+          accountSelector = String(scraped.resolvedAccount);
         }
 
         if (!scraped.ok || !scraped.text) {
@@ -927,7 +1119,7 @@ async function runFullSync(activeTab) {
 
         totalAdded += data.addedCount || 0;
         totalUpdated += data.updatedCount || 0;
-        const stats = `${scraped.expandedCount || 0} expanded, ${scraped.detailCount || 0} detail pages, ${Math.round((scraped.charCount || 0) / 100) / 10}k chars`;
+        const stats = `acct=${accountSelector}, ${scraped.expandedCount || 0} expanded, ${scraped.detailCount || 0} detail pages, ${Math.round((scraped.charCount || 0) / 100) / 10}k chars`;
         const sum = `${target.label}: +${data.addedCount || 0} new, ${data.updatedCount || 0} upd (${stats})`;
         summaries.push(sum);
         sourceLog.push({
@@ -957,7 +1149,7 @@ async function runFullSync(activeTab) {
     if (failures.length === totalSources) {
       setBadge('!', '#DC2626');
       const errMsg =
-        'Could not read any configured Slide or Classroom page. Make sure your school Google account is signed into this Chrome window.';
+        'Could not read any configured Slide or Classroom page. Click "Detect School Account" in Options to verify which Gmail slot has your classes.';
       await chrome.storage.local.set({
         lastRun: { ok: false, at: new Date().toISOString(), summary: errMsg, sources: sourceLog },
       });
@@ -1037,10 +1229,26 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Ensure alarm exists whenever the service worker wakes up
 void ensureAutoSyncAlarm(false);
 
-// Also allow manual click, wipe, & schedule inspection from Options page
+// Options page message handlers
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'RUN_SYNC_FROM_OPTIONS') {
     runFullSync(null).then((res) => sendResponse(res));
+    return true;
+  }
+  if (msg?.type === 'DETECT_SCHOOL_ACCOUNT') {
+    getConfig()
+      .then((cfg) => {
+        const urls =
+          Array.isArray(msg.classroomUrls) && msg.classroomUrls.length > 0
+            ? msg.classroomUrls
+            : [cfg.litClassroomUrl, cfg.mathClassroomUrl, cfg.physicsClassroomUrl];
+        const ids = urls.map((u) => parseClassroomUrl(u)?.classId).filter(Boolean);
+        return detectSchoolClassroomSlot(ids);
+      })
+      .then((res) => sendResponse(res))
+      .catch((err) =>
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) })
+      );
     return true;
   }
   if (msg?.type === 'WIPE_SCHOOLWORK_FROM_OPTIONS') {
