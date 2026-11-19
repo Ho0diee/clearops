@@ -148,6 +148,17 @@ export const IdeasHubView: React.FC = () => {
   } | null>(null);
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
+  const [folderDragState, setFolderDragState] = useState<{
+    name: string;
+    pointerId: number;
+    startY: number;
+    dy: number;
+    fromIdx: number;
+    overIdx: number;
+    rowH: number;
+  } | null>(null);
+  const folderRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const bodyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const newFolderInputRef = useRef<HTMLInputElement | null>(null);
@@ -357,6 +368,7 @@ export const IdeasHubView: React.FC = () => {
     setZonePickerOpen(false);
     setArchivePromptOpen(false);
     setEditingFolders(false);
+    setFolderDragState(null);
     setAddingFolder(false);
     setReordering(false);
     setDragState(null);
@@ -458,6 +470,78 @@ export const IdeasHubView: React.FC = () => {
     if (!dragState) return 0;
     if (id === dragState.id) return dragState.dy;
     const { fromIdx, overIdx, rowH } = dragState;
+    if (fromIdx < overIdx && idx > fromIdx && idx <= overIdx) return -rowH;
+    if (fromIdx > overIdx && idx < fromIdx && idx >= overIdx) return rowH;
+    return 0;
+  };
+
+  /* ---------- Folder drag-to-reorder (Edit mode, iPhone + desktop friendly) ---------- */
+  const onFolderGripPointerDown = (
+    e: React.PointerEvent<HTMLSpanElement>,
+    name: string,
+    idx: number
+  ) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (renamingFolder) cancelRenamingFolder();
+    const rowEl = folderRowRefs.current.get(name);
+    const rowH = rowEl?.getBoundingClientRect().height || 48;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    try {
+      navigator.vibrate?.(8);
+    } catch {
+      /* ignore */
+    }
+    setFolderDragState({
+      name,
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      dy: 0,
+      fromIdx: idx,
+      overIdx: idx,
+      rowH,
+    });
+  };
+
+  const onFolderGripPointerMove = (e: React.PointerEvent<HTMLSpanElement>) => {
+    if (!folderDragState || e.pointerId !== folderDragState.pointerId) return;
+    e.preventDefault();
+    const maxIdx = state.projects.length - 1;
+    const minDy = -folderDragState.fromIdx * folderDragState.rowH;
+    const maxDy = (maxIdx - folderDragState.fromIdx) * folderDragState.rowH;
+    const dy = Math.max(minDy, Math.min(maxDy, e.clientY - folderDragState.startY));
+    const overIdx = Math.max(
+      0,
+      Math.min(maxIdx, folderDragState.fromIdx + Math.round(dy / folderDragState.rowH))
+    );
+    if (overIdx !== folderDragState.overIdx) {
+      try {
+        navigator.vibrate?.(4);
+      } catch {
+        /* ignore */
+      }
+    }
+    setFolderDragState({ ...folderDragState, dy, overIdx });
+  };
+
+  const onFolderGripPointerUp = (e: React.PointerEvent<HTMLSpanElement>) => {
+    if (!folderDragState || e.pointerId !== folderDragState.pointerId) return;
+    const { fromIdx, overIdx } = folderDragState;
+    setFolderDragState(null);
+    if (overIdx !== fromIdx) {
+      actions.reorderProjects(fromIdx, overIdx);
+    }
+  };
+
+  const folderRowShiftFor = (idx: number, name: string): number => {
+    if (!folderDragState) return 0;
+    if (name === folderDragState.name) return folderDragState.dy;
+    const { fromIdx, overIdx, rowH } = folderDragState;
     if (fromIdx < overIdx && idx > fromIdx && idx <= overIdx) return -rowH;
     if (fromIdx > overIdx && idx < fromIdx && idx >= overIdx) return rowH;
     return 0;
@@ -1311,7 +1395,10 @@ export const IdeasHubView: React.FC = () => {
                     className="notes-text-btn"
                     onClick={() => {
                       setEditingFolders((prev) => {
-                        if (prev) cancelRenamingFolder();
+                        if (prev) {
+                          cancelRenamingFolder();
+                          setFolderDragState(null);
+                        }
                         return !prev;
                       });
                     }}
@@ -1382,17 +1469,38 @@ export const IdeasHubView: React.FC = () => {
             </div>
 
             <div className="notes-section-label">My Folders</div>
-            <div className="notes-group-card">
-              {state.projects.map((proj) => {
+            <div
+              className={`notes-group-card notes-folders-card ${
+                folderDragState ? 'is-dragging' : ''
+              }`.trim()}
+            >
+              {state.projects.map((proj, idx) => {
                 const count = allNotes.filter((i) => i.project === proj).length;
                 const isRenamingHere =
                   renamingFolder === proj && renamingContext === 'list';
+                const isFolderDragged = folderDragState?.name === proj;
+                const folderShift = folderRowShiftFor(idx, proj);
                 return (
                   <div
                     key={proj}
+                    ref={(el) => {
+                      if (el) folderRowRefs.current.set(proj, el);
+                      else folderRowRefs.current.delete(proj);
+                    }}
                     className={`notes-folder-row-wrap ${
-                      selectedFolder === proj ? 'is-selected' : ''
-                    }`.trim()}
+                      selectedFolder === proj && !editingFolders ? 'is-selected' : ''
+                    } ${isFolderDragged ? 'is-dragged' : ''}`
+                      .replace(/\s+/g, ' ')
+                      .trim()}
+                    style={
+                      folderDragState
+                        ? {
+                            transform: `translate3d(0, ${folderShift}px, 0)`,
+                            transition: isFolderDragged ? 'none' : 'transform 160ms ease',
+                            zIndex: isFolderDragged ? 5 : 1,
+                          }
+                        : undefined
+                    }
                   >
                     {isRenamingHere ? (
                       <form
@@ -1483,6 +1591,33 @@ export const IdeasHubView: React.FC = () => {
                               >
                                 <Trash2 size={14} />
                               </button>
+                            )}
+                            {state.projects.length > 1 && (
+                              <span
+                                className="notes-folder-grip"
+                                role="button"
+                                tabIndex={0}
+                                aria-label={`Drag to reorder folder ${proj}`}
+                                title="Drag to reorder"
+                                onPointerDown={(e) => onFolderGripPointerDown(e, proj, idx)}
+                                onPointerMove={onFolderGripPointerMove}
+                                onPointerUp={onFolderGripPointerUp}
+                                onPointerCancel={onFolderGripPointerUp}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'ArrowUp' && idx > 0) {
+                                    e.preventDefault();
+                                    actions.reorderProjects(idx, idx - 1);
+                                  } else if (
+                                    e.key === 'ArrowDown' &&
+                                    idx < state.projects.length - 1
+                                  ) {
+                                    e.preventDefault();
+                                    actions.reorderProjects(idx, idx + 1);
+                                  }
+                                }}
+                              >
+                                <GripVertical size={17} />
+                              </span>
                             )}
                           </div>
                         )}

@@ -2060,6 +2060,28 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return true;
       },
 
+      reorderProjects: (fromIndex, toIndex) => {
+        if (fromIndex === toIndex) return;
+        metaUpdatedAtRef.current = Date.now();
+        setState((prev) => {
+          if (
+            fromIndex < 0 ||
+            toIndex < 0 ||
+            fromIndex >= prev.projects.length ||
+            toIndex >= prev.projects.length
+          ) {
+            return prev;
+          }
+          const next = [...prev.projects];
+          const [moved] = next.splice(fromIndex, 1);
+          next.splice(toIndex, 0, moved);
+          return {
+            ...prev,
+            projects: next,
+          };
+        });
+      },
+
       toggleCheckupBenchmark: (checkupId, benchmarkId) => {
         setState((prev) => ({
           ...prev,

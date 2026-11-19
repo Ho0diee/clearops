@@ -315,6 +315,7 @@ export interface OpsActions {
   toggleIdeaBottleneck: (ideaId: string) => void;
   addProject: (projectName: string) => void;
   renameProject: (oldName: string, newName: string) => boolean;
+  reorderProjects: (fromIndex: number, toIndex: number) => void;
   toggleCheckupBenchmark: (checkupId: string, benchmarkId: string) => void;
   addCheckupBenchmark: (checkupId: string, label: string) => void;
   updateCheckupDeliverables: (checkupId: string, deliverables: string[]) => void;

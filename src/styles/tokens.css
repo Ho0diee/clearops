@@ -6052,8 +6052,45 @@ html.is-schedule-locked #root {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding-right: 6px;
+  padding-right: 4px;
   flex-shrink: 0;
+}
+
+.notes-folders-card.is-dragging {
+  overflow: visible;
+}
+
+.notes-folder-row-wrap.is-dragged {
+  background: #FFFFFF;
+  border-radius: 12px;
+  box-shadow: 0 10px 26px rgba(20, 20, 19, 0.16), 0 0 0 1px rgba(194, 130, 10, 0.35);
+}
+
+.notes-folder-row-wrap.is-dragged::before,
+.notes-folder-row-wrap.is-dragged + .notes-folder-row-wrap::before {
+  opacity: 0;
+}
+
+.notes-folder-grip {
+  width: 34px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #A8A497;
+  cursor: grab;
+  touch-action: none;
+  flex-shrink: 0;
+  border-radius: 8px;
+}
+
+.notes-folder-grip:hover {
+  color: var(--text-primary);
+}
+
+.notes-folder-row-wrap.is-dragged .notes-folder-grip {
+  color: var(--notes-accent);
+  cursor: grabbing;
 }
 
 .notes-folder-rename-btn {
