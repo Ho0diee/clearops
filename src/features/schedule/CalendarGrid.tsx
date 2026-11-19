@@ -14,6 +14,7 @@ import {
   Bell,
   Check,
   ChevronLeft,
+  ExternalLink,
   Sparkles,
   Trash2,
   X,
@@ -256,6 +257,44 @@ const QuickDurationRow: React.FC<{
   );
 };
 
+function extractClickableLinks(text: string | undefined): Array<{ url: string; label: string }> {
+  if (!text) return [];
+  const matches = text.match(/https?:\/\/[^\s)<>\]"']+/gi);
+  if (!matches) return [];
+  const seen = new Set<string>();
+  const out: Array<{ url: string; label: string }> = [];
+  for (const raw of matches) {
+    const clean = raw.replace(/[.,;:!?]+$/, '');
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    let label = clean;
+    try {
+      const u = new URL(clean);
+      const host = u.hostname.replace(/^www\./i, '');
+      const mod = u.searchParams.get('module');
+      if (host.includes('ezaudiobookmaker.com')) {
+        label = mod !== null ? `Module ${mod} Audiobook` : 'Audiobook Site';
+      } else if (host.includes('classroom.google.com')) {
+        label = 'Google Classroom';
+      } else if (host.includes('docs.google.com')) {
+        label = u.pathname.includes('/presentation/')
+          ? 'Google Slides'
+          : u.pathname.includes('/spreadsheets/')
+          ? 'Google Sheet'
+          : 'Google Docs';
+      } else if (host.includes('railway.com')) {
+        label = 'Railway Billing';
+      } else {
+        label = host;
+      }
+    } catch {
+      /* keep clean */
+    }
+    out.push({ url: clean, label });
+  }
+  return out.slice(0, 6);
+}
+
 const EventEnrichmentFields: React.FC<{
   customColor?: EventColorId;
   notes?: string;
@@ -272,6 +311,7 @@ const EventEnrichmentFields: React.FC<{
   onAlertChange,
 }) => {
   const hasAlert = typeof alertOffsetMinutes === 'number';
+  const noteLinks = useMemo(() => extractClickableLinks(notes), [notes]);
 
   return (
     <div className="gcal-enrichment-group">
@@ -325,6 +365,24 @@ const EventEnrichmentFields: React.FC<{
           value={notes ?? ''}
           onChange={(e) => onNotesChange(e.target.value)}
         />
+        {noteLinks.length > 0 && (
+          <div className="ops-row-wrap" style={{ marginTop: 6 }}>
+            {noteLinks.map((lnk) => (
+              <a
+                key={lnk.url}
+                href={lnk.url}
+                target="_blank"
+                rel="noreferrer"
+                className="ui-btn ui-btn-secondary ui-btn-sm"
+                style={{ textDecoration: 'none' }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span>{lnk.label}</span>
+                <ExternalLink size={12} />
+              </a>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Alert Controls (At start OR earlier) */}

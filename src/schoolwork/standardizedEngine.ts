@@ -95,6 +95,49 @@ export const SCHOOL_COURSES: Record<SchoolCourseId, CourseScheduleSpec> = {
 const AUTO_INCLASS_SECTION_HEADER = '--- In-Class Work ---';
 const AUTO_DUE_SECTION_HEADER = '--- Homework & Deadlines ---';
 const META_TAG_REGEX = /\[Meta:\s*course=(eco|lit|precalc|physics)\s*\|\s*due=(\d{4}-\d{2}-\d{2})\s*\|\s*timing=(before-class|in-class|end-of-day)\s*\|\s*slug=([a-z0-9-]+)\]/i;
+export const APES_AUDIOBOOK_WEBSITE_BASE = 'https://ezaudiobookmaker.com';
+
+export function resolveEcoModuleNumbers(item: {
+  moduleNumbers?: number[];
+  title?: string;
+  startingStep?: string;
+  contextDetails?: string;
+}): number[] {
+  const nums = new Set<number>();
+  for (const n of item.moduleNumbers ?? []) {
+    if (Number.isInteger(n) && n >= 0 && n <= 80) nums.add(n);
+  }
+  if (nums.size === 0) {
+    const haystack = `${item.title || ''} ${item.startingStep || ''}`;
+    const rangeRegex = /\b(?:modules?|mods?)\s*(\d{1,2})\s*(?:-|–|—|to)\s*(\d{1,2})\b/gi;
+    let rm: RegExpExecArray | null;
+    while ((rm = rangeRegex.exec(haystack)) !== null) {
+      const a = Number(rm[1]);
+      const b = Number(rm[2]);
+      if (a >= 0 && b >= a && b - a <= 6) {
+        for (let k = a; k <= b; k++) nums.add(k);
+      }
+    }
+    const listRegex = /\b(?:modules?|mods?)\s*(\d{1,2})(?:\s*(?:&|,|\band\b)\s*(\d{1,2}))*/gi;
+    let lm: RegExpExecArray | null;
+    while ((lm = listRegex.exec(haystack)) !== null) {
+      const matchedNums = lm[0].match(/\d{1,2}/g) || [];
+      for (const s of matchedNums) {
+        const v = Number(s);
+        if (Number.isInteger(v) && v >= 0 && v <= 80) nums.add(v);
+      }
+    }
+  }
+  return Array.from(nums).sort((a, b) => a - b);
+}
+
+export function buildEcoAudiobookLinksNote(moduleNumbers: number[]): string {
+  if (!moduleNumbers.length) return '';
+  const lines = moduleNumbers.map(
+    (m) => `• Module ${m}: ${APES_AUDIOBOOK_WEBSITE_BASE}/?module=${m}`
+  );
+  return `Audiobook Website:\n${lines.join('\n')}`;
+}
 
 export function toMins(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number);
@@ -774,13 +817,19 @@ export function applyExtractedAssignmentsToSchedule(params: {
     // ------------------------------------------------------------------
     let durationMinutes = Math.max(20, Math.min(180, item.fallbackMinutes || 60));
     let durationOriginNote = '';
+    const resolvedEcoModules =
+      item.courseId === 'eco' ? resolveEcoModuleNumbers(item) : [];
+    const audiobookLinksNote =
+      item.courseId === 'eco' && resolvedEcoModules.length > 0
+        ? buildEcoAudiobookLinksNote(resolvedEcoModules)
+        : '';
 
     if (item.category === 'lab') {
       durationMinutes = 60;
       durationOriginNote = 'Standardized Lab Block: 60m on assigned day (edit duration anytime)';
-    } else if (item.courseId === 'eco' && item.moduleNumbers.length > 0) {
+    } else if (item.courseId === 'eco' && resolvedEcoModules.length > 0) {
       const audioCalc = computeEcoModulesDurationWithBuffer(
-        item.moduleNumbers,
+        resolvedEcoModules,
         audiobookTracks,
         1.2
       );
@@ -845,6 +894,7 @@ export function applyExtractedAssignmentsToSchedule(params: {
     const richNotes = [
       dueLabel,
       durationOriginNote,
+      audiobookLinksNote,
       item.contextDetails,
       sourceLine,
       metaFooter,
