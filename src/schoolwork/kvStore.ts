@@ -48,6 +48,15 @@ function sha256Etag(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 24);
 }
 
+export function normalizeEtag(etag: string | null | undefined): string {
+  if (!etag) return '';
+  return etag
+    .trim()
+    .replace(/^W\//i, '')
+    .replace(/^"+|"+$/g, '')
+    .trim();
+}
+
 async function upstashCommand<T = unknown>(
   cfg: UpstashRestConfig,
   command: string[]
@@ -78,28 +87,48 @@ async function upstashCommand<T = unknown>(
  * or falls back to Vercel Blob if Upstash Redis env vars are not configured.
  */
 export async function readPrivateJsonStore<T>(
-  pathname: string
-): Promise<{ data: T | null; etag: string | null }> {
+  pathname: string,
+  options?: { ifNoneMatch?: string | null }
+): Promise<{ data: T | null; etag: string | null; notModified?: boolean }> {
+  const wantedEtag = normalizeEtag(options?.ifNoneMatch);
   const redis = resolveUpstashRestConfig();
   if (redis) {
     const raw = await upstashCommand<string | null>(redis, ['GET', pathname]);
     if (typeof raw !== 'string' || !raw.trim()) {
       return { data: null, etag: null };
     }
+    const etag = sha256Etag(raw);
+    if (wantedEtag && normalizeEtag(etag) === wantedEtag) {
+      return { data: null, etag, notModified: true };
+    }
     return {
       data: JSON.parse(raw) as T,
-      etag: sha256Etag(raw),
+      etag,
     };
   }
 
   try {
-    const res = await get(pathname, { access: 'private', useCache: false });
-    if (!res || res.statusCode !== 200 || !res.stream) {
-      return { data: null, etag: res?.blob?.etag ?? null };
+    const res = await get(pathname, {
+      access: 'private',
+      useCache: false,
+      ...(options?.ifNoneMatch ? { ifNoneMatch: options.ifNoneMatch } : {}),
+    });
+    if (!res) {
+      return { data: null, etag: null };
+    }
+    if (res.statusCode === 304) {
+      return {
+        data: null,
+        etag: res.blob?.etag ?? options?.ifNoneMatch ?? null,
+        notModified: true,
+      };
     }
     const text = await new Response(res.stream).text();
     if (!text.trim()) {
       return { data: null, etag: res.blob.etag };
+    }
+    if (wantedEtag && normalizeEtag(res.blob.etag) === wantedEtag) {
+      return { data: null, etag: res.blob.etag, notModified: true };
     }
     return {
       data: JSON.parse(text) as T,

@@ -359,4 +359,4 @@ export interface OpsActions {
   syncNow: () => Promise<boolean>;
 }
 
-export type CloudSyncStatus = 'syncing' | 'synced' | 'offline';
+export type CloudSyncStatus = 'syncing' | 'pending' | 'synced' | 'offline';

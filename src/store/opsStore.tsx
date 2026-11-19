@@ -49,6 +49,7 @@ import {
   reconcileSchoolworkLifecycle,
 } from '../schoolwork/standardizedEngine';
 import {
+  computePayloadContentFingerprint,
   mergeTombstones,
   mergeUniversalPayload,
   type SchoolDelayRecord,
@@ -60,8 +61,11 @@ import {
   extractSyncPayloadFromState,
   fetchCloudWorkspace,
   loadLocalTombstones,
+  loadPersistedSyncMeta,
   pushAndMergeCloudWorkspace,
   saveLocalTombstones,
+  savePersistedSyncMeta,
+  type PersistedSyncMeta,
 } from './universalSyncClient';
 
 export { getTodayISO };
@@ -69,6 +73,34 @@ export { getTodayISO };
 const STORAGE_KEY = 'clearops_state_v1';
 const CLEAN_SLATE_VERSION = 2;
 const OHCHS_SCHEDULE_VERSION = 1;
+const TYPING_DEBOUNCE_MS = 2_800;
+const DISCRETE_DEBOUNCE_MS = 900;
+const BLUR_FLUSH_DEBOUNCE_MS = 250;
+const MAX_DIRTY_WAIT_MS = 15_000;
+const AUTO_PULL_COOLDOWN_MS = 10_000;
+
+function isTextInputElement(el: Element | null): boolean {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === 'TEXTAREA') return true;
+  if (tag === 'INPUT') {
+    const inputType = ((el as HTMLInputElement).type || 'text').toLowerCase();
+    return (
+      inputType === 'text' ||
+      inputType === 'search' ||
+      inputType === 'url' ||
+      inputType === 'email' ||
+      inputType === 'tel' ||
+      inputType === 'number'
+    );
+  }
+  return (el as HTMLElement).isContentEditable === true;
+}
+
+function isUserActivelyTyping(): boolean {
+  if (typeof document === 'undefined') return false;
+  return isTextInputElement(document.activeElement);
+}
 
 type PersistedOpsEnvelope = Partial<OpsState> & {
   _cleanSlateVersion?: number;
@@ -303,31 +335,15 @@ function computeSyncFingerprint(
   ohchsDelays: Record<string, SchoolDelayRecord>
 ): string {
   const payload = extractSyncPayloadFromState(state, tombstones, 0, ohchsDelays, 0);
-  return JSON.stringify({
-    siteConfig: payload.siteConfig,
-    whyStatements: payload.whyStatements,
-    hourlyRateDollars: payload.hourlyRateDollars,
-    projects: payload.projects,
-    ideas: payload.ideas,
-    userBlocks: payload.userBlocks,
-    ohchsDelayedDates: payload.ohchsDelayedDates,
-    userReminders: payload.userReminders,
-    checkups: payload.checkups,
-    pacedGoals: payload.pacedGoals,
-    pacingLogs: payload.pacingLogs,
-    offloadedTasks: payload.offloadedTasks,
-    reflections: payload.reflections,
-    draftDailyNote: payload.draftDailyNote,
-    draftReflectionPrompt: payload.draftReflectionPrompt,
-    draftReflectionText: payload.draftReflectionText,
-    streak: payload.streak,
-    tombstones: payload.tombstones,
-  });
+  return computePayloadContentFingerprint(payload);
 }
 
 export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [todayIso, setTodayIso] = useState<string>(() => getTodayISO());
-  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>('syncing');
+  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>(() => {
+    const meta = loadPersistedSyncMeta();
+    return meta.etag && meta.syncedFingerprint ? 'synced' : 'syncing';
+  });
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
 
   const initialMetaMsRef = useRef<number>(0);
@@ -441,16 +457,27 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     tombstonesRef.current = loadLocalTombstones();
   }
 
+  const initialSyncMetaRef = useRef<PersistedSyncMeta | null>(null);
+  if (initialSyncMetaRef.current === null) {
+    initialSyncMetaRef.current = loadPersistedSyncMeta();
+  }
+
   const metaUpdatedAtRef = useRef<number>(initialMetaMsRef.current);
   const ohchsDelaysRef = useRef<Record<string, SchoolDelayRecord>>(initialDelaysRef.current);
-  const lastEtagRef = useRef<string | null>(null);
+  const lastEtagRef = useRef<string | null>(initialSyncMetaRef.current.etag);
+  const hadPersistedSyncMetaRef = useRef<boolean>(
+    Boolean(initialSyncMetaRef.current.etag && initialSyncMetaRef.current.syncedFingerprint)
+  );
   const syncInFlightRef = useRef<boolean>(false);
   const pendingPushAfterFlightRef = useRef<boolean>(false);
   const pushDebounceRef = useRef<number | null>(null);
+  const firstDirtyAtRef = useRef<number | null>(null);
+  const lastPullAtRef = useRef<number>(0);
   const didBootSyncRef = useRef<boolean>(false);
 
   const lastSyncedFingerprintRef = useRef<string>(
-    computeSyncFingerprint(state, tombstonesRef.current, ohchsDelaysRef.current)
+    initialSyncMetaRef.current.syncedFingerprint ??
+      computeSyncFingerprint(state, tombstonesRef.current, ohchsDelaysRef.current)
   );
 
   // Automatically follow the real-world calendar across midnight or when waking the phone on a new day
@@ -502,8 +529,21 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [state, todayIso]);
 
+  const clearPendingPushTimer = useCallback(() => {
+    if (pushDebounceRef.current !== null) {
+      window.clearTimeout(pushDebounceRef.current);
+      pushDebounceRef.current = null;
+    }
+  }, []);
+
   const performCloudSync = useCallback(
-    async (mode: 'boot' | 'push' | 'pull', keepalive = false): Promise<boolean> => {
+    async (
+      mode: 'boot' | 'push' | 'pull',
+      options?: { keepalive?: boolean; force?: boolean }
+    ): Promise<boolean> => {
+      const keepalive = Boolean(options?.keepalive);
+      const force = Boolean(options?.force);
+
       if (syncInFlightRef.current) {
         if (mode === 'push') {
           pendingPushAfterFlightRef.current = true;
@@ -511,8 +551,22 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return false;
       }
 
+      if (mode === 'pull' && !force) {
+        // Deduplicate simultaneous focus + visibilitychange events
+        if (Date.now() - lastPullAtRef.current < AUTO_PULL_COOLDOWN_MS) {
+          return true;
+        }
+        // Do not cut short an active typing/edit debounce timer with an early pull-push
+        if (pushDebounceRef.current !== null) {
+          return true;
+        }
+      }
+
       syncInFlightRef.current = true;
-      if (mode !== 'pull') {
+      if (mode === 'push') {
+        clearPendingPushTimer();
+        setSyncStatus('syncing');
+      } else if (mode === 'boot' && !hadPersistedSyncMetaRef.current) {
         setSyncStatus('syncing');
       }
 
@@ -536,59 +590,105 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         const hasUnpushedLocalChanges = snapshotAtStartFp !== lastSyncedFingerprintRef.current;
 
-        if (mode === 'pull' && !hasUnpushedLocalChanges && didBootSyncRef.current) {
-          const remoteRes = await fetchCloudWorkspace();
+        // Read-first path for periodic pulls AND clean boots (avoids pointless writes on read-only opens)
+        if ((mode === 'pull' || mode === 'boot') && !hasUnpushedLocalChanges) {
+          const canConditionalGet =
+            mode === 'pull' ? Boolean(lastEtagRef.current) : hadPersistedSyncMetaRef.current;
+          const remoteRes = await fetchCloudWorkspace(
+            canConditionalGet ? lastEtagRef.current : null
+          );
           if (!remoteRes) {
             setSyncStatus('offline');
             return false;
           }
-          if (!remoteRes.payload) {
-            // Cloud store is empty — push this device's state up to initialize universal store
-            const pushed = await pushAndMergeCloudWorkspace(localPayload);
-            if (!pushed?.payload) {
-              setSyncStatus('offline');
-              return false;
+
+          lastPullAtRef.current = Date.now();
+
+          const normEtag = (v: string | null | undefined) =>
+            (v ?? '').trim().replace(/^W\//i, '').replace(/^"+|"+$/g, '').trim();
+          const etagMatched =
+            canConditionalGet &&
+            Boolean(remoteRes.etag) &&
+            Boolean(lastEtagRef.current) &&
+            normEtag(remoteRes.etag) === normEtag(lastEtagRef.current);
+
+          if (remoteRes.notModified || etagMatched) {
+            didBootSyncRef.current = true;
+            if (remoteRes.etag) {
+              lastEtagRef.current = remoteRes.etag;
             }
-            lastEtagRef.current = pushed.etag ?? null;
             setSyncStatus('synced');
             setLastSyncedAt(Date.now());
             return true;
           }
 
-          if (remoteRes.etag && remoteRes.etag === lastEtagRef.current) {
-            setSyncStatus('synced');
-            return true;
+          if (remoteRes.payload) {
+            // Merge latest local (in case user started editing during GET) with remote payload
+            const latestLocal = extractSyncPayloadFromState(
+              stateRef.current,
+              tombstonesRef.current ?? currentTombstones,
+              metaUpdatedAtRef.current,
+              ohchsDelaysRef.current,
+              Date.now()
+            );
+            const merged = mergeUniversalPayload(remoteRes.payload, latestLocal);
+            const remoteFp = computePayloadContentFingerprint(remoteRes.payload);
+            const mergedPayloadFp = computePayloadContentFingerprint(merged);
+
+            // If merging local into remote adds nothing new, apply locally with ZERO cloud write!
+            if (mergedPayloadFp === remoteFp) {
+              tombstonesRef.current = mergeTombstones(
+                merged.tombstones,
+                tombstonesRef.current ?? {}
+              );
+              saveLocalTombstones(tombstonesRef.current);
+              metaUpdatedAtRef.current = Math.max(
+                metaUpdatedAtRef.current,
+                merged.metaUpdatedAtMs
+              );
+              ohchsDelaysRef.current = merged.ohchsDelayedDates;
+              lastEtagRef.current = remoteRes.etag ?? null;
+              didBootSyncRef.current = true;
+              hadPersistedSyncMetaRef.current = true;
+
+              const liveToday = getTodayISO();
+              const nextState = applySyncPayloadToState(stateRef.current, merged, liveToday);
+              const postFlightFp = computeSyncFingerprint(
+                stateRef.current,
+                tombstonesRef.current,
+                ohchsDelaysRef.current
+              );
+              const nextSyncedFp = computeSyncFingerprint(
+                nextState,
+                tombstonesRef.current,
+                ohchsDelaysRef.current
+              );
+
+              if (postFlightFp === snapshotAtStartFp) {
+                lastSyncedFingerprintRef.current = nextSyncedFp;
+                firstDirtyAtRef.current = null;
+                savePersistedSyncMeta({
+                  etag: lastEtagRef.current,
+                  syncedFingerprint: nextSyncedFp,
+                });
+              } else {
+                pendingPushAfterFlightRef.current = true;
+              }
+
+              if (nextSyncedFp !== postFlightFp) {
+                setState((prev) => applySyncPayloadToState(prev, merged, liveToday));
+              }
+
+              setSyncStatus(pendingPushAfterFlightRef.current ? 'pending' : 'synced');
+              setLastSyncedAt(Date.now());
+              return true;
+            }
           }
-
-          // Merge latest local (in case user edited during fetch) with remote payload
-          const latestLocal = extractSyncPayloadFromState(
-            stateRef.current,
-            tombstonesRef.current ?? currentTombstones,
-            metaUpdatedAtRef.current,
-            ohchsDelaysRef.current,
-            Date.now()
-          );
-          const merged = mergeUniversalPayload(remoteRes.payload, latestLocal);
-          tombstonesRef.current = mergeTombstones(merged.tombstones, tombstonesRef.current ?? {});
-          saveLocalTombstones(tombstonesRef.current);
-          metaUpdatedAtRef.current = Math.max(metaUpdatedAtRef.current, merged.metaUpdatedAtMs);
-          ohchsDelaysRef.current = merged.ohchsDelayedDates;
-          lastEtagRef.current = remoteRes.etag ?? null;
-
-          const liveToday = getTodayISO();
-          const nextState = applySyncPayloadToState(stateRef.current, merged, liveToday);
-          lastSyncedFingerprintRef.current = computeSyncFingerprint(
-            nextState,
-            tombstonesRef.current,
-            ohchsDelaysRef.current
-          );
-          setState((prev) => applySyncPayloadToState(prev, merged, liveToday));
-          setSyncStatus('synced');
-          setLastSyncedAt(Date.now());
-          return true;
+          // Otherwise cloud is empty, or local has offline/uncompacted diffs -> fall through to PUT!
+          setSyncStatus('syncing');
         }
 
-        // 'boot' or 'push': atomically push & merge local workspace with cloud
+        // Push & atomically merge local workspace with cloud
         const pushRes = await pushAndMergeCloudWorkspace(localPayload, keepalive);
         if (!pushRes || !pushRes.payload) {
           setSyncStatus('offline');
@@ -596,6 +696,8 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         didBootSyncRef.current = true;
+        hadPersistedSyncMetaRef.current = true;
+        lastPullAtRef.current = Date.now();
         lastEtagRef.current = pushRes.etag ?? null;
 
         // Re-merge with live stateRef in case the user typed characters while PUT was in flight
@@ -630,18 +732,24 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         );
 
         // If user did NOT type new characters mid-flight, mark mergedFp as synced;
-        // if user DID type mid-flight, keep pendingPushAfterFlightRef true so the new characters push next!
+        // if user DID type mid-flight, stay calm in 'pending' and schedule next debounced push!
         if (postFlightFp === snapshotAtStartFp) {
           lastSyncedFingerprintRef.current = mergedFp;
+          firstDirtyAtRef.current = null;
+          savePersistedSyncMeta({
+            etag: lastEtagRef.current,
+            syncedFingerprint: mergedFp,
+          });
+          setSyncStatus('synced');
         } else {
           pendingPushAfterFlightRef.current = true;
+          setSyncStatus('pending');
         }
 
         if (mergedFp !== postFlightFp) {
           setState((prev) => applySyncPayloadToState(prev, finalMerged, liveToday));
         }
 
-        setSyncStatus('synced');
         setLastSyncedAt(Date.now());
         return true;
       } catch {
@@ -651,18 +759,45 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         syncInFlightRef.current = false;
         if (pendingPushAfterFlightRef.current) {
           pendingPushAfterFlightRef.current = false;
-          if (pushDebounceRef.current !== null) window.clearTimeout(pushDebounceRef.current);
+          const followUpDelay = isUserActivelyTyping()
+            ? TYPING_DEBOUNCE_MS
+            : DISCRETE_DEBOUNCE_MS;
+          clearPendingPushTimer();
           pushDebounceRef.current = window.setTimeout(() => {
             pushDebounceRef.current = null;
+            firstDirtyAtRef.current = null;
             void performCloudSync('push');
-          }, 350);
+          }, followUpDelay);
         }
       }
     },
-    []
+    [clearPendingPushTimer]
   );
 
-  // Boot sync + periodic multi-device pull + focus/visibility/pagehide handlers
+  const scheduleDebouncedPush = useCallback(
+    (preferredDelayMs?: number) => {
+      const now = Date.now();
+      if (firstDirtyAtRef.current === null) {
+        firstDirtyAtRef.current = now;
+      }
+      const baseDelay =
+        preferredDelayMs ??
+        (isUserActivelyTyping() ? TYPING_DEBOUNCE_MS : DISCRETE_DEBOUNCE_MS);
+      const elapsed = now - firstDirtyAtRef.current;
+      const remainingToMaxWait = Math.max(200, MAX_DIRTY_WAIT_MS - elapsed);
+      const delayMs = Math.min(baseDelay, remainingToMaxWait);
+
+      clearPendingPushTimer();
+      pushDebounceRef.current = window.setTimeout(() => {
+        pushDebounceRef.current = null;
+        firstDirtyAtRef.current = null;
+        void performCloudSync('push');
+      }, delayMs);
+    },
+    [clearPendingPushTimer, performCloudSync]
+  );
+
+  // Boot sync + periodic multi-device pull + focus/blur/visibility/pagehide handlers
   useEffect(() => {
     void performCloudSync('boot');
 
@@ -672,8 +807,36 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     }, 60_000);
 
-    const onFocusOrOnline = () => {
+    const onFocus = () => {
       void performCloudSync(didBootSyncRef.current ? 'pull' : 'boot');
+    };
+
+    const onOnline = () => {
+      const currFp = computeSyncFingerprint(
+        stateRef.current,
+        tombstonesRef.current ?? loadLocalTombstones(),
+        ohchsDelaysRef.current
+      );
+      if (currFp !== lastSyncedFingerprintRef.current) {
+        clearPendingPushTimer();
+        firstDirtyAtRef.current = null;
+        void performCloudSync('push', { force: true });
+      } else {
+        void performCloudSync(didBootSyncRef.current ? 'pull' : 'boot', { force: true });
+      }
+    };
+
+    const flushIfDirty = (useKeepalive: boolean) => {
+      const currFp = computeSyncFingerprint(
+        stateRef.current,
+        tombstonesRef.current ?? loadLocalTombstones(),
+        ohchsDelaysRef.current
+      );
+      if (currFp !== lastSyncedFingerprintRef.current) {
+        clearPendingPushTimer();
+        firstDirtyAtRef.current = null;
+        void performCloudSync('push', { keepalive: useKeepalive, force: true });
+      }
     };
 
     const onVisibilityChange = () => {
@@ -681,44 +844,46 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         void performCloudSync(didBootSyncRef.current ? 'pull' : 'boot');
       } else {
         // Flush any unsaved phone edits immediately with keepalive when switching apps or locking screen
-        const currFp = computeSyncFingerprint(
-          stateRef.current,
-          tombstonesRef.current ?? loadLocalTombstones(),
-          ohchsDelaysRef.current
-        );
-        if (currFp !== lastSyncedFingerprintRef.current) {
-          void performCloudSync('push', true);
-        }
+        flushIfDirty(true);
       }
     };
 
     const onPageHide = () => {
+      flushIfDirty(true);
+    };
+
+    // When leaving a text input / textarea after typing, shorten the idle wait so edits sync promptly
+    const onFocusOut = (event: FocusEvent) => {
+      if (!isTextInputElement(event.target as Element | null)) return;
+      if (pushDebounceRef.current === null) return;
       const currFp = computeSyncFingerprint(
         stateRef.current,
         tombstonesRef.current ?? loadLocalTombstones(),
         ohchsDelaysRef.current
       );
       if (currFp !== lastSyncedFingerprintRef.current) {
-        void performCloudSync('push', true);
+        scheduleDebouncedPush(BLUR_FLUSH_DEBOUNCE_MS);
       }
     };
 
-    window.addEventListener('focus', onFocusOrOnline);
-    window.addEventListener('online', onFocusOrOnline);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
     document.addEventListener('visibilitychange', onVisibilityChange);
+    document.addEventListener('focusout', onFocusOut);
     window.addEventListener('pagehide', onPageHide);
 
     return () => {
       window.clearInterval(pollId);
-      if (pushDebounceRef.current !== null) window.clearTimeout(pushDebounceRef.current);
-      window.removeEventListener('focus', onFocusOrOnline);
-      window.removeEventListener('online', onFocusOrOnline);
+      clearPendingPushTimer();
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      document.removeEventListener('focusout', onFocusOut);
       window.removeEventListener('pagehide', onPageHide);
     };
-  }, [performCloudSync]);
+  }, [clearPendingPushTimer, performCloudSync, scheduleDebouncedPush]);
 
-  // Watch state changes and debounce push to universal cloud whenever local data changes
+  // Watch state changes and debounce push calmly (2.8s while typing, 0.9s on discrete edits)
   useEffect(() => {
     const currFp = computeSyncFingerprint(
       state,
@@ -727,18 +892,12 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     );
     if (currFp === lastSyncedFingerprintRef.current) return;
 
-    setSyncStatus('syncing');
-    if (pushDebounceRef.current !== null) {
-      window.clearTimeout(pushDebounceRef.current);
-    }
-    pushDebounceRef.current = window.setTimeout(() => {
-      pushDebounceRef.current = null;
-      void performCloudSync('push');
-    }, 450);
-  }, [state, performCloudSync]);
+    setSyncStatus((prev) => (prev === 'syncing' ? prev : 'pending'));
+    scheduleDebouncedPush();
+  }, [state, scheduleDebouncedPush]);
 
   useSchoolworkExtractorBridge(state, setState, tombstonesRef, ohchsDelaysRef, () => {
-    void performCloudSync('pull');
+    void performCloudSync('pull', { force: true });
   });
 
   useEffect(() => {
@@ -2549,7 +2708,15 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       syncNow: async () => {
-        const ok = await performCloudSync('push');
+        clearPendingPushTimer();
+        firstDirtyAtRef.current = null;
+        const currFp = computeSyncFingerprint(
+          stateRef.current,
+          tombstonesRef.current ?? loadLocalTombstones(),
+          ohchsDelaysRef.current
+        );
+        const mode = currFp !== lastSyncedFingerprintRef.current ? 'push' : 'pull';
+        const ok = await performCloudSync(mode, { force: true });
         if (ok) {
           showToast('Synced across all devices');
         } else {
@@ -2558,7 +2725,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return ok;
       },
     };
-  }, [state, performCloudSync]);
+  }, [state, clearPendingPushTimer, performCloudSync]);
 
   const value = useMemo(
     () => ({

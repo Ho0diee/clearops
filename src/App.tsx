@@ -163,6 +163,8 @@ const ClearOpsWorkspace: React.FC = () => {
             aria-label={
               syncStatus === 'synced'
                 ? 'Cloud synced across all devices (tap to sync now)'
+                : syncStatus === 'pending'
+                ? 'Edits saved locally — waiting to sync (tap to sync now)'
                 : syncStatus === 'syncing'
                 ? 'Syncing across devices…'
                 : 'Offline — saved locally, tap to retry cloud sync'
@@ -170,6 +172,8 @@ const ClearOpsWorkspace: React.FC = () => {
             title={
               syncStatus === 'synced'
                 ? 'Synced across all devices — tap to sync now'
+                : syncStatus === 'pending'
+                ? 'Saved locally — will sync in a moment (tap to sync now)'
                 : syncStatus === 'syncing'
                 ? 'Syncing across devices…'
                 : 'Saved locally — tap to sync with cloud'

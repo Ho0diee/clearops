@@ -10,7 +10,13 @@ import type {
   ReminderItem,
   SiteConfig,
   WhyCategory,
-} from '../types/schema';
+} from '../types/schema.js';
+import {
+  buildOhchsPinForEntry,
+  OHCHS_BELL_SCHEDULES,
+  OHCHS_BY_DATE,
+  resolveDelayedDayCode,
+} from './ohchsSchedule.js';
 
 export interface SyncTombstones {
   ideas: Record<string, number>;
@@ -196,28 +202,196 @@ function normalizeRanksPerFolder(ideas: IdeaItem[], projects: string[]): IdeaIte
   return working;
 }
 
-export function isCustomizedOhchsBlock(block: CalendarBlock, todayIso?: string): boolean {
-  if (!block.id.startsWith('ohchs-')) return false;
-  const completedOverride = todayIso ? block.date >= todayIso && block.completed : false;
-  return Boolean(
-    block.updatedAt ||
-      completedOverride ||
-      block.customColor !== undefined ||
-      (block.notes && block.notes.trim().length > 0) ||
-      (block.links && block.links.length > 0) ||
-      typeof block.alertOffsetMinutes === 'number'
-  );
+const CLEAR_OVERRIDE_RETENTION_MS = 7 * 86_400_000;
+
+export function getEasternTodayIso(nowMs: number = Date.now()): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date(nowMs));
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const d = parts.find((p) => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch {
+    /* fallback */
+  }
+  return new Date(nowMs).toISOString().slice(0, 10);
 }
 
-export function isCustomizedOhchsReminder(rem: ReminderItem, todayIso?: string): boolean {
+function getOhchsBaselineBlockTemplate(
+  blockId: string,
+  delaysByDate?: Record<string, SchoolDelayRecord>
+): { entryDate: string; startTime: string; endTime: string; title: string } | null {
+  const match = blockId.match(/^ohchs-(\d{4}-\d{2}-\d{2})-([a-z0-9]+)$/i);
+  if (!match) return null;
+  const [, entryDate, periodKey] = match;
+  const entry = OHCHS_BY_DATE.get(entryDate);
+  if (!entry || entry.isNoSchool || !entry.dayCode) return null;
+  const delayMode = delaysByDate?.[entryDate]?.mode ?? 'regular';
+  const effectiveCode = resolveDelayedDayCode(entry.dayCode, delayMode);
+  const period = (OHCHS_BELL_SCHEDULES[effectiveCode] ?? []).find((p) => p.key === periodKey);
+  if (!period) return null;
+  return {
+    entryDate,
+    startTime: period.startTime,
+    endTime: period.endTime,
+    title: period.title,
+  };
+}
+
+export function isCustomizedOhchsBlock(
+  block: CalendarBlock,
+  todayIso?: string,
+  delaysByDate?: Record<string, SchoolDelayRecord>
+): boolean {
+  if (!block.id.startsWith('ohchs-')) return false;
+
+  // Always preserve explicit user/schoolwork enrichments
+  if (
+    block.customColor !== undefined ||
+    (block.notes && block.notes.trim().length > 0) ||
+    (block.links && block.links.length > 0) ||
+    typeof block.alertOffsetMinutes === 'number' ||
+    block.assignedIdeaId !== undefined ||
+    block.autoMeta !== undefined ||
+    (typeof block.spilloverCount === 'number' && block.spilloverCount > 0)
+  ) {
+    return true;
+  }
+
+  // Compare against static bell schedule template so moved/resized/renamed classes are preserved
+  // while untouched classes that merely received an updatedAt timestamp are NOT synced as bloat
+  const tpl = getOhchsBaselineBlockTemplate(block.id, delaysByDate);
+  if (!tpl) {
+    return true;
+  }
+
+  if (
+    block.date !== tpl.entryDate ||
+    block.startTime !== tpl.startTime ||
+    block.endTime !== tpl.endTime ||
+    block.title !== tpl.title ||
+    block.kind !== 'baseline' ||
+    (block.whyCategory ?? 'School') !== 'School'
+  ) {
+    return true;
+  }
+
+  const completedOverride = todayIso ? block.date >= todayIso && block.completed : false;
+  return Boolean(completedOverride);
+}
+
+export function shouldIncludeOhchsBlockInSync(
+  block: CalendarBlock,
+  todayIso: string,
+  delaysByDate?: Record<string, SchoolDelayRecord>,
+  nowMs: number = Date.now()
+): boolean {
+  if (!block.id.startsWith('ohchs-')) return true;
+  if (isCustomizedOhchsBlock(block, todayIso, delaysByDate)) return true;
+
+  // Keep a short-lived clear-override record ONLY for today/future classes whose notes or alerts
+  // were explicitly cleared recently, so offline devices won't resurrect cleared text.
+  const updatedMs = parseIsoMs(block.updatedAt);
+  if (block.date >= todayIso && updatedMs > 0 && nowMs - updatedMs < CLEAR_OVERRIDE_RETENTION_MS) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isCustomizedOhchsReminder(
+  rem: ReminderItem,
+  todayIso?: string,
+  delaysByDate?: Record<string, SchoolDelayRecord>
+): boolean {
   if (!rem.id.startsWith('ohchs-rot-')) return false;
+  const match = rem.id.match(/^ohchs-rot-(\d{4}-\d{2}-\d{2})$/);
+  if (!match) return true;
+  const entryDate = match[1];
+  const entry = OHCHS_BY_DATE.get(entryDate);
+  if (!entry) return true;
+
+  const delayMode = delaysByDate?.[entryDate]?.mode ?? 'regular';
+  const baseline = buildOhchsPinForEntry(entry, todayIso ?? '0000-00-00', delayMode);
+
+  if (
+    rem.date !== baseline.date ||
+    rem.time !== baseline.time ||
+    rem.title !== baseline.title
+  ) {
+    return true;
+  }
+
   const completedOverride = todayIso ? rem.date >= todayIso && rem.completed : false;
-  return Boolean(
-    rem.updatedAt ||
-      completedOverride ||
-      rem.title.includes('(90m Delay)') ||
-      rem.title.includes('(2hr Delay)')
-  );
+  return Boolean(completedOverride);
+}
+
+export function shouldIncludeOhchsReminderInSync(
+  rem: ReminderItem,
+  todayIso: string,
+  delaysByDate?: Record<string, SchoolDelayRecord>,
+  nowMs: number = Date.now()
+): boolean {
+  if (!rem.id.startsWith('ohchs-rot-')) return true;
+  if (isCustomizedOhchsReminder(rem, todayIso, delaysByDate)) return true;
+
+  const updatedMs = parseIsoMs(rem.updatedAt);
+  if (rem.date >= todayIso && updatedMs > 0 && nowMs - updatedMs < CLEAR_OVERRIDE_RETENTION_MS) {
+    return true;
+  }
+
+  return false;
+}
+
+function canonicalizeObjectKeys<T>(obj: Record<string, T> | undefined): Record<string, T> {
+  if (!obj) return {};
+  const out: Record<string, T> = {};
+  for (const key of Object.keys(obj).sort()) {
+    out[key] = obj[key];
+  }
+  return out;
+}
+
+function sortById<T extends { id: string }>(arr: T[] | undefined): T[] {
+  if (!Array.isArray(arr) || arr.length <= 1) return arr ?? [];
+  return [...arr].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export function computePayloadContentFingerprint(payload: UniversalSyncPayload): string {
+  const tb = payload.tombstones;
+  return JSON.stringify({
+    siteConfig: payload.siteConfig,
+    whyStatements: canonicalizeObjectKeys(payload.whyStatements),
+    hourlyRateDollars: payload.hourlyRateDollars,
+    projects: payload.projects ?? [],
+    ideas: sortById(payload.ideas),
+    userBlocks: sortById(payload.userBlocks),
+    ohchsDelayedDates: canonicalizeObjectKeys(payload.ohchsDelayedDates),
+    userReminders: sortById(payload.userReminders),
+    checkups: sortById(payload.checkups),
+    pacedGoals: sortById(payload.pacedGoals),
+    pacingLogs: sortById(payload.pacingLogs),
+    offloadedTasks: sortById(payload.offloadedTasks),
+    reflections: sortById(payload.reflections),
+    draftDailyNote: payload.draftDailyNote ?? '',
+    draftReflectionPrompt: payload.draftReflectionPrompt ?? '',
+    draftReflectionText: payload.draftReflectionText ?? '',
+    streak: payload.streak,
+    tombstones: {
+      ideas: canonicalizeObjectKeys(tb?.ideas),
+      projects: canonicalizeObjectKeys(tb?.projects),
+      blocks: canonicalizeObjectKeys(tb?.blocks),
+      reminders: canonicalizeObjectKeys(tb?.reminders),
+      pacedGoals: canonicalizeObjectKeys(tb?.pacedGoals),
+      offloadedTasks: canonicalizeObjectKeys(tb?.offloadedTasks),
+      checkups: canonicalizeObjectKeys(tb?.checkups),
+    },
+  });
 }
 
 function mergeByIdLww<T extends { id: string; updatedAt?: string; createdAt?: string }>(
@@ -273,10 +447,20 @@ export function mergeUniversalPayload(
   baseOrRemote: UniversalSyncPayload | null | undefined,
   incomingOrLocal: UniversalSyncPayload
 ): UniversalSyncPayload {
+  const nowMs = Date.now();
+  const refTodayIso = getEasternTodayIso(nowMs);
+
   if (!baseOrRemote) {
+    const delays = incomingOrLocal.ohchsDelayedDates ?? {};
     return {
       ...incomingOrLocal,
       schemaVersion: 1,
+      userBlocks: (incomingOrLocal.userBlocks ?? []).filter((b) =>
+        shouldIncludeOhchsBlockInSync(b, refTodayIso, delays, nowMs)
+      ),
+      userReminders: (incomingOrLocal.userReminders ?? []).filter((r) =>
+        shouldIncludeOhchsReminderInSync(r, refTodayIso, delays, nowMs)
+      ),
       tombstones: mergeTombstones(undefined, incomingOrLocal.tombstones),
     };
   }
@@ -358,7 +542,16 @@ export function mergeUniversalPayload(
   const finalProjects = mergedProjects.length > 0 ? mergedProjects : ['Personal'];
   const mergedIdeas = normalizeRanksPerFolder(mergedIdeasRaw, finalProjects);
 
-  // Merge calendar userBlocks & userReminders
+  // Merge OHCHS snow-day / delay overrides per date first so pruning respects delayed bell times
+  const mergedDelays: Record<string, SchoolDelayRecord> = { ...(a.ohchsDelayedDates ?? {}) };
+  for (const [iso, rec] of Object.entries(b.ohchsDelayedDates ?? {})) {
+    const prev = mergedDelays[iso];
+    if (!prev || rec.updatedAtMs >= prev.updatedAtMs) {
+      mergedDelays[iso] = rec;
+    }
+  }
+
+  // Merge calendar userBlocks & userReminders, then prune untouched past OHCHS static items
   const mergedUserBlocks = mergeByIdLww(
     a.userBlocks ?? [],
     b.userBlocks ?? [],
@@ -371,23 +564,14 @@ export function mergeUniversalPayload(
         (blk.completed ? 5 : 0);
       return score(y) >= score(x) ? y : x;
     }
-  );
+  ).filter((b) => shouldIncludeOhchsBlockInSync(b, refTodayIso, mergedDelays, nowMs));
 
   const mergedUserReminders = mergeByIdLww(
     a.userReminders ?? [],
     b.userReminders ?? [],
     tombstones.reminders,
     (x, y) => (y.completed && !x.completed ? y : x)
-  );
-
-  // Merge OHCHS snow-day / delay overrides per date
-  const mergedDelays: Record<string, SchoolDelayRecord> = { ...(a.ohchsDelayedDates ?? {}) };
-  for (const [iso, rec] of Object.entries(b.ohchsDelayedDates ?? {})) {
-    const prev = mergedDelays[iso];
-    if (!prev || rec.updatedAtMs >= prev.updatedAtMs) {
-      mergedDelays[iso] = rec;
-    }
-  }
+  ).filter((r) => shouldIncludeOhchsReminderInSync(r, refTodayIso, mergedDelays, nowMs));
 
   // Merge other collections
   const mergedCheckups = mergeByIdLww(a.checkups ?? [], b.checkups ?? [], tombstones.checkups);

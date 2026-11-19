@@ -12,8 +12,8 @@ import {
 } from '../store/ohchsSchedule.js';
 import {
   createEmptyTombstones,
-  isCustomizedOhchsBlock,
   mergeUniversalPayload,
+  shouldIncludeOhchsBlockInSync,
   type UniversalSyncPayload,
 } from '../store/universalMerge.js';
 import {
@@ -880,8 +880,8 @@ export async function runAutomatedSchoolworkPipeline(options?: {
       rolloverChanged = reconciled.changed;
     }
 
-    const nextUserBlocks = nextBlocks.filter(
-      (b) => !b.id.startsWith('ohchs-') || isCustomizedOhchsBlock(b, todayIso)
+    const nextUserBlocks = nextBlocks.filter((b) =>
+      shouldIncludeOhchsBlockInSync(b, todayIso, basePayload.ohchsDelayedDates)
     );
 
     const nextTombstones = structuredClone(

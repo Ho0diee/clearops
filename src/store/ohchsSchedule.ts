@@ -1,4 +1,4 @@
-import type { CalendarBlock, ReminderItem } from '../types/schema';
+import type { CalendarBlock, ReminderItem } from '../types/schema.js';
 
 export type OhchsDayCode =
   | 'GREEN MON'

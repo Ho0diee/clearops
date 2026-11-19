@@ -4702,6 +4702,10 @@ html.is-schedule-locked #root {
   background: #2563EB;
 }
 
+.ops-sync-btn.is-pending .ops-sync-dot {
+  background: #60A5FA;
+}
+
 .ops-sync-btn.is-offline .ops-sync-dot {
   background: #D97706;
 }

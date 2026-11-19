@@ -4,6 +4,7 @@ import {
   writePrivateJsonStore,
 } from '../src/schoolwork/kvStore.js';
 import {
+  computePayloadContentFingerprint,
   mergeUniversalPayload,
   type UniversalSyncPayload,
 } from '../src/store/universalMerge.js';
@@ -21,9 +22,29 @@ function buildCorsHeaders(request: Request): Record<string, string> {
     'Access-Control-Allow-Origin': allowedOrigin,
     'Access-Control-Allow-Methods': 'GET, PUT, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, If-None-Match',
+    'Access-Control-Expose-Headers': 'ETag',
     'Cache-Control': 'no-store, no-cache, must-revalidate',
     Vary: 'Origin',
   };
+}
+
+function formatHttpEtag(etag: string | null): string | null {
+  if (!etag) return null;
+  const trimmed = etag.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('"') || trimmed.startsWith('W/"')) return trimmed;
+  return `"${trimmed}"`;
+}
+
+function computeAlertBlocksSignature(
+  blocks: UniversalSyncPayload['userBlocks'] | undefined
+): string {
+  if (!Array.isArray(blocks) || blocks.length === 0) return '';
+  return blocks
+    .filter((b) => !b.completed && typeof b.alertOffsetMinutes === 'number')
+    .map((b) => `${b.id}|${b.date}|${b.startTime}|${b.endTime}|${b.alertOffsetMinutes}|${b.title}`)
+    .sort()
+    .join('\n');
 }
 
 function resolveBlobPathname(request: Request): string {
@@ -40,11 +61,14 @@ function resolveBlobPathname(request: Request): string {
 }
 
 async function readCurrentWorkspace(
-  pathname: string
-): Promise<{ payload: UniversalSyncPayload | null; etag: string | null }> {
+  pathname: string,
+  ifNoneMatch?: string | null
+): Promise<{ payload: UniversalSyncPayload | null; etag: string | null; notModified?: boolean }> {
   try {
-    const res = await readPrivateJsonStore<UniversalSyncPayload>(pathname);
-    return { payload: res.data, etag: res.etag };
+    const res = await readPrivateJsonStore<UniversalSyncPayload>(pathname, {
+      ifNoneMatch: ifNoneMatch ?? null,
+    });
+    return { payload: res.data, etag: res.etag, notModified: res.notModified };
   } catch (err) {
     console.error('[api/sync] readCurrentWorkspace failed:', err);
     throw err;
@@ -75,12 +99,40 @@ async function handleUpsert(request: Request): Promise<Response> {
     const current = await readCurrentWorkspace(pathname);
     const merged = mergeUniversalPayload(current.payload, incoming);
 
+    // Skip redundant cloud write & alert check if merged content is identical to stored workspace
+    if (
+      current.payload &&
+      computePayloadContentFingerprint(current.payload) ===
+        computePayloadContentFingerprint(merged)
+    ) {
+      const httpEtag = formatHttpEtag(current.etag);
+      return Response.json(
+        {
+          ok: true,
+          etag: current.etag,
+          serverTimeMs: Date.now(),
+          payload: current.payload,
+        },
+        {
+          status: 200,
+          headers: { ...headers, ...(httpEtag ? { ETag: httpEtag } : {}) },
+        }
+      );
+    }
+
+    const prevAlertsSig = computeAlertBlocksSignature(current.payload?.userBlocks);
+
     try {
       const saved = await writePrivateJsonStore(pathname, merged, {
         ifMatch: current.etag,
       });
 
-      if (pathname === 'intuition/universal-workspace-v1.json' && Array.isArray(merged.userBlocks)) {
+      const nextAlertsSig = computeAlertBlocksSignature(merged.userBlocks);
+      if (
+        pathname === 'intuition/universal-workspace-v1.json' &&
+        Array.isArray(merged.userBlocks) &&
+        nextAlertsSig !== prevAlertsSig
+      ) {
         try {
           await enqueueUpcomingBlockAlerts(merged.userBlocks, 7);
         } catch {
@@ -88,6 +140,7 @@ async function handleUpsert(request: Request): Promise<Response> {
         }
       }
 
+      const httpEtag = formatHttpEtag(saved.etag);
       return Response.json(
         {
           ok: true,
@@ -95,7 +148,10 @@ async function handleUpsert(request: Request): Promise<Response> {
           serverTimeMs: Date.now(),
           payload: merged,
         },
-        { status: 200, headers }
+        {
+          status: 200,
+          headers: { ...headers, ...(httpEtag ? { ETag: httpEtag } : {}) },
+        }
       );
     } catch (writeErr) {
       if (writeErr instanceof BlobPreconditionFailedError) {
@@ -103,13 +159,20 @@ async function handleUpsert(request: Request): Promise<Response> {
         const latest = await readCurrentWorkspace(pathname);
         const remerged = mergeUniversalPayload(latest.payload, incoming);
         const saved = await writePrivateJsonStore(pathname, remerged);
-        if (pathname === 'intuition/universal-workspace-v1.json' && Array.isArray(remerged.userBlocks)) {
+        const latestAlertsSig = computeAlertBlocksSignature(latest.payload?.userBlocks);
+        const remergedAlertsSig = computeAlertBlocksSignature(remerged.userBlocks);
+        if (
+          pathname === 'intuition/universal-workspace-v1.json' &&
+          Array.isArray(remerged.userBlocks) &&
+          remergedAlertsSig !== latestAlertsSig
+        ) {
           try {
             await enqueueUpcomingBlockAlerts(remerged.userBlocks, 7);
           } catch {
             /* non-fatal */
           }
         }
+        const httpEtag = formatHttpEtag(saved.etag);
         return Response.json(
           {
             ok: true,
@@ -117,7 +180,10 @@ async function handleUpsert(request: Request): Promise<Response> {
             serverTimeMs: Date.now(),
             payload: remerged,
           },
-          { status: 200, headers }
+          {
+            status: 200,
+            headers: { ...headers, ...(httpEtag ? { ETag: httpEtag } : {}) },
+          }
         );
       }
       throw writeErr;
@@ -140,7 +206,18 @@ export async function GET(request: Request): Promise<Response> {
   const pathname = resolveBlobPathname(request);
 
   try {
-    const current = await readCurrentWorkspace(pathname);
+    const ifNoneMatch = request.headers.get('if-none-match');
+    const current = await readCurrentWorkspace(pathname, ifNoneMatch);
+    const httpEtag = formatHttpEtag(current.etag);
+    const responseHeaders = {
+      ...headers,
+      ...(httpEtag ? { ETag: httpEtag } : {}),
+    };
+
+    if (current.notModified) {
+      return new Response(null, { status: 304, headers: responseHeaders });
+    }
+
     return Response.json(
       {
         ok: true,
@@ -148,7 +225,7 @@ export async function GET(request: Request): Promise<Response> {
         serverTimeMs: Date.now(),
         payload: current.payload,
       },
-      { status: 200, headers }
+      { status: 200, headers: responseHeaders }
     );
   } catch (err) {
     console.error('[api/sync] GET failed:', err);

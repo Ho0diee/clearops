@@ -7,9 +7,9 @@ import {
 } from './ohchsSchedule';
 import {
   createEmptyTombstones,
-  isCustomizedOhchsBlock,
-  isCustomizedOhchsReminder,
   mergeUniversalPayload,
+  shouldIncludeOhchsBlockInSync,
+  shouldIncludeOhchsReminderInSync,
   type SchoolDelayRecord,
   type SyncTombstones,
   type UniversalSyncPayload,
@@ -17,6 +17,48 @@ import {
 
 export const TOMBSTONES_STORAGE_KEY = 'clearops_sync_tombstones_v1';
 export const PRESYNC_BACKUP_STORAGE_KEY = 'clearops_presync_phone_backup_v1';
+
+export interface PersistedSyncMeta {
+  etag: string | null;
+  syncedFingerprint: string | null;
+}
+
+function getSyncMetaStorageKey(): string {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('syncNs') === 'e2e-test') {
+      return 'clearops_sync_meta_e2e_v1';
+    }
+  } catch {
+    /* ignore */
+  }
+  return 'clearops_sync_meta_v1';
+}
+
+export function loadPersistedSyncMeta(): PersistedSyncMeta {
+  try {
+    const raw = window.localStorage.getItem(getSyncMetaStorageKey());
+    if (!raw) return { etag: null, syncedFingerprint: null };
+    const parsed = JSON.parse(raw) as Partial<PersistedSyncMeta>;
+    return {
+      etag: typeof parsed.etag === 'string' && parsed.etag.trim() ? parsed.etag : null,
+      syncedFingerprint:
+        typeof parsed.syncedFingerprint === 'string' && parsed.syncedFingerprint.trim()
+          ? parsed.syncedFingerprint
+          : null,
+    };
+  } catch {
+    return { etag: null, syncedFingerprint: null };
+  }
+}
+
+export function savePersistedSyncMeta(meta: PersistedSyncMeta): void {
+  try {
+    window.localStorage.setItem(getSyncMetaStorageKey(), JSON.stringify(meta));
+  } catch {
+    /* ignore */
+  }
+}
 
 export function loadLocalTombstones(): SyncTombstones {
   try {
@@ -91,13 +133,13 @@ export function extractSyncPayloadFromState(
     2,
     '0'
   )}-${String(nowDate.getDate()).padStart(2, '0')}`;
-  const userBlocks = state.blocks.filter(
-    (b) => !b.id.startsWith('ohchs-') || isCustomizedOhchsBlock(b, liveToday)
-  );
-  const userReminders = state.reminders.filter(
-    (r) => !r.id.startsWith('ohchs-rot-') || isCustomizedOhchsReminder(r, liveToday)
-  );
   const ohchsDelayedDates = deriveOhchsDelaysFromReminders(state.reminders, explicitDelays);
+  const userBlocks = state.blocks.filter((b) =>
+    shouldIncludeOhchsBlockInSync(b, liveToday, ohchsDelayedDates)
+  );
+  const userReminders = state.reminders.filter((r) =>
+    shouldIncludeOhchsReminderInSync(r, liveToday, ohchsDelayedDates)
+  );
 
   return {
     schemaVersion: 1,
@@ -257,24 +299,45 @@ function getCandidateSyncEndpoints(): string[] {
 
 export interface SyncApiResult {
   ok: boolean;
+  notModified?: boolean;
   etag?: string | null;
   serverTimeMs?: number;
   payload: UniversalSyncPayload | null;
 }
 
-export async function fetchCloudWorkspace(): Promise<SyncApiResult | null> {
+export async function fetchCloudWorkspace(
+  ifNoneMatch?: string | null
+): Promise<SyncApiResult | null> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (ifNoneMatch && ifNoneMatch.trim()) {
+    headers['If-None-Match'] = ifNoneMatch.trim();
+  }
+
   for (const endpoint of getCandidateSyncEndpoints()) {
     try {
       const res = await fetch(endpoint, {
         method: 'GET',
-        headers: { Accept: 'application/json' },
+        headers,
         cache: 'no-store',
       });
+      if (res.status === 304) {
+        return {
+          ok: true,
+          notModified: true,
+          etag: res.headers.get('etag') || ifNoneMatch || null,
+          payload: null,
+        };
+      }
       if (!res.ok) continue;
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) continue;
       const data = (await res.json()) as SyncApiResult;
-      if (data && data.ok) return data;
+      if (data && data.ok) {
+        return {
+          ...data,
+          etag: data.etag ?? res.headers.get('etag') ?? null,
+        };
+      }
     } catch {
       /* try next candidate */
     }
@@ -287,19 +350,38 @@ export async function pushAndMergeCloudWorkspace(
   keepalive = false
 ): Promise<SyncApiResult | null> {
   const body = JSON.stringify(localPayload);
+  // Browsers reject fetch({ keepalive: true }) payloads above 64 KiB
+  const canKeepalive = keepalive && body.length <= 60_000;
 
   for (const endpoint of getCandidateSyncEndpoints()) {
     try {
-      const res = await fetch(endpoint, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body,
-        cache: 'no-store',
-        keepalive,
-      });
+      let res: Response;
+      try {
+        res = await fetch(endpoint, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body,
+          cache: 'no-store',
+          keepalive: canKeepalive,
+        });
+      } catch (fetchErr) {
+        if (canKeepalive) {
+          res = await fetch(endpoint, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body,
+            cache: 'no-store',
+          });
+        } else {
+          throw fetchErr;
+        }
+      }
       if (!res.ok) continue;
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) continue;
@@ -307,6 +389,7 @@ export async function pushAndMergeCloudWorkspace(
       if (data && data.ok && data.payload) {
         return {
           ...data,
+          etag: data.etag ?? res.headers.get('etag') ?? null,
           payload: mergeUniversalPayload(data.payload, localPayload),
         };
       }
