@@ -36,6 +36,8 @@ export interface FindEmptySpacesOptions {
   dayStartMin?: number;
   /** Latest waking minute to consider open space (default 10:00pm = 1320) */
   dayEndMin?: number;
+  /** Only return spaces that fit the full requested duration (default true; falls back to partial if none found) */
+  requireFullFit?: boolean;
 }
 
 const SENIOR_PRIV_RE = /\bsenior\s+privileges?\b/i;
@@ -145,10 +147,11 @@ export function findAvailableEmptySpaces(opts: FindEmptySpacesOptions): EmptySpa
     maxResults = 24,
     dayStartMin = 7 * 60 + 30, // 7:30am
     dayEndMin = 22 * 60, // 10:00pm
+    requireFullFit = true,
   } = opts;
 
-  const desiredDur = Math.max(15, Math.min(240, Math.round(durationMinutes)));
-  const minUsableGap = Math.min(25, desiredDur);
+  const desiredDur = Math.max(15, Math.min(360, Math.round(durationMinutes)));
+  const minUsableGap = requireFullFit ? desiredDur : Math.min(25, desiredDur);
 
   const startScanDate =
     afterDate && afterDate > todayIso ? afterDate : todayIso;
@@ -290,6 +293,10 @@ export function findAvailableEmptySpaces(opts: FindEmptySpacesOptions): EmptySpa
         }
       }
     }
+  }
+
+  if (results.length === 0 && requireFullFit) {
+    return findAvailableEmptySpaces({ ...opts, requireFullFit: false });
   }
 
   return results;

@@ -6284,3 +6284,127 @@ html.is-schedule-locked #root {
   background: var(--bg-subtle);
   color: var(--text-primary);
 }
+
+/* Step 1 Duration Prompt inside Empty Space Picker */
+.notes-space-ask-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.notes-space-ask-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.notes-space-ask-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 38px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border-default);
+  background: #FFFFFF;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 130ms var(--ease-calm), border-color 130ms var(--ease-calm), transform 120ms var(--ease-calm);
+}
+
+.notes-space-ask-btn:active {
+  transform: scale(0.97);
+}
+
+.notes-space-ask-btn.is-suggested {
+  background: var(--zone-bg);
+  border-color: rgba(85, 130, 118, 0.55);
+  color: var(--zone-text);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .notes-space-ask-btn:hover {
+    background: var(--zone-bg);
+    border-color: var(--zone-border);
+  }
+}
+
+.notes-space-custom-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notes-space-custom-input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border-default);
+  background: #FFFFFF;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 16px;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.notes-space-custom-input:focus {
+  outline: none;
+  border-color: var(--zone-border);
+}
+
+.notes-space-custom-go {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 9px;
+  border: none;
+  background: var(--text-primary);
+  color: #FFFFFF;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.notes-space-custom-go:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.notes-space-chosen-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notes-space-chosen-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--text-primary);
+  color: #FFFFFF;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notes-space-change-dur {
+  border: none;
+  background: transparent;
+  color: var(--accent-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 3px 4px;
+  cursor: pointer;
+}
