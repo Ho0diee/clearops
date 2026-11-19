@@ -1792,6 +1792,43 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }));
       },
 
+      renameProject: (oldName, newName) => {
+        const clean = newName.trim();
+        if (!clean || clean === oldName) return false;
+        const clash = state.projects.find(
+          (p) => p !== oldName && p.toLowerCase() === clean.toLowerCase()
+        );
+        if (clash) {
+          showToast(`A folder named "${clash}" already exists`);
+          return false;
+        }
+        if (tombstonesRef.current) {
+          const nextProjTomb = {
+            ...tombstonesRef.current.projects,
+            [oldName]: Date.now(),
+          };
+          delete nextProjTomb[clean];
+          tombstonesRef.current = { ...tombstonesRef.current, projects: nextProjTomb };
+          saveLocalTombstones(tombstonesRef.current);
+        }
+        const nowIso = new Date().toISOString();
+        setState((prev) => ({
+          ...prev,
+          projects: prev.projects.map((p) => (p === oldName ? clean : p)),
+          ideas: prev.ideas.map((i) =>
+            i.project === oldName ? { ...i, project: clean, updatedAt: nowIso } : i
+          ),
+          checkups: prev.checkups.map((c) =>
+            c.project === oldName ? { ...c, project: clean } : c
+          ),
+          pacedGoals: prev.pacedGoals.map((g) =>
+            g.project === oldName ? { ...g, project: clean } : g
+          ),
+        }));
+        showToast(`Renamed folder to "${clean}"`);
+        return true;
+      },
+
       toggleCheckupBenchmark: (checkupId, benchmarkId) => {
         setState((prev) => ({
           ...prev,

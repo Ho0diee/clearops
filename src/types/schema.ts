@@ -300,6 +300,7 @@ export interface OpsActions {
   toggleWaitingOn: (ideaId: string, waitingReason?: string) => void;
   toggleIdeaBottleneck: (ideaId: string) => void;
   addProject: (projectName: string) => void;
+  renameProject: (oldName: string, newName: string) => boolean;
   toggleCheckupBenchmark: (checkupId: string, benchmarkId: string) => void;
   addCheckupBenchmark: (checkupId: string, label: string) => void;
   updateCheckupDeliverables: (checkupId: string, deliverables: string[]) => void;

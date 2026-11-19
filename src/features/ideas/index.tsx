@@ -15,6 +15,7 @@ import {
   Layers,
   Lightbulb,
   Lock,
+  Pencil,
   Receipt,
   RotateCcw,
   Search,
@@ -123,6 +124,9 @@ export const IdeasHubView: React.FC = () => {
   const [addingFolder, setAddingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [editingFolders, setEditingFolders] = useState(false);
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [renamingContext, setRenamingContext] = useState<'list' | 'heading'>('list');
+  const [renameFolderDraft, setRenameFolderDraft] = useState('');
   const [zonePickerOpen, setZonePickerOpen] = useState(false);
   const [reordering, setReordering] = useState(false);
   const [dragState, setDragState] = useState<{
@@ -139,6 +143,7 @@ export const IdeasHubView: React.FC = () => {
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const bodyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const newFolderInputRef = useRef<HTMLInputElement | null>(null);
+  const renameFolderInputRef = useRef<HTMLInputElement | null>(null);
   const earnedInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCursorRef = useRef<number | null>(null);
 
@@ -208,6 +213,39 @@ export const IdeasHubView: React.FC = () => {
       return hay.includes(q);
     });
   }, [allNotes, archivedNotes, inArchiveMode, selectedFolder, archiveOutcomeFilter, searchQuery]);
+
+  const startRenamingFolder = (proj: string, context: 'list' | 'heading') => {
+    setRenamingFolder(proj);
+    setRenamingContext(context);
+    setRenameFolderDraft(proj);
+    window.setTimeout(() => {
+      renameFolderInputRef.current?.focus();
+      renameFolderInputRef.current?.select();
+    }, 20);
+  };
+
+  const cancelRenamingFolder = () => {
+    setRenamingFolder(null);
+    setRenameFolderDraft('');
+  };
+
+  const commitRenameFolder = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!renamingFolder) return;
+    const oldName = renamingFolder;
+    const nextName = renameFolderDraft.trim();
+    if (!nextName || nextName === oldName) {
+      cancelRenamingFolder();
+      return;
+    }
+    const ok = actions.renameProject(oldName, nextName);
+    if (ok) {
+      if (selectedFolder === oldName) {
+        setSelectedFolder(nextName);
+      }
+      cancelRenamingFolder();
+    }
+  };
 
   const isArchiveFolder = inArchiveMode;
   const canReorder =
@@ -1080,11 +1118,16 @@ export const IdeasHubView: React.FC = () => {
             <div className="notes-pane-topbar">
               <h1 className="notes-large-title">Folders</h1>
               <div className="ops-row" style={{ gap: 4 }}>
-                {state.projects.length > 1 && (
+                {state.projects.length > 0 && (
                   <button
                     type="button"
                     className="notes-text-btn"
-                    onClick={() => setEditingFolders((prev) => !prev)}
+                    onClick={() => {
+                      setEditingFolders((prev) => {
+                        if (prev) cancelRenamingFolder();
+                        return !prev;
+                      });
+                    }}
                   >
                     {editingFolders ? 'Done' : 'Edit'}
                   </button>
@@ -1155,6 +1198,8 @@ export const IdeasHubView: React.FC = () => {
             <div className="notes-group-card">
               {state.projects.map((proj) => {
                 const count = allNotes.filter((i) => i.project === proj).length;
+                const isRenamingHere =
+                  renamingFolder === proj && renamingContext === 'list';
                 return (
                   <div
                     key={proj}
@@ -1162,33 +1207,99 @@ export const IdeasHubView: React.FC = () => {
                       selectedFolder === proj ? 'is-selected' : ''
                     }`.trim()}
                   >
-                    <button
-                      type="button"
-                      className="notes-folder-row"
-                      onClick={() => openFolder(proj, false)}
-                    >
-                      <span className="notes-folder-icon">
-                        <Folder size={17} />
-                      </span>
-                      <span className="notes-folder-name">{proj}</span>
-                      <span className="notes-folder-count">{count}</span>
-                      <ChevronRight size={16} className="notes-chevron" />
-                    </button>
-                    {editingFolders && state.projects.length > 1 && (
-                      <button
-                        type="button"
-                        className="notes-folder-delete"
-                        aria-label={`Delete folder ${proj}`}
-                        onClick={() => {
-                          const remaining = state.projects.filter((p) => p !== proj);
-                          actions.removeProject(proj);
-                          if (selectedFolder === proj) {
-                            setSelectedFolder(remaining[0] || '__BOTTLENECKS__');
-                          }
-                        }}
+                    {isRenamingHere ? (
+                      <form
+                        className="notes-folder-rename-form"
+                        onSubmit={commitRenameFolder}
                       >
-                        <Trash2 size={14} />
-                      </button>
+                        <span className="notes-folder-icon">
+                          <Folder size={17} />
+                        </span>
+                        <input
+                          ref={renameFolderInputRef}
+                          type="text"
+                          className="notes-new-folder-input"
+                          aria-label={`Rename folder ${proj}`}
+                          value={renameFolderDraft}
+                          onChange={(e) => setRenameFolderDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') {
+                              e.preventDefault();
+                              cancelRenamingFolder();
+                            }
+                          }}
+                        />
+                        <button
+                          type="submit"
+                          className="notes-icon-btn is-confirm"
+                          aria-label="Save folder name"
+                        >
+                          <Check size={15} />
+                        </button>
+                        <button
+                          type="button"
+                          className="notes-icon-btn"
+                          aria-label="Cancel rename"
+                          onClick={cancelRenamingFolder}
+                        >
+                          <X size={15} />
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="notes-folder-row"
+                          onClick={() => {
+                            if (editingFolders) {
+                              startRenamingFolder(proj, 'list');
+                            } else {
+                              openFolder(proj, false);
+                            }
+                          }}
+                        >
+                          <span className="notes-folder-icon">
+                            <Folder size={17} />
+                          </span>
+                          <span className="notes-folder-name">{proj}</span>
+                          {!editingFolders && (
+                            <>
+                              <span className="notes-folder-count">{count}</span>
+                              <ChevronRight size={16} className="notes-chevron" />
+                            </>
+                          )}
+                        </button>
+                        {editingFolders && (
+                          <div className="notes-folder-edit-actions">
+                            <button
+                              type="button"
+                              className="notes-folder-rename-btn"
+                              aria-label={`Rename folder ${proj}`}
+                              title={`Rename ${proj}`}
+                              onClick={() => startRenamingFolder(proj, 'list')}
+                            >
+                              <Pencil size={14} />
+                            </button>
+                            {state.projects.length > 1 && (
+                              <button
+                                type="button"
+                                className="notes-folder-delete"
+                                aria-label={`Delete folder ${proj}`}
+                                title={`Delete ${proj}`}
+                                onClick={() => {
+                                  const remaining = state.projects.filter((p) => p !== proj);
+                                  actions.removeProject(proj);
+                                  if (selectedFolder === proj) {
+                                    setSelectedFolder(remaining[0] || '__BOTTLENECKS__');
+                                  }
+                                }}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 );
@@ -1257,7 +1368,57 @@ export const IdeasHubView: React.FC = () => {
         </div>
 
         <div className="notes-folder-heading-row">
-          <h2 className="notes-folder-heading">{folderDisplayName}</h2>
+          {!isArchiveFolder &&
+          selectedFolder !== '__BOTTLENECKS__' &&
+          renamingFolder === selectedFolder &&
+          renamingContext === 'heading' ? (
+            <form className="notes-heading-rename-form" onSubmit={commitRenameFolder}>
+              <input
+                ref={renameFolderInputRef}
+                type="text"
+                className="notes-heading-rename-input"
+                aria-label="Edit folder name"
+                value={renameFolderDraft}
+                onChange={(e) => setRenameFolderDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelRenamingFolder();
+                  }
+                }}
+              />
+              <button
+                type="submit"
+                className="notes-icon-btn is-confirm"
+                aria-label="Save folder name"
+              >
+                <Check size={15} />
+              </button>
+              <button
+                type="button"
+                className="notes-icon-btn"
+                aria-label="Cancel rename"
+                onClick={cancelRenamingFolder}
+              >
+                <X size={15} />
+              </button>
+            </form>
+          ) : (
+            <>
+              <h2 className="notes-folder-heading">{folderDisplayName}</h2>
+              {!isArchiveFolder && selectedFolder !== '__BOTTLENECKS__' && (
+                <button
+                  type="button"
+                  className="notes-heading-rename-btn"
+                  aria-label={`Rename folder ${folderDisplayName}`}
+                  title="Rename folder"
+                  onClick={() => startRenamingFolder(selectedFolder, 'heading')}
+                >
+                  <Pencil size={14} />
+                </button>
+              )}
+            </>
+          )}
           {isArchiveFolder && <span className="notes-archive-mode-pill">Archive</span>}
           {isArchiveFolder && (() => {
             const folderEarnedTotal = folderNotes.reduce(

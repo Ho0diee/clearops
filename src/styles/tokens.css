@@ -6039,3 +6039,97 @@ html.is-schedule-locked #root {
   left: auto;
   right: 0;
 }
+
+/* ==========================================================================
+   Inline Folder Rename Controls (Ideas Folders Pane & Folder Header)
+   ========================================================================== */
+
+.notes-folder-edit-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  flex-shrink: 0;
+}
+
+.notes-folder-rename-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--notes-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.notes-folder-rename-btn:hover {
+  background: var(--notes-accent-soft);
+}
+
+.notes-folder-edit-actions .notes-folder-delete {
+  margin-right: 0;
+}
+
+.notes-folder-rename-form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 14px;
+  background: var(--bg-surface);
+}
+
+.notes-heading-rename-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 140ms var(--ease-calm), color 140ms var(--ease-calm);
+}
+
+.notes-heading-rename-btn:hover {
+  background: var(--notes-accent-soft);
+  color: var(--notes-accent);
+}
+
+.notes-heading-rename-form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--notes-accent);
+}
+
+.notes-heading-rename-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  padding: 2px 0;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.notes-heading-rename-input:focus {
+  outline: none;
+}
