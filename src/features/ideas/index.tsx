@@ -24,9 +24,13 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { formatShortDate, useOpsStore } from '../../store/opsStore';
+import { addDaysISO, formatShortDate, useOpsStore } from '../../store/opsStore';
 import { countCoveredTasks, getBlockingBottleneck } from '../../store/ideaBlocking';
 import { formatFriendlyTime } from '../../store/scheduleAi';
+import {
+  findAvailableEmptySpaces,
+  formatWindowFreeLabel,
+} from '../../store/emptySpaceFinder';
 import type {
   ArchiveOutcome,
   CalendarBlock,
@@ -128,6 +132,8 @@ export const IdeasHubView: React.FC = () => {
   const [renamingContext, setRenamingContext] = useState<'list' | 'heading'>('list');
   const [renameFolderDraft, setRenameFolderDraft] = useState('');
   const [zonePickerOpen, setZonePickerOpen] = useState(false);
+  const [spaceDurationMins, setSpaceDurationMins] = useState<number>(60);
+  const [visibleSpacesCount, setVisibleSpacesCount] = useState<number>(6);
   const [reordering, setReordering] = useState(false);
   const [dragState, setDragState] = useState<{
     id: string;
@@ -271,16 +277,45 @@ export const IdeasHubView: React.FC = () => {
     [state.ideas, selectedNoteId]
   );
 
-  // Open Empty Zones available on the calendar (today & upcoming)
-  const openEmptyZones = useMemo(
+  // Sync preferred duration when opening a different note
+  useEffect(() => {
+    const est = openNoteRecord?.estimatedMinutes;
+    if (typeof est === 'number' && est >= 15 && est <= 240) {
+      setSpaceDurationMins(est);
+    } else {
+      setSpaceDurationMins(60);
+    }
+    setVisibleSpacesCount(6);
+  }, [openNoteRecord?.id, openNoteRecord?.estimatedMinutes]);
+
+  const activeScheduledBlockForOpenNote = useMemo(() => {
+    if (!openNoteRecord) return undefined;
+    return state.blocks.find(
+      (b) => b.assignedIdeaId === openNoteRecord.id && !b.completed
+    );
+  }, [state.blocks, openNoteRecord]);
+
+  // Real upcoming Empty Spaces on the calendar (blank open gaps + Senior Privileges free periods)
+  const availableEmptySpaces = useMemo(
     () =>
-      state.blocks
-        .filter((b) => isOpenEmptyZone(b) && b.date >= todayIso)
-        .sort((a, b) =>
-          a.date !== b.date ? a.date.localeCompare(b.date) : a.startTime.localeCompare(b.startTime)
-        ),
-    [state.blocks, todayIso]
+      findAvailableEmptySpaces({
+        blocks: state.blocks,
+        todayIso,
+        durationMinutes: spaceDurationMins,
+        excludeBlockId: activeScheduledBlockForOpenNote?.id,
+        horizonDays: visibleSpacesCount > 12 ? 28 : 14,
+        maxResults: Math.max(24, visibleSpacesCount + 6),
+      }),
+    [
+      state.blocks,
+      todayIso,
+      spaceDurationMins,
+      activeScheduledBlockForOpenNote?.id,
+      visibleSpacesCount,
+    ]
   );
+
+  const tomorrowIso = useMemo(() => addDaysISO(todayIso, 1), [todayIso]);
 
   const folderDisplayName =
     selectedFolder === '__BOTTLENECKS__' ? 'Bottlenecks' : selectedFolder;
@@ -854,7 +889,7 @@ export const IdeasHubView: React.FC = () => {
                 type="button"
                 className={`notes-schedule-btn ${scheduledBlock ? 'is-scheduled' : ''}`.trim()}
                 onClick={() => setZonePickerOpen((prev) => !prev)}
-                title="Add to an Empty Zone on your calendar"
+                title="Schedule into real open calendar space or Senior Privileges"
               >
                 {scheduledBlock ? <Check size={12} /> : <CalendarPlus size={12} />}
                 <span>
@@ -862,9 +897,11 @@ export const IdeasHubView: React.FC = () => {
                     ? `${
                         scheduledBlock.date === todayIso
                           ? 'Today'
+                          : scheduledBlock.date === tomorrowIso
+                          ? 'Tomorrow'
                           : formatShortDate(scheduledBlock.date)
                       } · ${formatFriendlyTime(scheduledBlock.startTime)}`
-                    : 'Empty Zone'}
+                    : 'Empty Space'}
                 </span>
               </button>
 
@@ -906,19 +943,39 @@ export const IdeasHubView: React.FC = () => {
             </button>
           )}
 
-          {/* Inline Empty Zone Picker Popover */}
+          {/* Inline Empty Space Picker Popover (Real Open Gaps + Senior Privileges) */}
           {zonePickerOpen && (
-            <div className="notes-zone-popover" role="region" aria-label="Choose an Empty Zone">
+            <div className="notes-zone-popover" role="region" aria-label="Choose an Empty Space">
               <div className="notes-zone-popover-head">
-                <span>Choose an Empty Zone</span>
+                <span>Schedule in Empty Space</span>
                 <button
                   type="button"
                   className="notes-icon-btn is-sm"
-                  aria-label="Close Empty Zone picker"
+                  aria-label="Close Empty Space picker"
                   onClick={() => setZonePickerOpen(false)}
                 >
                   <X size={14} />
                 </button>
+              </div>
+
+              {/* Duration selector */}
+              <div className="notes-space-dur-row" role="group" aria-label="Time needed">
+                <span className="notes-space-dur-label">Length</span>
+                {[30, 45, 60, 90, 120].map((mins) => (
+                  <button
+                    key={mins}
+                    type="button"
+                    className={`notes-space-dur-chip ${
+                      spaceDurationMins === mins ? 'is-active' : ''
+                    }`.trim()}
+                    onClick={() => {
+                      setSpaceDurationMins(mins);
+                      actions.updateIdea(note.id, { estimatedMinutes: mins });
+                    }}
+                  >
+                    {mins < 60 ? `${mins}m` : mins === 90 ? '1.5h' : `${mins / 60}h`}
+                  </button>
+                ))}
               </div>
 
               {scheduledBlock && (
@@ -934,65 +991,111 @@ export const IdeasHubView: React.FC = () => {
                   >
                     <Calendar size={14} />
                     <span>
-                      View on Calendar ({formatShortDate(scheduledBlock.date)} ·{' '}
-                      {formatFriendlyTime(scheduledBlock.startTime)})
+                      {scheduledBlock.date === todayIso
+                        ? 'Today'
+                        : scheduledBlock.date === tomorrowIso
+                        ? 'Tomorrow'
+                        : formatShortDate(scheduledBlock.date)}{' '}
+                      · {formatFriendlyTime(scheduledBlock.startTime)}–
+                      {formatFriendlyTime(scheduledBlock.endTime)}
                     </span>
                     <ChevronRight size={14} />
                   </button>
-                  <button
-                    type="button"
-                    className="notes-unschedule-btn"
-                    onClick={() => {
-                      actions.assignIdeaToBlock(scheduledBlock.id, undefined);
-                      setZonePickerOpen(false);
-                    }}
-                  >
-                    Remove
-                  </button>
+                  <div className="notes-scheduled-actions">
+                    <button
+                      type="button"
+                      className="notes-next-slot-btn"
+                      onClick={() => {
+                        actions.assignIdeaToNextEmptyZone(note.id, todayIso, spaceDurationMins);
+                      }}
+                    >
+                      Try later space
+                    </button>
+                    <button
+                      type="button"
+                      className="notes-unschedule-btn"
+                      onClick={() => {
+                        actions.unscheduleIdea(note.id);
+                        setZonePickerOpen(false);
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
                 </div>
               )}
 
               <div className="notes-zone-options">
-                {openEmptyZones.slice(0, 4).map((z) => (
-                  <button
-                    key={z.id}
-                    type="button"
-                    className="notes-zone-option"
-                    onClick={() => {
-                      if (!note.title.trim()) {
-                        actions.updateIdea(note.id, {
-                          title: extractFirstStepHint(bodyValue) || 'Focus Work',
+                {availableEmptySpaces.slice(0, visibleSpacesCount).map((slot, idx) => {
+                  const isCurrentSlot =
+                    scheduledBlock &&
+                    scheduledBlock.date === slot.date &&
+                    scheduledBlock.startTime === slot.startTime;
+                  const dayLabel =
+                    slot.date === todayIso
+                      ? 'Today'
+                      : slot.date === tomorrowIso
+                      ? 'Tomorrow'
+                      : formatShortDate(slot.date);
+                  return (
+                    <button
+                      key={slot.id}
+                      type="button"
+                      className={`notes-zone-option ${
+                        idx === 0 && !scheduledBlock ? 'is-auto' : ''
+                      } ${isCurrentSlot ? 'is-current' : ''}`.trim()}
+                      onClick={() => {
+                        if (!note.title.trim()) {
+                          actions.updateIdea(note.id, {
+                            title: extractFirstStepHint(bodyValue) || 'Focus Work',
+                          });
+                        }
+                        actions.scheduleIdeaInEmptySpace(note.id, {
+                          date: slot.date,
+                          startTime: slot.startTime,
+                          endTime: slot.endTime,
+                          label: slot.label,
                         });
-                      }
-                      actions.assignIdeaToBlock(z.id, note.id);
-                      setZonePickerOpen(false);
-                    }}
-                  >
-                    <span className="notes-zone-day">
-                      {z.date === todayIso ? 'Today' : formatShortDate(z.date)}
-                    </span>
-                    <span className="notes-zone-time">
-                      {formatFriendlyTime(z.startTime)} – {formatFriendlyTime(z.endTime)}
-                    </span>
-                  </button>
-                ))}
+                        setZonePickerOpen(false);
+                      }}
+                    >
+                      <div className="notes-space-option-left">
+                        <span className="notes-zone-day">{dayLabel}</span>
+                        <span
+                          className={`notes-space-tag ${
+                            slot.source === 'senior-privileges' ? 'is-sp' : 'is-open'
+                          }`.trim()}
+                        >
+                          {slot.label}
+                        </span>
+                      </div>
+                      <div className="notes-space-option-right">
+                        <span className="notes-zone-time">
+                          {formatFriendlyTime(slot.startTime)} – {formatFriendlyTime(slot.endTime)}
+                        </span>
+                        <span className="notes-space-free">
+                          {formatWindowFreeLabel(slot.windowMinutes)}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
 
-                <button
-                  type="button"
-                  className="notes-zone-option is-auto"
-                  onClick={() => {
-                    if (!note.title.trim()) {
-                      actions.updateIdea(note.id, {
-                        title: extractFirstStepHint(bodyValue) || 'Focus Work',
-                      });
-                    }
-                    actions.assignIdeaToNextEmptyZone(note.id, todayIso);
-                    setZonePickerOpen(false);
-                  }}
-                >
-                  <span className="notes-zone-day">+ Next Open Empty Zone</span>
-                  <span className="notes-zone-time">Auto-fit</span>
-                </button>
+                {availableEmptySpaces.length === 0 && (
+                  <div className="notes-space-empty">
+                    No open gaps found in the next 2 weeks.
+                  </div>
+                )}
+
+                {availableEmptySpaces.length > visibleSpacesCount && (
+                  <button
+                    type="button"
+                    className="notes-space-more-btn"
+                    onClick={() => setVisibleSpacesCount((prev) => prev + 6)}
+                  >
+                    Show later empty spaces
+                  </button>
+                )}
               </div>
             </div>
           )}

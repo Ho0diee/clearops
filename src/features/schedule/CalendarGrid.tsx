@@ -3263,7 +3263,8 @@ export const CalendarGrid: React.FC<{
               })()}
 
               <div className="gcal-sheet-actions">
-                {openBlock.kind === 'empty-zone' && !isOpenZone(openBlock) && (
+                {(openBlock.kind === 'empty-zone' || Boolean(openBlock.assignedIdeaId)) &&
+                  !isOpenZone(openBlock) && (
                   <Button
                     variant="primary"
                     size="lg"
@@ -3274,7 +3275,7 @@ export const CalendarGrid: React.FC<{
                       setOpenBlockId(null);
                     }}
                   >
-                    Spillover to next Empty Zone
+                    Move to next Empty Space
                   </Button>
                 )}
 

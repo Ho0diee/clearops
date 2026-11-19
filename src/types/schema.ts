@@ -268,7 +268,21 @@ export interface OpsActions {
   updateWhyStatement: (category: WhyCategory, statement: string) => void;
   spilloverEmptyZone: (blockId: string) => { targetDate: string; targetTime: string } | null;
   assignIdeaToBlock: (blockId: string, ideaId: string | undefined) => void;
-  assignIdeaToNextEmptyZone: (ideaId: string, fromDate?: string) => CalendarBlock | null;
+  assignIdeaToNextEmptyZone: (
+    ideaId: string,
+    fromDate?: string,
+    durationMinutes?: number
+  ) => CalendarBlock | null;
+  scheduleIdeaInEmptySpace: (
+    ideaId: string,
+    slot: {
+      date: string;
+      startTime: string;
+      endTime: string;
+      label?: string;
+    }
+  ) => CalendarBlock | null;
+  unscheduleIdea: (ideaId: string) => void;
   parseLiveCommand: (rawText: string) => ParsedLiveInput | null;
   submitLiveCommand: (rawText: string) => ParsedLiveInput | null;
   parseVoiceDraft: (rawText: string) => VoiceScheduleDraft | null;

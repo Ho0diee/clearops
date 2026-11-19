@@ -7,6 +7,7 @@ import type {
   VoiceScheduleDraft,
   WhyCategory,
 } from '../types/schema';
+import { findAvailableEmptySpaces } from './emptySpaceFinder.ts';
 
 export interface ScheduleAiContext {
   todayIso: string;
@@ -1509,9 +1510,9 @@ export function parseProgressiveVoiceDraft(
     return moveDraft;
   }
 
-  // Check Slot-Placement Intent ("add ___ for the next focus slot")
+  // Check Slot-Placement Intent ("add ___ for the next empty space / focus slot / senior privileges")
   const slotTargetRegex =
-    /(?:\b(?:for|in|into|to|during|on|at)\s+(?:the\s+|my\s+|a\s+|an\s+)?(?:(?:next|upcoming|first|open|available)\s+)?(?:focus\s*(?:slot|zone|block|time|session)|empty\s*(?:zone|slot|block)|open\s*(?:focus\s*)?(?:slot|zone|block)|free\s*(?:slot|block|time))\b|\b(?:the\s+|my\s+)?(?:next|upcoming|first)\s+(?:open\s+)?(?:focus\s*(?:slot|zone|block|time|session)|empty\s*(?:zone|slot|block)|open\s*(?:focus\s*)?(?:slot|zone|block)|free\s*(?:slot|block|time))\b)/i;
+    /(?:\b(?:for|in|into|to|during|on|at)\s+(?:the\s+|my\s+|a\s+|an\s+)?(?:(?:next|upcoming|first|open|available)\s+)?(?:focus\s*(?:slot|zone|block|time|session)|empty\s*(?:space|zone|slot|block)|open\s*(?:focus\s*)?(?:space|slot|zone|block)|free\s*(?:space|slot|block|time)|senior\s+privileges?)\b|\b(?:the\s+|my\s+)?(?:next|upcoming|first)\s+(?:open\s+)?(?:focus\s*(?:slot|zone|block|time|session)|empty\s*(?:space|zone|slot|block)|open\s*(?:focus\s*)?(?:space|slot|zone|block)|free\s*(?:space|slot|block|time)|senior\s+privileges?)\b)/i;
   const slotMatch = workingNormalized.match(slotTargetRegex);
 
   if (slotMatch && slotMatch.index !== undefined) {
@@ -1520,8 +1521,9 @@ export function parseProgressiveVoiceDraft(
     const allDates = extractAllDatesChronological(workingNormalized, ctx.todayIso);
     const latestDate = allDates.length ? allDates[allDates.length - 1].date : undefined;
     const searchFromDate = latestDate ?? ctx.todayIso;
+    const prefersSeniorPriv = /\bsenior\s+privileges?\b/i.test(slotMatch[0]);
 
-    // Check if user renamed after mentioning the focus slot ("...actually call it patio photos")
+    // Check if user renamed after mentioning the slot ("...actually call it patio photos")
     let rawSubject = stripSpans(beforeSlot, allDates).trim();
     if (EXPLICIT_RENAME_TRIGGER_RE.test(afterSlot)) {
       const renamed = summarizePunchyTitle(stripSpans(afterSlot, []));
@@ -1531,11 +1533,15 @@ export function parseProgressiveVoiceDraft(
     }
 
     const taskTitle = summarizePunchyTitle(rawSubject);
-    const orderedOpenZones = [...ctx.blocks]
-      .filter((b) => isOpenFocusBlock(b))
-      .sort((a, b) =>
-        a.date !== b.date ? a.date.localeCompare(b.date) : a.startTime.localeCompare(b.startTime)
-      );
+    const orderedOpenZones = !prefersSeniorPriv
+      ? [...ctx.blocks]
+          .filter((b) => isOpenFocusBlock(b))
+          .sort((a, b) =>
+            a.date !== b.date
+              ? a.date.localeCompare(b.date)
+              : a.startTime.localeCompare(b.startTime)
+          )
+      : [];
 
     const chosenZone = latestDate
       ? orderedOpenZones.find((b) => b.date === latestDate) ??
@@ -1567,15 +1573,31 @@ export function parseProgressiveVoiceDraft(
       };
     }
 
-    const gap = findOpenScheduleGap(ctx.blocks, searchFromDate, 60);
+    const realSpaces = findAvailableEmptySpaces({
+      blocks: ctx.blocks,
+      todayIso: ctx.todayIso,
+      afterDate: latestDate,
+      durationMinutes: matchedIdea?.estimatedMinutes ?? 60,
+      horizonDays: 14,
+      maxResults: 12,
+    });
+    const chosenSpace =
+      (prefersSeniorPriv
+        ? realSpaces.find((s) => s.source === 'senior-privileges')
+        : undefined) ?? realSpaces[0];
+
+    const fallbackGap = chosenSpace ?? {
+      date: searchFromDate,
+      ...findOpenScheduleGap(ctx.blocks, searchFromDate, 60),
+    };
     return {
       rawTranscript: rawTrimmed,
       mode: 'empty-zone',
-      title: finalTitle ? `Empty Zone — ${finalTitle}` : undefined,
-      date: searchFromDate,
+      title: finalTitle,
+      date: fallbackGap.date,
       dateSpoken: true,
-      startTime: gap.startTime,
-      endTime: gap.endTime,
+      startTime: fallbackGap.startTime,
+      endTime: fallbackGap.endTime,
       customColor: enrich.customColor,
       notes: enrich.notes,
       alertOffsetMinutes: enrich.alertOffsetMinutes,

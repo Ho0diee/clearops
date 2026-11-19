@@ -6133,3 +6133,154 @@ html.is-schedule-locked #root {
 .notes-heading-rename-input:focus {
   outline: none;
 }
+
+/* ==========================================================================
+   Real Empty Space Picker (Blank Calendar Gaps + Senior Privileges)
+   ========================================================================== */
+
+.notes-space-dur-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.notes-space-dur-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-right: 3px;
+}
+
+.notes-space-dur-chip {
+  border: 1px solid var(--border-default);
+  background: #FFFFFF;
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.notes-space-dur-chip.is-active {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: #FFFFFF;
+}
+
+.notes-zone-popover .notes-scheduled-banner {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  padding: 8px 10px;
+}
+
+.notes-scheduled-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.notes-next-slot-btn {
+  border: 1px solid rgba(22, 83, 69, 0.3);
+  background: #FFFFFF;
+  color: var(--zone-text);
+  border-radius: 7px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.notes-zone-popover .notes-zone-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 290px;
+  overflow-y: auto;
+}
+
+.notes-zone-popover .notes-zone-option {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+}
+
+.notes-zone-popover .notes-zone-option.is-current {
+  border-color: var(--zone-border);
+  box-shadow: inset 3px 0 0 var(--zone-border);
+}
+
+.notes-space-option-left {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.notes-space-option-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.notes-space-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.notes-space-tag.is-sp {
+  background: #E8F0FE;
+  color: #1D4ED8;
+}
+
+.notes-space-tag.is-open {
+  background: #E9F6F1;
+  color: #165345;
+}
+
+.notes-space-free {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.notes-space-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.notes-space-more-btn {
+  border: 1px dashed var(--border-default);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 9px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.notes-space-more-btn:hover {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}

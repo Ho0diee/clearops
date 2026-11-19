@@ -37,7 +37,12 @@ import {
   buildOhchsPinForEntry,
   OHCHS_BY_DATE,
 } from './ohchsSchedule';
-import { interpretScheduleInput, parseProgressiveVoiceDraft } from './scheduleAi';
+import {
+  formatFriendlyTime,
+  interpretScheduleInput,
+  parseProgressiveVoiceDraft,
+} from './scheduleAi';
+import { findAvailableEmptySpaces } from './emptySpaceFinder';
 import { useSchoolworkExtractorBridge } from './schoolworkBridge';
 import {
   getEasternNow,
@@ -889,188 +894,255 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       },
 
       spilloverEmptyZone: (blockId: string) => {
-        let outcome: { targetDate: string; targetTime: string } | null = null;
+        const source = state.blocks.find((b) => b.id === blockId);
+        if (!source) return null;
 
-        setState((prev) => {
-          const ordered = sortBlocks(prev.blocks);
-          const sourceIdx = ordered.findIndex((b) => b.id === blockId);
-          if (sourceIdx === -1) return prev;
-          const source = ordered[sourceIdx];
+        const [sh, sm] = source.startTime.split(':').map(Number);
+        const [eh, em] = source.endTime.split(':').map(Number);
+        const startMin = (sh || 0) * 60 + (sm || 0);
+        const endMin = Math.max(startMin + 15, (eh === 24 ? 24 : eh || 0) * 60 + (em || 0));
+        const durMins = Math.max(15, endMin - startMin);
 
-          const workLabel = source.title.replace(/^Empty Zone\s*[—-]\s*/i, '').trim();
-          const hasAssignedWork = Boolean(
-            source.assignedIdeaId ||
-              source.assignedGoalId ||
-              (workLabel && !/^open focus slot$/i.test(workLabel))
-          );
-
-          // Find next chronological open Empty Zone after source
-          const targetIdx = ordered.findIndex(
-            (b, idx) =>
-              idx > sourceIdx &&
-              b.kind === 'empty-zone' &&
-              !b.completed &&
-              !b.assignedIdeaId &&
-              !b.assignedGoalId &&
-              /open focus slot|^empty zone$/i.test(b.title)
-          );
-
-          const carriedTitle = hasAssignedWork
-            ? `Empty Zone — ${workLabel}`
-            : source.title;
-
-          if (targetIdx !== -1) {
-            const target = ordered[targetIdx];
-            outcome = { targetDate: target.date, targetTime: target.startTime };
-            const updated = ordered.map((b, idx) => {
-              if (idx === sourceIdx) {
-                return {
-                  ...b,
-                  title: 'Empty Zone — Open Focus Slot (Spilled Over)',
-                  assignedIdeaId: undefined,
-                  assignedGoalId: undefined,
-                  startingStepHint: `Moved to ${target.date} at ${target.startTime}`,
-                  spilloverCount: (b.spilloverCount ?? 0) + 1,
-                };
-              }
-              if (idx === targetIdx) {
-                return {
-                  ...b,
-                  title: carriedTitle,
-                  assignedIdeaId: source.assignedIdeaId,
-                  assignedGoalId: source.assignedGoalId,
-                  startingStepHint: source.startingStepHint,
-                  spilloverCount: (source.spilloverCount ?? 0) + 1,
-                };
-              }
-              return b;
-            });
-            return { ...prev, blocks: sortBlocks(updated) };
-          }
-
-          // Otherwise create a fresh open Empty Zone tomorrow morning
-          const nextDate = addDaysISO(source.date, 1);
-          outcome = { targetDate: nextDate, targetTime: '10:00' };
-          const newTarget: CalendarBlock = {
-            id: makeId('blk'),
-            date: nextDate,
-            startTime: '10:00',
-            endTime: '11:30',
-            title: carriedTitle,
-            kind: 'empty-zone',
-            completed: false,
-            assignedIdeaId: source.assignedIdeaId,
-            assignedGoalId: source.assignedGoalId,
-            startingStepHint: source.startingStepHint,
-            spilloverCount: (source.spilloverCount ?? 0) + 1,
-          };
-
-          const updated = ordered.map((b, idx) =>
-            idx === sourceIdx
-              ? {
-                  ...b,
-                  title: 'Empty Zone — Open Focus Slot (Spilled Over)',
-                  assignedIdeaId: undefined,
-                  assignedGoalId: undefined,
-                  startingStepHint: `Moved to ${nextDate} at 10:00`,
-                }
-              : b
-          );
-
-          return { ...prev, blocks: sortBlocks([...updated, newTarget]) };
+        const nextSlots = findAvailableEmptySpaces({
+          blocks: state.blocks,
+          todayIso: getTodayISO(),
+          durationMinutes: durMins,
+          afterDate: source.date,
+          afterMinutes: endMin,
+          excludeBlockId: source.id,
+          horizonDays: 21,
+          maxResults: 1,
         });
 
-        if (outcome) {
-          const { targetDate, targetTime } = outcome;
-          showToast(`Spilled over to ${formatShortDate(targetDate)} · ${targetTime} Empty Zone`);
+        const nextSlot = nextSlots[0];
+        if (!nextSlot) {
+          showToast('No open space found in the next 3 weeks');
+          return null;
         }
-        return outcome;
+
+        const nowIso = new Date().toISOString();
+        const cleanTitle = source.title.replace(/^Empty Zone\s*[—-]\s*/i, '').trim() || source.title;
+
+        setState((prev) => ({
+          ...prev,
+          selectedDate: nextSlot.date,
+          blocks: sortBlocks(
+            prev.blocks.map((b) =>
+              b.id === source.id
+                ? {
+                    ...b,
+                    title: cleanTitle,
+                    date: nextSlot.date,
+                    startTime: nextSlot.startTime,
+                    endTime: nextSlot.endTime,
+                    spilloverCount: (b.spilloverCount ?? 0) + 1,
+                    updatedAt: nowIso,
+                  }
+                : b
+            )
+          ),
+        }));
+
+        showToast(
+          `Moved to ${formatShortDate(nextSlot.date)} · ${formatFriendlyTime(nextSlot.startTime)} (${nextSlot.label})`
+        );
+        return { targetDate: nextSlot.date, targetTime: nextSlot.startTime };
       },
 
       assignIdeaToBlock: (blockId: string, ideaId: string | undefined) => {
+        if (!ideaId) {
+          // Removing an idea from a scheduled block deletes the block cleanly (never leaves a fake placeholder blob!)
+          if (tombstonesRef.current) {
+            tombstonesRef.current = {
+              ...tombstonesRef.current,
+              blocks: { ...tombstonesRef.current.blocks, [blockId]: Date.now() },
+            };
+            saveLocalTombstones(tombstonesRef.current);
+          }
+          setState((prev) => ({
+            ...prev,
+            blocks: prev.blocks.filter((b) => b.id !== blockId),
+          }));
+          showToast('Removed from calendar');
+          return;
+        }
+
+        const nowIso = new Date().toISOString();
         setState((prev) => {
-          const idea = ideaId ? prev.ideas.find((i) => i.id === ideaId) : undefined;
-          if (idea && idea.status === 'waiting-on') {
-            return prev; // Waiting-On items never enter Empty Zones
+          const idea = prev.ideas.find((i) => i.id === ideaId);
+          if (!idea || idea.status === 'waiting-on') {
+            return prev;
           }
           return {
             ...prev,
             blocks: prev.blocks.map((b) => {
               if (b.id !== blockId) return b;
-              if (!idea) {
-                return {
-                  ...b,
-                  title: 'Empty Zone — Open Focus Slot',
-                  assignedIdeaId: undefined,
-                  startingStepHint: undefined,
-                };
-              }
               return {
                 ...b,
-                title: `Empty Zone — ${idea.title || 'Untitled Idea'}`,
+                title: idea.title.trim() || 'Focus Work',
+                notes: idea.notes?.trim() || b.notes,
                 assignedIdeaId: idea.id,
                 startingStepHint: idea.startingStep || undefined,
+                updatedAt: nowIso,
               };
             }),
           };
         });
       },
 
-      assignIdeaToNextEmptyZone: (ideaId: string, fromDate?: string) => {
-        let matchedBlock: CalendarBlock | null = null;
+      scheduleIdeaInEmptySpace: (ideaId, slot) => {
+        const idea = state.ideas.find((i) => i.id === ideaId);
+        if (!idea || idea.status === 'waiting-on') return null;
 
-        setState((prev) => {
-          const idea = prev.ideas.find((i) => i.id === ideaId);
-          if (!idea || idea.status === 'waiting-on') return prev;
+        const nowIso = new Date().toISOString();
+        const existing = state.blocks.find((b) => b.assignedIdeaId === ideaId && !b.completed);
+        const cleanTitle = idea.title.trim() || 'Focus Work';
+        const cleanNotes = idea.notes?.trim() || undefined;
 
-          const anchor = fromDate ?? prev.selectedDate;
-          const ordered = sortBlocks(prev.blocks);
-          const openIdx = ordered.findIndex(
-            (b) =>
-              b.date >= anchor &&
-              b.kind === 'empty-zone' &&
-              !b.completed &&
-              !b.assignedIdeaId &&
-              !b.assignedGoalId
-          );
-
-          const blockTitle = `Empty Zone — ${idea.title || 'Untitled Idea'}`;
-
-          if (openIdx !== -1) {
-            const updated = ordered.map((b, idx) => {
-              if (idx !== openIdx) return b;
-              const nextBlock: CalendarBlock = {
-                ...b,
-                title: blockTitle,
-                assignedIdeaId: idea.id,
-                startingStepHint: idea.startingStep,
-              };
-              matchedBlock = nextBlock;
-              return nextBlock;
-            });
-            return { ...prev, blocks: updated };
-          }
-
-          const created: CalendarBlock = {
+        let resultBlock: CalendarBlock;
+        if (existing) {
+          resultBlock = {
+            ...existing,
+            title: cleanTitle,
+            date: slot.date,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+            notes: cleanNotes ?? existing.notes,
+            startingStepHint: idea.startingStep || existing.startingStepHint,
+            updatedAt: nowIso,
+          };
+          setState((prev) => ({
+            ...prev,
+            blocks: sortBlocks(prev.blocks.map((b) => (b.id === existing.id ? resultBlock : b))),
+          }));
+        } else {
+          resultBlock = {
             id: makeId('blk'),
-            date: anchor,
-            startTime: '16:00',
-            endTime: '17:00',
-            title: blockTitle,
+            date: slot.date,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+            title: cleanTitle,
             kind: 'empty-zone',
             completed: false,
             assignedIdeaId: idea.id,
-            startingStepHint: idea.startingStep,
+            notes: cleanNotes,
+            startingStepHint: idea.startingStep || undefined,
+            updatedAt: nowIso,
           };
-          matchedBlock = created;
-          return { ...prev, blocks: sortBlocks([...prev.blocks, created]) };
+          setState((prev) => ({
+            ...prev,
+            blocks: sortBlocks([...prev.blocks, resultBlock]),
+          }));
+        }
+
+        const tag = slot.label ? ` · ${slot.label}` : '';
+        showToast(
+          `${existing ? 'Moved to' : 'Scheduled for'} ${formatShortDate(slot.date)} · ${formatFriendlyTime(slot.startTime)}${tag}`
+        );
+        return resultBlock;
+      },
+
+      unscheduleIdea: (ideaId: string) => {
+        const linked = state.blocks.filter((b) => b.assignedIdeaId === ideaId && !b.completed);
+        if (linked.length === 0) return;
+        const nowMs = Date.now();
+        if (tombstonesRef.current) {
+          const nextBlockTombs = { ...tombstonesRef.current.blocks };
+          linked.forEach((b) => {
+            nextBlockTombs[b.id] = nowMs;
+          });
+          tombstonesRef.current = { ...tombstonesRef.current, blocks: nextBlockTombs };
+          saveLocalTombstones(tombstonesRef.current);
+        }
+        const linkedIds = new Set(linked.map((b) => b.id));
+        setState((prev) => ({
+          ...prev,
+          blocks: prev.blocks.filter((b) => !linkedIds.has(b.id)),
+        }));
+        showToast('Removed from calendar');
+      },
+
+      assignIdeaToNextEmptyZone: (ideaId: string, fromDate?: string, durationMinutes?: number) => {
+        const idea = state.ideas.find((i) => i.id === ideaId);
+        if (!idea || idea.status === 'waiting-on') return null;
+
+        const existing = state.blocks.find((b) => b.assignedIdeaId === ideaId && !b.completed);
+        const desiredDur = Math.max(
+          15,
+          Math.min(240, durationMinutes ?? idea.estimatedMinutes ?? 60)
+        );
+
+        let afterDate = fromDate;
+        let afterMinutes: number | undefined;
+        if (existing) {
+          const [eh, em] = existing.endTime.split(':').map(Number);
+          afterDate = existing.date;
+          afterMinutes = (eh === 24 ? 24 : eh || 0) * 60 + (em || 0);
+        }
+
+        const candidates = findAvailableEmptySpaces({
+          blocks: state.blocks,
+          todayIso: getTodayISO(),
+          durationMinutes: desiredDur,
+          afterDate,
+          afterMinutes,
+          excludeBlockId: existing?.id,
+          horizonDays: 21,
+          maxResults: 1,
         });
 
-        if (matchedBlock) {
-          const b = matchedBlock as CalendarBlock;
-          showToast(`Scheduled in ${formatShortDate(b.date)} · ${b.startTime} Empty Zone`);
+        const nextSlot = candidates[0];
+        if (!nextSlot) {
+          showToast('No open empty space found in the next 3 weeks');
+          return null;
         }
-        return matchedBlock;
+
+        const nowIso = new Date().toISOString();
+        const cleanTitle = idea.title.trim() || 'Focus Work';
+        const cleanNotes = idea.notes?.trim() || undefined;
+        let resultBlock: CalendarBlock;
+
+        if (existing) {
+          resultBlock = {
+            ...existing,
+            title: cleanTitle,
+            date: nextSlot.date,
+            startTime: nextSlot.startTime,
+            endTime: nextSlot.endTime,
+            notes: cleanNotes ?? existing.notes,
+            startingStepHint: idea.startingStep || existing.startingStepHint,
+            updatedAt: nowIso,
+          };
+          setState((prev) => ({
+            ...prev,
+            blocks: sortBlocks(prev.blocks.map((b) => (b.id === existing.id ? resultBlock : b))),
+          }));
+        } else {
+          resultBlock = {
+            id: makeId('blk'),
+            date: nextSlot.date,
+            startTime: nextSlot.startTime,
+            endTime: nextSlot.endTime,
+            title: cleanTitle,
+            kind: 'empty-zone',
+            completed: false,
+            assignedIdeaId: idea.id,
+            notes: cleanNotes,
+            startingStepHint: idea.startingStep || undefined,
+            updatedAt: nowIso,
+          };
+          setState((prev) => ({
+            ...prev,
+            blocks: sortBlocks([...prev.blocks, resultBlock]),
+          }));
+        }
+
+        showToast(
+          `${existing ? 'Moved to' : 'Scheduled for'} ${formatShortDate(nextSlot.date)} · ${formatFriendlyTime(
+            nextSlot.startTime
+          )} (${nextSlot.label})`
+        );
+        return resultBlock;
       },
 
       parseLiveCommand: (rawText: string) => {
