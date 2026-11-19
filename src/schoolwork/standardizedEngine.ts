@@ -602,18 +602,51 @@ export function findSoonestNonOverlappingHomeworkSlot(params: {
   const effectiveStart = startDate <= dueDate ? startDate : dueDate;
   const roundedNowPlus10 = Math.ceil((nowMinutesOfDay + 10) / 5) * 5;
 
-  const tryPass = (eveningCutoffMins: number) => {
+  const getDeadlineEndMins = (candidateDate: string, eveningCutoffMins: number): number => {
+    if (candidateDate === dueDate && dueTiming !== 'end-of-day') {
+      const delayMode = delaysByDate[candidateDate]?.mode ?? 'regular';
+      const dueClass = hasCourseClassOnDate(candidateDate, courseId, delayMode);
+      if (dueClass) {
+        return Math.min(eveningCutoffMins, toMins(dueClass.startTime) - 10);
+      }
+    }
+    return eveningCutoffMins;
+  };
+
+  const tryPass = (eveningCutoffMins: number, allowEarlyMorningOnDueDate = false) => {
     for (let offset = 0; offset <= 21; offset++) {
       const candidateDate = addDays(effectiveStart, offset);
       if (candidateDate > dueDate) break;
 
       const delayMode = delaysByDate[candidateDate]?.mode ?? 'regular';
-      let maxEndMins = eveningCutoffMins;
+      const maxEndMins = getDeadlineEndMins(candidateDate, eveningCutoffMins);
 
-      if (candidateDate === dueDate && dueTiming !== 'end-of-day') {
+      if (allowEarlyMorningOnDueDate && candidateDate === dueDate && dueTiming !== 'end-of-day') {
         const dueClass = hasCourseClassOnDate(candidateDate, courseId, delayMode);
         if (dueClass) {
-          maxEndMins = Math.min(maxEndMins, toMins(dueClass.startTime) - 10);
+          const morningEnd = toMins(dueClass.startTime) - 10;
+          const morningStart =
+            candidateDate === todayIso ? Math.max(6 * 60 + 15, roundedNowPlus10) : 6 * 60 + 15;
+          if (morningStart + durationMins <= morningEnd) {
+            const busy = existingBlocks
+              .filter(
+                (b) =>
+                  b.date === candidateDate &&
+                  !/senior privileges/i.test(b.title) &&
+                  (b.kind !== 'empty-zone' || Boolean(b.assignedIdeaId || b.assignedGoalId))
+              )
+              .map((b) => ({ start: toMins(b.startTime), end: toMins(b.endTime) }));
+            for (let cursor = morningStart; cursor + durationMins <= morningEnd; cursor += 5) {
+              const end = cursor + durationMins;
+              if (!busy.some((iv) => cursor < iv.end && iv.start < end)) {
+                return {
+                  date: candidateDate,
+                  startTime: fromMins(cursor),
+                  endTime: fromMins(end),
+                };
+              }
+            }
+          }
         }
       }
 
@@ -636,46 +669,124 @@ export function findSoonestNonOverlappingHomeworkSlot(params: {
     return null;
   };
 
-  // Pass 1: normal evening cap (9:30 PM)
+  // Pass 1: normal evening cap (9:30 PM), strictly before due class!
   const normal = tryPass(21 * 60 + 30);
   if (normal) return normal;
 
-  // Pass 2: stretched evening cap (10:45 PM) still strictly non-overlapping
-  const stretched = tryPass(22 * 60 + 45);
+  // Pass 2: extended evening cap (11:15 PM), still strictly before due class & non-overlapping!
+  const stretched = tryPass(23 * 60 + 15);
   if (stretched) return stretched;
 
-  // Pass 3: if days up to dueDate are completely full, try morning-before-class or next open day without overlapping
-  for (let offset = 0; offset <= 7; offset++) {
-    const candidateDate = addDays(dueDate, offset);
-    const delayMode = delaysByDate[candidateDate]?.mode ?? 'regular';
+  // Pass 3: early morning before class on dueDate (6:15 AM .. classStart - 10m), NEVER after class!
+  const beforeClassMorning = tryPass(23 * 60 + 30, true);
+  if (beforeClassMorning) return beforeClassMorning;
+
+  // Pass 4: if dueTiming === 'end-of-day' or no class meeting on dueDate, try up to dueDate evening
+  const dueClassOnDueDate =
+    dueTiming !== 'end-of-day'
+      ? hasCourseClassOnDate(dueDate, courseId, delaysByDate[dueDate]?.mode ?? 'regular')
+      : null;
+
+  if (!dueClassOnDueDate) {
     const slot = findAvailableHomeworkSlotOnDate({
-      isoDate: candidateDate,
+      isoDate: dueDate,
       durationMins,
       existingBlocks,
-      delayMode,
-      minStartMins: candidateDate === todayIso ? roundedNowPlus10 : undefined,
-      maxEndMins: 22 * 60 + 45,
+      delayMode: delaysByDate[dueDate]?.mode ?? 'regular',
+      minStartMins: dueDate === todayIso ? roundedNowPlus10 : undefined,
+      maxEndMins: 23 * 60 + 30,
     });
     if (slot) {
-      return { date: candidateDate, ...slot };
+      return { date: dueDate, ...slot };
     }
   }
 
-  // Absolute last resort: append after the latest block on effectiveStart
-  const delayMode = delaysByDate[effectiveStart]?.mode ?? 'regular';
+  // Absolute last resort: ALWAYS stay on or before dueDate (before class if dueDate has class!), never AFTER the test/class!
+  const fallbackDate =
+    dueClassOnDueDate && effectiveStart < dueDate ? addDays(dueDate, -1) : effectiveStart;
+  const delayMode = delaysByDate[fallbackDate]?.mode ?? 'regular';
   const dayEnds = existingBlocks
-    .filter((b) => b.date === effectiveStart && !/senior privileges/i.test(b.title))
+    .filter((b) => b.date === fallbackDate && !/senior privileges/i.test(b.title))
     .map((b) => toMins(b.endTime));
-  const fallbackStart = Math.max(
-    getEarliestHomeArrivalMinutes(effectiveStart, delayMode),
-    effectiveStart === todayIso ? roundedNowPlus10 : 0,
+  const rawStart = Math.max(
+    getEarliestHomeArrivalMinutes(fallbackDate, delayMode),
+    fallbackDate === todayIso ? roundedNowPlus10 : 0,
     ...(dayEnds.length ? dayEnds : [0])
   );
+  const clampedStart = Math.min(rawStart, 23 * 60 + 55 - durationMins);
   return {
-    date: effectiveStart,
-    startTime: fromMins(fallbackStart),
-    endTime: fromMins(fallbackStart + durationMins),
+    date: fallbackDate,
+    startTime: fromMins(Math.max(0, clampedStart)),
+    endTime: fromMins(Math.min(23 * 60 + 55, Math.max(0, clampedStart) + durationMins)),
   };
+}
+
+/**
+ * If an urgent assignment due soon (e.g. tomorrow's test/review) cannot fit before 10:30 PM on `todayIso`
+ * because a less-urgent auto-scheduled `sch-hw-*` block due on a LATER date (e.g. Eco due Friday) is occupying
+ * tonight's slot, shifts that less-urgent block forward to the next open day strictly before its own deadline!
+ */
+function tryDeferLessUrgentBlockOnDate(params: {
+  targetDate: string;
+  urgentDueDate: string;
+  workingBlocks: CalendarBlock[];
+  todayIso: string;
+  nowMinutesOfDay: number;
+  delaysByDate?: Record<string, { mode: OhchsDelayMode }>;
+}): boolean {
+  const { targetDate, urgentDueDate, workingBlocks, todayIso, nowMinutesOfDay, delaysByDate = {} } =
+    params;
+
+  let movedAny = false;
+  const deferCandidates = workingBlocks
+    .map((blk, idx) => ({ blk, idx, meta: parseHwMetaFromBlock(blk) }))
+    .filter(
+      ({ blk, meta }) =>
+        Boolean(meta) &&
+        blk.id.startsWith('sch-hw-') &&
+        !blk.completed &&
+        blk.date === targetDate &&
+        meta!.dueDate > urgentDueDate &&
+        // Only move blocks that haven't already started yet
+        (targetDate > todayIso || toMins(blk.startTime) >= nowMinutesOfDay)
+    )
+    .sort((a, b) => b.meta!.dueDate.localeCompare(a.meta!.dueDate));
+
+  for (const cand of deferCandidates) {
+    const durationMins = Math.max(20, toMins(cand.blk.endTime) - toMins(cand.blk.startTime));
+    const nextStart = addDays(targetDate, 1);
+    if (nextStart > cand.meta!.dueDate) continue;
+
+    // Try finding a normal slot strictly before cand's own due class starting tomorrow
+    const withoutSelf = workingBlocks.filter((b) => b.id !== cand.blk.id);
+    const delayMode = delaysByDate[nextStart]?.mode ?? 'regular';
+    let maxEndMins = 21 * 60 + 30;
+    if (nextStart === cand.meta!.dueDate && cand.meta!.dueTiming !== 'end-of-day') {
+      const dueClass = hasCourseClassOnDate(nextStart, cand.meta!.courseId, delayMode);
+      if (dueClass) maxEndMins = Math.min(maxEndMins, toMins(dueClass.startTime) - 10);
+    }
+
+    const slot = findAvailableHomeworkSlotOnDate({
+      isoDate: nextStart,
+      durationMins,
+      existingBlocks: withoutSelf,
+      delayMode,
+      maxEndMins,
+    });
+
+    if (slot) {
+      workingBlocks[cand.idx] = {
+        ...cand.blk,
+        date: nextStart,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        updatedAt: new Date().toISOString(),
+      };
+      movedAny = true;
+    }
+  }
+
+  return movedAny;
 }
 
 /**
@@ -684,6 +795,55 @@ export function findSoonestNonOverlappingHomeworkSlot(params: {
  * 1-hour soonest-available non-overlapping Math/Lit/Physics homework rule,
  * Class Entry 6pm Night-Before Alarm rule, and 2-Hour Missed-Window Rollover rule.
  */
+function isDismissedByUser(
+  courseId: SchoolCourseId,
+  slug: string,
+  dismissedBlockIds: Set<string>,
+  dismissedIdeaIds: Set<string>
+): boolean {
+  const blockId = `sch-hw-${courseId}-${slug}`;
+  const ideaId = `sch-idea-${courseId}-${slug}`;
+  if (dismissedBlockIds.has(blockId) || dismissedIdeaIds.has(ideaId)) {
+    return true;
+  }
+
+  // Also guard against minor Gemini slug variations on the SAME course (e.g. "unit-project-murder-mystery" vs "murder-mystery-project")
+  const prefixBlock = `sch-hw-${courseId}-`;
+  const prefixIdea = `sch-idea-${courseId}-`;
+  const STOP = new Set(['the', 'and', 'for', 'with', 'part', 'unit', 'notes', 'reading', 'homework', 'hw', 'assignment', 'study']);
+  const parseSlug = (s: string) => {
+    const tokens = s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const nums = tokens.filter((t) => /^\d+$/.test(t));
+    const words = tokens.filter((t) => !/^\d+$/.test(t) && t.length >= 3 && !STOP.has(t));
+    return { nums, words };
+  };
+
+  const cur = parseSlug(slug);
+  if (cur.words.length === 0 && cur.nums.length === 0) return false;
+
+  const allDismissedSlugs: string[] = [];
+  for (const id of dismissedBlockIds) {
+    if (id.startsWith(prefixBlock)) allDismissedSlugs.push(id.slice(prefixBlock.length));
+  }
+  for (const id of dismissedIdeaIds) {
+    if (id.startsWith(prefixIdea)) allDismissedSlugs.push(id.slice(prefixIdea.length));
+  }
+
+  for (const dSlug of allDismissedSlugs) {
+    const prev = parseSlug(dSlug);
+    // Numeric identifiers (e.g. Lesson 7 vs Lesson 8, Module 15 vs 17) must match exactly
+    if (cur.nums.join(',') !== prev.nums.join(',')) continue;
+    if (cur.words.length === 0 || prev.words.length === 0) continue;
+    const prevSet = new Set(prev.words);
+    const overlap = cur.words.filter((w) => prevSet.has(w)).length;
+    const minLen = Math.min(cur.words.length, prev.words.length);
+    if (minLen >= 2 && overlap / minLen >= 0.75) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function applyExtractedAssignmentsToSchedule(params: {
   assignments: StandardizedExtractedAssignment[];
   existingBlocks: CalendarBlock[];
@@ -693,6 +853,10 @@ export function applyExtractedAssignmentsToSchedule(params: {
   todayIso: string;
   nowMinutesOfDay: number;
   delaysByDate?: Record<string, { mode: OhchsDelayMode }>;
+  /** Block IDs manually deleted by the user in Intuition — NEVER resurrect these! */
+  dismissedBlockIds?: Set<string>;
+  /** Idea IDs manually deleted by the user in Intuition — NEVER resurrect these! */
+  dismissedIdeaIds?: Set<string>;
 }): {
   blocks: CalendarBlock[];
   ideas: IdeaItem[];
@@ -710,6 +874,8 @@ export function applyExtractedAssignmentsToSchedule(params: {
     todayIso,
     nowMinutesOfDay,
     delaysByDate = {},
+    dismissedBlockIds = new Set<string>(),
+    dismissedIdeaIds = new Set<string>(),
   } = params;
 
   const workingBlocks = existingBlocks.map((b) => ({ ...b }));
@@ -735,6 +901,12 @@ export function applyExtractedAssignmentsToSchedule(params: {
 
     const blockId = `sch-hw-${item.courseId}-${item.slug}`;
     const ideaId = `sch-idea-${item.courseId}-${item.slug}`;
+
+    // Respect manual user deletions! If the user deleted this block or idea in Intuition, NEVER add it back.
+    if (isDismissedByUser(item.courseId, item.slug, dismissedBlockIds, dismissedIdeaIds)) {
+      continue;
+    }
+
     const isPastItem = item.dueDate < todayIso;
     const isAlreadyDone = Boolean(item.isCompleted) || isPastItem;
     const isTestOrQuiz = item.category === 'test' || item.category === 'quiz';
@@ -926,6 +1098,19 @@ export function applyExtractedAssignmentsToSchedule(params: {
         updatedCount++;
       }
     } else {
+      // If this item is due soon (today/tomorrow) and a less-urgent auto-block due LATER
+      // is sitting on `searchStartDate`, defer the less-urgent block first so urgent tests/HW get tonight!
+      if (!isAlreadyDone && item.dueDate <= addDays(todayIso, 1)) {
+        tryDeferLessUrgentBlockOnDate({
+          targetDate: searchStartDate,
+          urgentDueDate: item.dueDate,
+          workingBlocks,
+          todayIso,
+          nowMinutesOfDay,
+          delaysByDate,
+        });
+      }
+
       const placed = findSoonestNonOverlappingHomeworkSlot({
         startDate: searchStartDate,
         dueDate: item.dueDate,

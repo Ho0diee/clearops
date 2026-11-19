@@ -110,6 +110,8 @@ export interface SchoolworkAutomationConfig {
   lastHashByCourse: Partial<Record<SchoolCourseId, string>>;
   lastRunAt?: string;
   lastSummary?: string;
+  /** Epoch ms of the most recent bulk "Wipe Synced Schoolwork" reset. Any block/idea tombstone strictly newer than this is a manual user deletion and will NEVER be resurrected! */
+  lastWipedAtMs?: number;
   googleClientId?: string;
   googleClientSecret?: string;
   googleRefreshToken?: string;
@@ -371,7 +373,8 @@ export async function extractAssignmentsWithGeminiHydrogen(params: {
       ? `MATH (AP PRE-CALCULUS — MS. GROVER) RULES:
 - Read EVERY Classwork item description, Stream announcement, AND Detail page carefully!
 - Every homework assignment tells you the exact part/problems/pages to do (e.g. "HW - Set 1: #1-5 odd, 6, 9-23 odd; Set 2: #1-5 odd, 8, 9-15 odd"). Capture the EXACT problems/sets/pages verbatim in "startingStep" and "contextDetails".
-- CRITICAL TEST/EXAM DETECTION: If ANY assignment description or Stream post mentions an upcoming TEST, QUIZ, or EXAM (for example: "Remember, the project is on Wednesday and the test is Thursday", "test is tomorrow", "Unit test Thursday", "quiz next class"), you MUST extract a SEPARATE item with category = "test" (or "quiz"), dueTiming = "in-class", workLocation = "homework" (so a 60m Study block + night-before alert are scheduled!), and resolve the weekday ("Thursday", "tomorrow") accurately from the item's Posted/Due date and the OHCHS calendar above (do NOT confuse the test with the review sheet — keep BOTH the review sheet homework AND the test!).
+- CRITICAL TEST/EXAM DETECTION: If ANY assignment description or Stream post mentions an upcoming TEST, QUIZ, or EXAM (for example: "Remember, the project is on Wednesday and the test is Thursday", "test is tomorrow", "Unit test Thursday", "quiz next class"), you MUST extract a SEPARATE item with category = "test" (or "quiz"), dueTiming = "in-class", workLocation = "homework" (so a 60m Study block + night-before alert are scheduled!), and resolve the weekday ("Thursday", "tomorrow") accurately from the calendar above (keep BOTH the review sheet homework AND the test!).
+- CRITICAL IN-CLASS PROJECT RULE: If a note/instruction specifies that a project or activity takes place on a specific class day (e.g. "Remember, the project is on Wednesday and the test is Thursday" paired with "Unit Project: Murder Mystery" posted Wednesday), classify that project as workLocation = "in-class", dueTiming = "in-class", and set dueDate to that exact class day (Wednesday) — even if Classroom shows a later submission wrap-up date like Nov 30! Do NOT schedule an outside homework block for an in-class project day.
 - Skip syllabus/outline reference Materials with no due date.
 - Set fallbackMinutes = 60 (1 hour).
 - Default dueTiming = "before-class" and workLocation = "homework" unless explicitly done solely in class.`
@@ -813,6 +816,22 @@ export async function runAutomatedSchoolworkPipeline(options?: {
 
     const fullBlocks = hydrateFullBlocksFromPayload(basePayload, todayIso);
 
+    // Any sch-hw-* block or sch-idea-* note tombstoned AFTER the last bulk Wipe
+    // was intentionally deleted by the user in Intuition — NEVER add it back!
+    const wipeCutoffMs = cfg.lastWipedAtMs ?? 0;
+    const dismissedBlockIds = new Set<string>();
+    for (const [id, ts] of Object.entries(basePayload.tombstones?.blocks ?? {})) {
+      if (id.startsWith('sch-hw-') && ts > wipeCutoffMs) {
+        dismissedBlockIds.add(id);
+      }
+    }
+    const dismissedIdeaIds = new Set<string>();
+    for (const [id, ts] of Object.entries(basePayload.tombstones?.ideas ?? {})) {
+      if (id.startsWith('sch-idea-') && ts > wipeCutoffMs) {
+        dismissedIdeaIds.add(id);
+      }
+    }
+
     let nextBlocks = fullBlocks;
     let nextIdeas = basePayload.ideas ?? [];
     let nextProjects = basePayload.projects ?? [];
@@ -831,6 +850,8 @@ export async function runAutomatedSchoolworkPipeline(options?: {
         todayIso,
         nowMinutesOfDay,
         delaysByDate: basePayload.ohchsDelayedDates,
+        dismissedBlockIds,
+        dismissedIdeaIds,
       });
       nextBlocks = applied.blocks;
       nextIdeas = applied.ideas;
@@ -857,14 +878,18 @@ export async function runAutomatedSchoolworkPipeline(options?: {
       basePayload.tombstones ?? createEmptyTombstones()
     );
     for (const blk of nextUserBlocks) {
-      if (blk.id.startsWith('sch-hw-')) delete nextTombstones.blocks[blk.id];
+      if (blk.id.startsWith('sch-hw-') && !dismissedBlockIds.has(blk.id)) {
+        delete nextTombstones.blocks[blk.id];
+      }
     }
     const delNowMs = Date.now() + 1000;
     for (const remId of removedBlockIds) {
       nextTombstones.blocks[remId] = delNowMs;
     }
     for (const idea of nextIdeas) {
-      if (idea.id.startsWith('sch-idea-')) delete nextTombstones.ideas[idea.id];
+      if (idea.id.startsWith('sch-idea-') && !dismissedIdeaIds.has(idea.id)) {
+        delete nextTombstones.ideas[idea.id];
+      }
     }
     for (const proj of nextProjects) {
       delete nextTombstones.projects[proj];
@@ -1034,6 +1059,7 @@ export async function wipeSyncedSchoolworkData(): Promise<{
 
   const cfg = await loadAutomationConfig();
   cfg.lastHashByCourse = {};
+  cfg.lastWipedAtMs = Date.now() + 500;
   cfg.lastRunAt = new Date().toISOString();
   const summary = `Wiped ${res.wipedBlocks} auto-synced homework block(s), ${res.wipedIdeas} schoolwork note(s), and cleaned ${res.cleanedClasses} class entry note(s).`;
   cfg.lastSummary = summary;
