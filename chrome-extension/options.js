@@ -2,8 +2,8 @@ const DEFAULTS = {
   ecoSlideId: '1s0GUOKJdzfYvGJhxG7SHFZb-K9Cye0lDbdVtY7jutPI',
   audiobookSheetId: '154DtAbZXIeqVR-cUgyMDQJaOEnnhtHqWw4GnIUBAdg4',
   litClassroomUrl: 'https://classroom.google.com/u/1/w/ODc2NjEwODUwOTA2/t/all',
-  mathClassroomUrl: 'https://classroom.google.com/u/1/c/ODY2Njc4NTA5ODM3',
-  physicsClassroomUrl: 'https://classroom.google.com/u/1/c/ODcyNDg1NzU5NTU3',
+  mathClassroomUrl: 'https://classroom.google.com/u/1/w/ODY2Njc4NTA5ODM3/t/all',
+  physicsClassroomUrl: 'https://classroom.google.com/u/1/w/ODcyNDg1NzU5NTU3/t/all',
   litSlideId: '',
   precalcSlideId: '',
   autoSyncHours: 6,
@@ -53,6 +53,26 @@ function renderSourcesLog(sources) {
     badge.textContent = `${s.ok ? '✓' : '✗'} ${s.course}: `;
     row.appendChild(badge);
     row.appendChild(document.createTextNode(`${s.sourceUrl} — ${s.detail || ''}`));
+    if (s.preview) {
+      const det = document.createElement('details');
+      det.style.marginTop = '4px';
+      const sum = document.createElement('summary');
+      sum.style.cursor = 'pointer';
+      sum.style.color = '#57534e';
+      sum.textContent = 'Preview captured text';
+      const pre = document.createElement('pre');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.style.fontSize = '11px';
+      pre.style.background = '#f4f2ec';
+      pre.style.padding = '8px';
+      pre.style.borderRadius = '6px';
+      pre.style.maxHeight = '160px';
+      pre.style.overflow = 'auto';
+      pre.textContent = s.preview;
+      det.appendChild(sum);
+      det.appendChild(pre);
+      row.appendChild(det);
+    }
     sourcesLogEl.appendChild(row);
   }
 }
