@@ -41,34 +41,103 @@ function renderSourcesLog(sources) {
   }
   sourcesLogEl.style.display = 'block';
   sourcesLogEl.innerHTML = '';
+  const topBar = document.createElement('div');
+  topBar.style.display = 'flex';
+  topBar.style.justifyContent = 'space-between';
+  topBar.style.alignItems = 'center';
+  topBar.style.marginBottom = '8px';
+
   const heading = document.createElement('div');
   heading.style.fontWeight = '700';
-  heading.style.marginBottom = '6px';
-  heading.textContent = 'Last Synced Source Pages:';
-  sourcesLogEl.appendChild(heading);
+  heading.textContent = 'Last Synced Source Pages & AI Inspector:';
+  topBar.appendChild(heading);
+
+  const copyAllBtn = document.createElement('button');
+  copyAllBtn.className = 'secondary';
+  copyAllBtn.style.padding = '4px 10px';
+  copyAllBtn.style.fontSize = '11.5px';
+  copyAllBtn.textContent = 'Copy Full Debug Report';
+  copyAllBtn.addEventListener('click', async () => {
+    const text = sources
+      .map((s) => {
+        const items = (s.extractedAssignments || [])
+          .map(
+            (a) =>
+              `  - [${a.workLocation === 'in-class' ? 'IN-CLASS' : (a.category || 'hw').toUpperCase()}] ${a.title} (due ${a.dueDate}${a.isCompleted ? ', DONE' : ''}) | ${a.startingStep || ''}`
+          )
+          .join('\n');
+        return [
+          `=== ${s.course} (${s.ok ? 'OK' : 'FAIL'}) ===`,
+          `URL: ${s.sourceUrl}`,
+          `Detail: ${s.detail || ''}`,
+          `AI Extracted (${(s.extractedAssignments || []).length}):\n${items || '  (none)'}`,
+          `Raw Text Sent to AI (${s.rawCharCount || (s.preview || '').length} chars):\n${(s.preview || '').slice(0, 6000)}`,
+        ].join('\n');
+      })
+      .join('\n\n');
+    await navigator.clipboard.writeText(text);
+    copyAllBtn.textContent = 'Copied ✓';
+    setTimeout(() => (copyAllBtn.textContent = 'Copy Full Debug Report'), 2000);
+  });
+  topBar.appendChild(copyAllBtn);
+  sourcesLogEl.appendChild(topBar);
 
   for (const s of sources) {
     const row = document.createElement('div');
     row.className = 'src-row';
+    row.style.paddingBottom = '8px';
+    row.style.marginBottom = '8px';
+    row.style.borderBottom = '1px solid #ece8df';
+
     const badge = document.createElement('span');
     badge.className = s.ok ? 'src-ok' : 'src-err';
     badge.textContent = `${s.ok ? '✓' : '✗'} ${s.course}: `;
     row.appendChild(badge);
     row.appendChild(document.createTextNode(`${s.sourceUrl} — ${s.detail || ''}`));
+
+    if (Array.isArray(s.extractedAssignments) && s.extractedAssignments.length > 0) {
+      const detAi = document.createElement('details');
+      detAi.open = true;
+      detAi.style.marginTop = '5px';
+      const sumAi = document.createElement('summary');
+      sumAi.style.cursor = 'pointer';
+      sumAi.style.fontWeight = '600';
+      sumAi.style.color = '#15803d';
+      sumAi.textContent = `AI Extracted Assignments (${s.extractedAssignments.length})${s.aiModelUsed ? ` · ${s.aiModelUsed}` : ''}`;
+      detAi.appendChild(sumAi);
+
+      const list = document.createElement('div');
+      list.style.marginTop = '4px';
+      list.style.padding = '6px 8px';
+      list.style.background = '#f4f2ec';
+      list.style.borderRadius = '6px';
+      list.style.fontSize = '11.5px';
+      for (const a of s.extractedAssignments) {
+        const item = document.createElement('div');
+        item.style.marginBottom = '4px';
+        const tag = a.workLocation === 'in-class' ? 'IN-CLASS' : String(a.category || 'hw').toUpperCase();
+        item.textContent = `• [${tag}] ${a.title} — Due ${a.dueDate}${a.isCompleted ? ' (Done)' : ''}${a.startingStep ? ` — ${a.startingStep}` : ''}`;
+        list.appendChild(item);
+      }
+      detAi.appendChild(list);
+      row.appendChild(detAi);
+    }
+
     if (s.preview) {
       const det = document.createElement('details');
       det.style.marginTop = '4px';
       const sum = document.createElement('summary');
       sum.style.cursor = 'pointer';
       sum.style.color = '#57534e';
-      sum.textContent = 'Preview captured text';
+      const charLabel = (s.rawCharCount || s.preview.length).toLocaleString();
+      sum.textContent = `View Raw Text Sent to AI (${charLabel} chars)`;
       const pre = document.createElement('pre');
       pre.style.whiteSpace = 'pre-wrap';
       pre.style.fontSize = '11px';
       pre.style.background = '#f4f2ec';
       pre.style.padding = '8px';
       pre.style.borderRadius = '6px';
-      pre.style.maxHeight = '160px';
+      pre.style.maxHeight = '240px';
       pre.style.overflow = 'auto';
       pre.textContent = s.preview;
       det.appendChild(sum);
@@ -130,7 +199,9 @@ document.getElementById('detectBtn').addEventListener('click', () => {
         return;
       }
       const summaryLines = (res.checks || []).map(
-        (c) => `  /u/${c.slot}/ (${c.email || 'unknown'}) -> ${c.note}`
+        (c) =>
+          `  /u/${c.slot}/ (${c.email || 'unknown'}) -> ${c.note}` +
+          (c.classCount === 0 && c.sampleText ? ` [page: "${c.sampleText.slice(0, 90)}"]` : '')
       );
       if (res.ok && res.chosenSlot !== null) {
         const slot = String(res.chosenSlot);

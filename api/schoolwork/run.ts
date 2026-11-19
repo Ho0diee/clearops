@@ -1,9 +1,12 @@
 import {
   loadAutomationConfig,
+  loadSchoolworkDebugCaptures,
   resolveCredentials,
   runAutomatedSchoolworkPipeline,
   saveAutomationConfig,
+  saveCourseDebugCapture,
   wipeSyncedSchoolworkData,
+  type CourseScrapeMeta,
 } from '../../src/schoolwork/cloudSyncRunner.js';
 import { getActiveStorageBackend } from '../../src/schoolwork/kvStore.js';
 import type { SchoolCourseId } from '../../src/schoolwork/standardizedEngine.js';
@@ -25,6 +28,20 @@ export async function OPTIONS(request: Request): Promise<Response> {
 export async function GET(request: Request): Promise<Response> {
   const headers = corsHeaders(request);
   try {
+    const url = new URL(request.url);
+    if (url.searchParams.get('debug') === '1') {
+      const captures = await loadSchoolworkDebugCaptures();
+      return Response.json(
+        {
+          ok: true,
+          storageBackend: getActiveStorageBackend(),
+          updatedAt: captures.updatedAt,
+          byCourse: captures.byCourse,
+        },
+        { status: 200, headers }
+      );
+    }
+
     const cfg = await loadAutomationConfig();
     const creds = resolveCredentials(cfg);
     return Response.json(
@@ -100,11 +117,42 @@ export async function POST(request: Request): Promise<Response> {
       return Response.json(res, { status: 200, headers });
     }
 
+    if (action === 'log-scrape-failure') {
+      const courseId = ((body.courseId as SchoolCourseId) || 'eco') as SchoolCourseId;
+      const slideTitle = String(body.slideTitle || 'Scrape Diagnostic');
+      const sourceUrl = typeof body.sourceUrl === 'string' ? body.sourceUrl.trim() : undefined;
+      const rawText = String(body.rawSlideText || '');
+      const errorText = String(body.error || 'Scrape failed');
+      const scrapeMeta =
+        body.scrapeMeta && typeof body.scrapeMeta === 'object'
+          ? (body.scrapeMeta as CourseScrapeMeta)
+          : { error: errorText };
+      await saveCourseDebugCapture({
+        courseId,
+        capturedAt: new Date().toISOString(),
+        ok: false,
+        slideTitle,
+        sourceUrl,
+        rawCharCount: rawText.length,
+        rawText,
+        scrapeMeta: { ...scrapeMeta, error: errorText },
+        aiSummary: errorText,
+        extractedAssignments: [],
+        addedCount: 0,
+        updatedCount: 0,
+      });
+      return Response.json({ ok: true, logged: true }, { status: 200, headers });
+    }
+
     if (action === 'webhook-ingest' || action === 'test-raw-slide') {
       const courseId = ((body.courseId as SchoolCourseId) || 'eco') as SchoolCourseId;
       const rawSlideText = String(body.rawSlideText || '');
       const slideTitle = String(body.slideTitle || 'School Slide');
       const sourceUrl = typeof body.sourceUrl === 'string' ? body.sourceUrl.trim() : undefined;
+      const scrapeMeta =
+        body.scrapeMeta && typeof body.scrapeMeta === 'object'
+          ? (body.scrapeMeta as CourseScrapeMeta)
+          : undefined;
       if (!rawSlideText.trim()) {
         return Response.json(
           { ok: false, error: 'rawSlideText is required' },
@@ -118,6 +166,7 @@ export async function POST(request: Request): Promise<Response> {
         manualSourceUrl: sourceUrl,
         manualAudiobookCsv:
           typeof body.audiobookSheetCsv === 'string' ? body.audiobookSheetCsv : undefined,
+        manualScrapeMeta: scrapeMeta,
         forceExtract: true,
       });
       return Response.json(res, { status: 200, headers });

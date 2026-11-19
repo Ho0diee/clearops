@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Copy,
   ExternalLink,
+  Eye,
   Play,
   RefreshCw,
   Settings2,
@@ -19,6 +20,49 @@ import {
   TextField,
 } from '../../components/ui';
 import { useOpsStore } from '../../store/opsStore';
+
+interface DebugExtractedItem {
+  slug: string;
+  courseId: string;
+  category: string;
+  title: string;
+  moduleNumbers?: number[];
+  dueDate: string;
+  dueTiming: string;
+  workLocation?: string;
+  isCompleted?: boolean;
+  startingStep?: string;
+  contextDetails?: string;
+  sourceUrl?: string;
+}
+
+interface CourseDebugCaptureView {
+  courseId: string;
+  capturedAt: string;
+  ok: boolean;
+  slideTitle: string;
+  sourceUrl?: string;
+  rawCharCount: number;
+  rawText: string;
+  scrapeMeta?: {
+    accountSelector?: string;
+    expandedCount?: number;
+    detailCount?: number;
+    sourceUrls?: string[];
+    error?: string;
+  };
+  aiModelUsed?: string;
+  aiSummary?: string;
+  extractedAssignments?: DebugExtractedItem[];
+  addedCount?: number;
+  updatedCount?: number;
+}
+
+interface DebugCapturesResponse {
+  ok: boolean;
+  updatedAt?: string;
+  byCourse?: Record<string, CourseDebugCaptureView>;
+}
 
 interface AutomationStatusResponse {
   ok: boolean;
@@ -129,6 +173,9 @@ export const SchoolworkAutomationCard: React.FC = () => {
   const [expanded, setExpanded] = useState(false);
   const [status, setStatus] = useState<AutomationStatusResponse | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showInspector, setShowInspector] = useState(false);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [debugData, setDebugData] = useState<DebugCapturesResponse | null>(null);
 
   const [ecoSlideId, setEcoSlideId] = useState(
     '1s0GUOKJdzfYvGJhxG7SHFZb-K9Cye0lDbdVtY7jutPI'
@@ -226,6 +273,30 @@ export const SchoolworkAutomationCard: React.FC = () => {
       actions.showToast('Could not reach Vercel schoolwork endpoint');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const loadDebugCaptures = useCallback(async () => {
+    setDebugLoading(true);
+    try {
+      const resp = await fetch(`${apiBase}/api/schoolwork/run?debug=1`);
+      if (!resp.ok) return;
+      const data = (await resp.json()) as DebugCapturesResponse;
+      if (data.ok) {
+        setDebugData(data);
+      }
+    } catch {
+      actions.showToast('Could not load AI capture debug log');
+    } finally {
+      setDebugLoading(false);
+    }
+  }, [apiBase, actions]);
+
+  const handleToggleInspector = async () => {
+    const next = !showInspector;
+    setShowInspector(next);
+    if (next) {
+      await loadDebugCaptures();
     }
   };
 
@@ -405,6 +476,16 @@ export const SchoolworkAutomationCard: React.FC = () => {
               </Button>
 
               <Button
+                variant="secondary"
+                size="sm"
+                disabled={debugLoading}
+                iconLeft={<Eye size={14} />}
+                onClick={handleToggleInspector}
+              >
+                {showInspector ? 'Hide AI Inspector' : 'Inspect AI Input & Output'}
+              </Button>
+
+              <Button
                 variant="danger"
                 size="sm"
                 disabled={busy}
@@ -414,6 +495,150 @@ export const SchoolworkAutomationCard: React.FC = () => {
                 Wipe Synced Schoolwork
               </Button>
             </div>
+
+            {showInspector && (
+              <div className="ops-stack-sm">
+                <div className="ops-row" style={{ justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600 }}>
+                    Last Raw Scraped Text &amp; AI Extraction (Per Course)
+                  </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={debugLoading}
+                    iconLeft={<RefreshCw size={12} />}
+                    onClick={loadDebugCaptures}
+                  >
+                    {debugLoading ? 'Loading...' : 'Refresh'}
+                  </Button>
+                </div>
+
+                {!debugData?.byCourse || Object.keys(debugData.byCourse).length === 0 ? (
+                  <Banner tone="zone">
+                    <span style={{ fontSize: 'var(--text-xs)' }}>
+                      No captures recorded yet. Run a sync from the Chrome extension and click
+                      Refresh to inspect the exact text sent to the AI and what it extracted.
+                    </span>
+                  </Banner>
+                ) : (
+                  (['eco', 'lit', 'precalc', 'physics'] as const)
+                    .filter((cid) => Boolean(debugData.byCourse?.[cid]))
+                    .map((cid) => {
+                      const cap = debugData.byCourse![cid]!;
+                      const items = cap.extractedAssignments ?? [];
+                      return (
+                        <Banner key={cid} tone={cap.ok ? 'streak' : 'zone'}>
+                          <div className="ops-stack-xs" style={{ width: '100%' }}>
+                            <div
+                              className="ops-row-wrap"
+                              style={{ justifyContent: 'space-between', alignItems: 'center' }}
+                            >
+                              <div className="ops-row-wrap" style={{ gap: 6 }}>
+                                <Badge tone={cap.ok ? 'streak' : 'zone'}>
+                                  {cid.toUpperCase()} {cap.ok ? '✓' : '✗'}
+                                </Badge>
+                                <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600 }}>
+                                  {cap.slideTitle}
+                                </span>
+                              </div>
+                              <span
+                                style={{
+                                  fontSize: 'var(--text-xs)',
+                                  color: 'var(--text-secondary)',
+                                }}
+                              >
+                                {Math.round(cap.rawCharCount / 100) / 10}k chars · {items.length}{' '}
+                                extracted
+                                {cap.aiModelUsed ? ` · ${cap.aiModelUsed}` : ''}
+                              </span>
+                            </div>
+
+                            {cap.aiSummary && (
+                              <div
+                                style={{
+                                  fontSize: 'var(--text-xs)',
+                                  color: 'var(--text-secondary)',
+                                }}
+                              >
+                                {cap.aiSummary}
+                              </div>
+                            )}
+
+                            {items.length > 0 && (
+                              <div className="ops-stack-xs" style={{ marginTop: 4 }}>
+                                {items.map((it) => (
+                                  <div
+                                    key={`${it.slug}-${it.dueDate}`}
+                                    style={{
+                                      fontSize: 'var(--text-xs)',
+                                      padding: '6px 8px',
+                                      borderRadius: 6,
+                                      background: 'var(--surface-1)',
+                                      border: '1px solid var(--border-subtle)',
+                                    }}
+                                  >
+                                    <div style={{ fontWeight: 600 }}>
+                                      [{it.workLocation === 'in-class' ? 'IN-CLASS' : it.category.toUpperCase()}]
+                                      {' '}
+                                      {it.title} — Due {it.dueDate}
+                                      {it.isCompleted ? ' (Completed)' : ''}
+                                    </div>
+                                    {it.startingStep && (
+                                      <div style={{ color: 'var(--text-secondary)' }}>
+                                        Step: {it.startingStep}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            <details style={{ marginTop: 4 }}>
+                              <summary
+                                style={{
+                                  fontSize: 'var(--text-xs)',
+                                  cursor: 'pointer',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                View Raw Text Sent to AI ({cap.rawCharCount.toLocaleString()} chars)
+                              </summary>
+                              <div className="ops-row" style={{ marginTop: 6, marginBottom: 4 }}>
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  iconLeft={<Copy size={12} />}
+                                  onClick={async () => {
+                                    await navigator.clipboard.writeText(cap.rawText || '');
+                                    actions.showToast(`Copied ${cid.toUpperCase()} raw text!`);
+                                  }}
+                                >
+                                  Copy Raw Text
+                                </Button>
+                              </div>
+                              <pre
+                                style={{
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word',
+                                  fontSize: 'var(--text-xs)',
+                                  maxHeight: 240,
+                                  overflow: 'auto',
+                                  padding: 8,
+                                  borderRadius: 6,
+                                  background: 'var(--surface-1)',
+                                  border: '1px solid var(--border-subtle)',
+                                }}
+                              >
+                                {cap.rawText || '(empty)'}
+                              </pre>
+                            </details>
+                          </div>
+                        </Banner>
+                      );
+                    })
+                )}
+              </div>
+            )}
           </div>
         </CardBody>
       )}

@@ -360,13 +360,22 @@ async function detectSchoolClassroomSlot(targetClassIds) {
         func: async (idsToFind) => {
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
           const start = Date.now();
-          while (Date.now() - start < 12000) {
+          while (Date.now() - start < 15000) {
             const links = document.querySelectorAll('a[href*="/c/"]').length;
-            const txt = (document.body?.innerText || '').trim();
-            if (links > 0 || (txt.length > 200 && Date.now() - start > 3500)) break;
-            await wait(300);
+            const mainEl = document.querySelector('[role="main"]') || document.body;
+            const mainTxt = (mainEl?.innerText || '').trim();
+            if (links > 0) break;
+            if (
+              Date.now() - start > 5000 &&
+              /create or join your first class|don'?t see your existing classes|add a class to get started|no classes/i.test(
+                mainTxt
+              )
+            ) {
+              break;
+            }
+            await wait(350);
           }
-          await wait(900);
+          await wait(1000);
 
           // Extract signed-in email from Google account button aria-label or title
           let email = null;
@@ -382,12 +391,16 @@ async function detectSchoolClassroomSlot(targetClassIds) {
           const hrefs = Array.from(document.querySelectorAll('a[href*="/c/"]')).map(
             (a) => a.href || ''
           );
+          const dataCourseIds = Array.from(document.querySelectorAll('[data-course-id]'))
+            .map((el) => el.getAttribute('data-course-id') || '')
+            .filter(Boolean);
           const uniqueClassIds = Array.from(
-            new Set(
-              hrefs
+            new Set([
+              ...hrefs
                 .map((h) => h.match(/\/c\/([A-Za-z0-9_-]+)/)?.[1])
-                .filter(Boolean)
-            )
+                .filter(Boolean),
+              ...dataCourseIds,
+            ])
           );
           const matchedClassIds = idsToFind.filter((id) => uniqueClassIds.includes(id));
 
@@ -396,7 +409,7 @@ async function detectSchoolClassroomSlot(targetClassIds) {
             email,
             classCount: uniqueClassIds.length,
             matchedClassIds,
-            sampleText: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 140),
+            sampleText: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 180),
           };
         },
       });
@@ -423,6 +436,7 @@ async function detectSchoolClassroomSlot(targetClassIds) {
           finalUrl: info.finalUrl,
           matchedClassIds: info.matchedClassIds || [],
           classCount: info.classCount || 0,
+          sampleText: info.sampleText || '',
           note:
             info.matchedClassIds?.length > 0
               ? `Matched ${info.matchedClassIds.length}/${wantedIds.length} classes!`
@@ -1034,6 +1048,10 @@ async function runFullSync(activeTab) {
           sourceUrl: target.sourceUrl,
           rawSlideText: finalSlideText,
           audiobookSheetCsv: target.courseId === 'eco' ? audiobookCsv || undefined : undefined,
+          scrapeMeta: {
+            accountSelector: String(cfg.schoolAccount || 'auto'),
+            sourceUrls: [target.sourceUrl],
+          },
         });
 
         totalAdded += data.addedCount || 0;
@@ -1042,10 +1060,14 @@ async function runFullSync(activeTab) {
         summaries.push(sum);
         sourceLog.push({
           course: target.label,
+          courseId: target.courseId,
           sourceUrl: target.sourceUrl,
           ok: true,
           detail: data.summary || sum,
-          preview: finalSlideText.slice(0, 500),
+          aiModelUsed: data.aiModelUsed || '',
+          extractedAssignments: data.extractedAssignments || [],
+          rawCharCount: finalSlideText.length,
+          preview: finalSlideText.slice(0, 30000),
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1100,11 +1122,29 @@ async function runFullSync(activeTab) {
 
         if (!scraped.ok || !scraped.text) {
           failures.push(target.label);
+          const failDetail = scraped.error || 'Could not read Classroom page';
+          // Upload failure diagnostic so airbnb710.com/api/schoolwork/run?debug=1 records what happened
+          await postToIntuition(cfg.vercelUrl, {
+            action: 'log-scrape-failure',
+            courseId: target.courseId,
+            slideTitle: `${target.label} (Scrape Diagnostic)`,
+            sourceUrl: target.url,
+            rawSlideText: scraped.text || '',
+            error: failDetail,
+            scrapeMeta: {
+              accountSelector: String(accountSelector || 'auto'),
+              sourceUrls: scraped.sourceUrls || [target.url],
+              error: failDetail,
+            },
+          }).catch(() => {});
           sourceLog.push({
             course: target.label,
+            courseId: target.courseId,
             sourceUrl: target.url,
             ok: false,
-            detail: scraped.error || 'Could not read Classroom page',
+            detail: failDetail,
+            rawCharCount: 0,
+            preview: scraped.text || '',
           });
           continue;
         }
@@ -1115,6 +1155,12 @@ async function runFullSync(activeTab) {
           slideTitle: `${scraped.title} (Google Classroom)`,
           sourceUrl: scraped.primarySourceUrl || target.url,
           rawSlideText: scraped.text,
+          scrapeMeta: {
+            accountSelector: String(accountSelector || 'auto'),
+            expandedCount: scraped.expandedCount || 0,
+            detailCount: scraped.detailCount || 0,
+            sourceUrls: scraped.sourceUrls || [target.url],
+          },
         });
 
         totalAdded += data.addedCount || 0;
@@ -1124,10 +1170,14 @@ async function runFullSync(activeTab) {
         summaries.push(sum);
         sourceLog.push({
           course: target.label,
+          courseId: target.courseId,
           sourceUrl: (scraped.sourceUrls || [target.url]).join(' + '),
           ok: true,
           detail: `(${stats}) — ${data.summary || sum}`,
-          preview: scraped.preview || '',
+          aiModelUsed: data.aiModelUsed || '',
+          extractedAssignments: data.extractedAssignments || [],
+          rawCharCount: scraped.charCount || scraped.text.length,
+          preview: scraped.text.slice(0, 35000),
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

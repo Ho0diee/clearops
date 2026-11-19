@@ -33,8 +33,76 @@ import {
 
 export const WORKSPACE_BLOB_PATH = 'intuition/universal-workspace-v1.json';
 export const AUTOMATION_CONFIG_BLOB_PATH = 'intuition/schoolwork-automation-v1.json';
+export const DEBUG_CAPTURES_BLOB_PATH = 'intuition/schoolwork-debug-v1.json';
 
 export const DEFAULT_ECO_SLIDE_ID = '1s0GUOKJdzfYvGJhxG7SHFZb-K9Cye0lDbdVtY7jutPI';
+
+export interface CourseScrapeMeta {
+  accountSelector?: string;
+  expandedCount?: number;
+  detailCount?: number;
+  sourceUrls?: string[];
+  error?: string;
+}
+
+export interface CourseDebugCapture {
+  courseId: SchoolCourseId;
+  capturedAt: string;
+  ok: boolean;
+  slideTitle: string;
+  sourceUrl?: string;
+  rawCharCount: number;
+  rawText: string;
+  scrapeMeta?: CourseScrapeMeta;
+  aiModelUsed?: string;
+  aiSummary?: string;
+  extractedAssignments: StandardizedExtractedAssignment[];
+  addedCount: number;
+  updatedCount: number;
+}
+
+export interface SchoolworkDebugStore {
+  updatedAt: string;
+  byCourse: Partial<Record<SchoolCourseId, CourseDebugCapture>>;
+}
+
+export async function loadSchoolworkDebugCaptures(): Promise<SchoolworkDebugStore> {
+  try {
+    const res = await readPrivateJsonStore<Partial<SchoolworkDebugStore>>(
+      DEBUG_CAPTURES_BLOB_PATH
+    );
+    return {
+      updatedAt: res.data?.updatedAt || new Date().toISOString(),
+      byCourse: res.data?.byCourse ?? {},
+    };
+  } catch {
+    return {
+      updatedAt: new Date().toISOString(),
+      byCourse: {},
+    };
+  }
+}
+
+export async function saveCourseDebugCapture(
+  capture: CourseDebugCapture
+): Promise<void> {
+  try {
+    const current = await loadSchoolworkDebugCaptures();
+    const next: SchoolworkDebugStore = {
+      updatedAt: new Date().toISOString(),
+      byCourse: {
+        ...current.byCourse,
+        [capture.courseId]: {
+          ...capture,
+          rawText: String(capture.rawText || '').slice(0, 65000),
+        },
+      },
+    };
+    await writePrivateJsonStore(DEBUG_CAPTURES_BLOB_PATH, next, { pretty: false });
+  } catch {
+    // Non-fatal: never break schoolwork sync if debug snapshot write fails
+  }
+}
 
 export interface SchoolworkAutomationConfig {
   slidesByCourse: Record<SchoolCourseId, string>; // Presentation IDs
@@ -264,7 +332,11 @@ export async function extractAssignmentsWithGeminiHydrogen(params: {
   sourceUrl?: string;
   todayIso: string;
   geminiApiKey: string;
-}): Promise<{ summary: string; assignments: StandardizedExtractedAssignment[] }> {
+}): Promise<{
+  summary: string;
+  assignments: StandardizedExtractedAssignment[];
+  modelUsed: string;
+}> {
   const { courseId, slideTitle, rawSlideText, sourceUrl, todayIso, geminiApiKey } = params;
   const course = SCHOOL_COURSES[courseId];
   const ai = new GoogleGenAI({ apiKey: geminiApiKey });
@@ -345,6 +417,7 @@ ${rawSlideText.slice(0, 160000)}`;
     summary?: string;
     assignments?: Array<Omit<StandardizedExtractedAssignment, 'courseId'>>;
   } | null = null;
+  let modelUsed = '';
   const attemptErrors: string[] = [];
 
   for (const { model, timeoutMs } of modelsToTry) {
@@ -427,6 +500,7 @@ ${rawSlideText.slice(0, 160000)}`;
         summary?: string;
         assignments?: Array<Omit<StandardizedExtractedAssignment, 'courseId'>>;
       };
+      modelUsed = model;
       break;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -481,6 +555,7 @@ ${rawSlideText.slice(0, 160000)}`;
   return {
     summary: parsed.summary || `Synced ${assignments.length} ${course.shortName} items.`,
     assignments,
+    modelUsed,
   };
 }
 
@@ -530,6 +605,7 @@ export async function runAutomatedSchoolworkPipeline(options?: {
   manualSlideTitle?: string;
   manualSourceUrl?: string;
   manualAudiobookCsv?: string;
+  manualScrapeMeta?: CourseScrapeMeta;
   forceExtract?: boolean;
 }): Promise<{
   ok: boolean;
@@ -537,6 +613,8 @@ export async function runAutomatedSchoolworkPipeline(options?: {
   updatedCount: number;
   rolloverChanged: boolean;
   summary: string;
+  aiModelUsed?: string;
+  extractedAssignments?: StandardizedExtractedAssignment[];
 }> {
   const cfg = await loadAutomationConfig();
   const creds = resolveCredentials(cfg);
@@ -545,6 +623,17 @@ export async function runAutomatedSchoolworkPipeline(options?: {
   const extractedAll: StandardizedExtractedAssignment[] = [];
   const summaries: string[] = [];
   let accessToken: string | undefined;
+  let lastAiModelUsed: string | undefined;
+  const pendingCaptures: Array<{
+    courseId: SchoolCourseId;
+    slideTitle: string;
+    sourceUrl?: string;
+    rawText: string;
+    scrapeMeta?: CourseScrapeMeta;
+    aiModelUsed: string;
+    aiSummary: string;
+    assignments: StandardizedExtractedAssignment[];
+  }> = [];
 
   if (options?.manualRawSlideText && options.manualCourseId) {
     if (!creds.geminiApiKey) {
@@ -560,6 +649,17 @@ export async function runAutomatedSchoolworkPipeline(options?: {
     });
     extractedAll.push(...res.assignments);
     summaries.push(res.summary);
+    lastAiModelUsed = res.modelUsed;
+    pendingCaptures.push({
+      courseId: options.manualCourseId,
+      slideTitle: options.manualSlideTitle || 'Manual Test Slide',
+      sourceUrl: options.manualSourceUrl,
+      rawText: options.manualRawSlideText,
+      scrapeMeta: options.manualScrapeMeta,
+      aiModelUsed: res.modelUsed,
+      aiSummary: res.summary,
+      assignments: res.assignments,
+    });
   } else if (
     creds.googleClientId &&
     creds.googleClientSecret &&
@@ -595,6 +695,15 @@ export async function runAutomatedSchoolworkPipeline(options?: {
       extractedAll.push(...res.assignments);
       cfg.lastHashByCourse[courseId] = hash;
       summaries.push(`${SCHOOL_COURSES[courseId].shortName}: ${res.summary}`);
+      lastAiModelUsed = res.modelUsed;
+      pendingCaptures.push({
+        courseId,
+        slideTitle: deck.title,
+        rawText: deck.rawText,
+        aiModelUsed: res.modelUsed,
+        aiSummary: res.summary,
+        assignments: res.assignments,
+      });
     }
   }
 
@@ -759,10 +868,30 @@ export async function runAutomatedSchoolworkPipeline(options?: {
   cfg.lastSummary = finalSummary;
   await saveAutomationConfig(cfg);
 
+  for (const cap of pendingCaptures) {
+    await saveCourseDebugCapture({
+      courseId: cap.courseId,
+      capturedAt: cfg.lastRunAt,
+      ok: true,
+      slideTitle: cap.slideTitle,
+      sourceUrl: cap.sourceUrl,
+      rawCharCount: cap.rawText.length,
+      rawText: cap.rawText,
+      scrapeMeta: cap.scrapeMeta,
+      aiModelUsed: cap.aiModelUsed,
+      aiSummary: cap.aiSummary,
+      extractedAssignments: cap.assignments,
+      addedCount: writeRes.addedCount,
+      updatedCount: writeRes.updatedCount,
+    });
+  }
+
   return {
     ok: true,
     ...writeRes,
     summary: finalSummary,
+    aiModelUsed: lastAiModelUsed,
+    extractedAssignments: extractedAll,
   };
 }
 
