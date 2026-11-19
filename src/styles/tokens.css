@@ -1988,13 +1988,27 @@ textarea {
 }
 
 .gcal-ev-sub {
-  font-size: 11px;
-  line-height: 13.5px;
-  opacity: 0.85;
+  font-size: 11.5px;
+  line-height: 14px;
+  opacity: 0.92;
+  margin-top: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-height: 0;
+}
+
+.gcal-ev-sub.is-clamp-1 {
+  display: block;
   white-space: nowrap;
-  flex-shrink: 0;
+}
+
+.gcal-ev-sub.is-clamp-multi {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  white-space: pre-line;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .gcal-ev.is-compact {

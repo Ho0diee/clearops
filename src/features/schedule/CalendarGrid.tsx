@@ -1234,17 +1234,37 @@ const CalendarPane = memo<CalendarPaneProps>(
                   : isWeek
                   ? shortTitle(effectiveBlock)
                   : effectiveBlock.title;
-                const subLineText =
-                  effectiveBlock.notes?.trim() || effectiveBlock.startingStepHint || '';
-                const showSubLine = roomy && !isWeek && Boolean(subLineText) && textH >= 58;
+                const rawNotes = effectiveBlock.notes?.trim() || '';
+                const subLineText = rawNotes
+                  ? rawNotes.replace(/\n{2,}/g, '\n')
+                  : effectiveBlock.startingStepHint || '';
+                const hasRealNotes = Boolean(rawNotes);
+                // Show description preview whenever there's vertical room (even on 45-60m blocks in Day view)
+                const inlineTimeForDesc =
+                  !isWeek && hasRealNotes && textH >= 38 && textH < 50;
+                const showTimeRow = roomy && !inlineTimeForDesc;
+                const showSubLine =
+                  !isWeek && Boolean(subLineText) && (textH >= 50 || inlineTimeForDesc);
                 const maxTitleLines = isSingleLine
                   ? 1
                   : isWeek
                   ? Math.max(1, Math.floor((textH - 4) / 12))
+                  : showSubLine
+                  ? textH >= 80
+                    ? 2
+                    : 1
                   : Math.max(
                       1,
-                      Math.floor((textH - (6 + (roomy ? 15 : 0) + (showSubLine ? 15 : 0))) / 15)
+                      Math.floor((textH - (6 + (showTimeRow ? 15 : 0))) / 15)
                     );
+                const approxTitleLines =
+                  maxTitleLines === 1
+                    ? 1
+                    : Math.min(maxTitleLines, Math.max(1, Math.ceil(displayTitle.length / 34)));
+                const subAvailPx = showSubLine
+                  ? textH - (7 + approxTitleLines * 15 + (showTimeRow ? 15 : 0))
+                  : 0;
+                const maxSubLines = showSubLine ? Math.max(1, Math.floor(subAvailPx / 14)) : 0;
 
                 const laneX = rail.lead + placed.lane * rail.pitch;
                 const colorCls = placed.displayColor
@@ -1404,18 +1424,29 @@ const CalendarPane = memo<CalendarPaneProps>(
                           </span>
                         )}
                         {displayTitle}
-                        {!roomy && !isWeek && (
+                        {!showTimeRow && !isWeek && (
                           <span className="gcal-ev-inline-time">, {fmtTime(block.startTime)}</span>
                         )}
                       </span>
-                      {roomy && (
+                      {showTimeRow && (
                         <span className="gcal-ev-time">
                           {isWeek
                             ? fmtTime(block.startTime)
                             : `${fmtTime(block.startTime)} – ${fmtTime(block.endTime)}`}
                         </span>
                       )}
-                      {showSubLine && <span className="gcal-ev-sub">{subLineText}</span>}
+                      {showSubLine && (
+                        <span
+                          className={`gcal-ev-sub ${
+                            maxSubLines > 1 ? 'is-clamp-multi' : 'is-clamp-1'
+                          }`.trim()}
+                          style={
+                            maxSubLines > 1 ? { WebkitLineClamp: maxSubLines } : undefined
+                          }
+                        >
+                          {subLineText}
+                        </span>
+                      )}
                     </div>
 
                     {showBottomHandle && onResizePointerDown && (
