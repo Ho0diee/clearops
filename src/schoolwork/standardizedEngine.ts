@@ -59,7 +59,7 @@ export const SCHOOL_COURSES: Record<SchoolCourseId, CourseScheduleSpec> = {
     shortName: 'Eco',
     fullName: 'AP Environmental Science',
     teacher: 'Ms. Fox',
-    projectFolder: 'AP Env Science',
+    projectFolder: 'AP Environmental Science',
     color: 'emerald',
     periodKeys: ['p5'],
   },
@@ -1013,6 +1013,49 @@ function isDismissedByUser(
   return false;
 }
 
+const COURSE_FOLDER_MATCHERS: Record<SchoolCourseId, RegExp> = {
+  eco: /\b(env|environ|eco|apes)\b/i,
+  lit: /\b(lit|literature|english)\b/i,
+  precalc: /\b(pre-?calc|calculus|math|trig)\b/i,
+  physics: /\b(phys|physics)\b/i,
+};
+
+/**
+ * Dynamically resolves which project folder belongs to `courseId` so if the user renames
+ * a folder (e.g. "AP Env Science" -> "Environmental Science" or "AP Pre-Calc" -> "Math"),
+ * future syncs automatically follow the renamed folder and NEVER recreate the old folder name!
+ */
+function resolveCourseProjectFolder(
+  courseId: SchoolCourseId,
+  existingProjects: string[],
+  existingIdeas: IdeaItem[]
+): string {
+  const projectSet = new Set(existingProjects);
+  const ideaPrefix = `sch-idea-${courseId}-`;
+
+  // 1. Follow whichever existing folder already holds this course's synced items
+  const counts = new Map<string, number>();
+  for (const idea of existingIdeas) {
+    if (idea.id.startsWith(ideaPrefix) && idea.project && projectSet.has(idea.project)) {
+      counts.set(idea.project, (counts.get(idea.project) ?? 0) + 1);
+    }
+  }
+  if (counts.size > 0) {
+    const topFolder = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0][0];
+    return topFolder;
+  }
+
+  // 2. Otherwise match an existing folder by course keyword (e.g. "Environmental Science")
+  const matcher = COURSE_FOLDER_MATCHERS[courseId];
+  const matchedProject = existingProjects.find((p) => matcher.test(p));
+  if (matchedProject) {
+    return matchedProject;
+  }
+
+  // 3. Fallback to default folder name
+  return SCHOOL_COURSES[courseId].projectFolder;
+}
+
 export function applyExtractedAssignmentsToSchedule(params: {
   assignments: StandardizedExtractedAssignment[];
   existingBlocks: CalendarBlock[];
@@ -1119,8 +1162,13 @@ export function applyExtractedAssignmentsToSchedule(params: {
         }
       }
 
-      // Also keep a clean reference note in the course folder
-      neededProjects.add(course.projectFolder);
+      // Also keep a clean reference note in the course folder (following user folder renames!)
+      const resolvedFolder = resolveCourseProjectFolder(
+        item.courseId,
+        existingProjects,
+        workingIdeas
+      );
+      neededProjects.add(resolvedFolder);
       const inClassTitle = `[${course.shortName}] ${shortTitle} (In class)`;
       const inClassNotes = [
         cleanInClassDetails || shortTitle,
@@ -1141,11 +1189,11 @@ export function applyExtractedAssignmentsToSchedule(params: {
         };
       } else {
         const folderCount = workingIdeas.filter(
-          (i) => i.project === course.projectFolder && i.status !== 'completed'
+          (i) => i.project === resolvedFolder && i.status !== 'completed'
         ).length;
         workingIdeas.push({
           id: ideaId,
-          project: course.projectFolder,
+          project: resolvedFolder,
           priorityRank: folderCount + 1,
           title: inClassTitle,
           startingStep: item.startingStep,
@@ -1367,8 +1415,13 @@ export function applyExtractedAssignmentsToSchedule(params: {
       addedCount++;
     }
 
-    // Upsert Idea in Course Folder
-    neededProjects.add(course.projectFolder);
+    // Upsert Idea in Course Folder (automatically following any folder renames!)
+    const resolvedFolder = resolveCourseProjectFolder(
+      item.courseId,
+      existingProjects,
+      workingIdeas
+    );
+    neededProjects.add(resolvedFolder);
     const existingIdeaIdx = workingIdeas.findIndex((i) => i.id === ideaId);
     const linkedBlock = workingBlocks.find((b) => b.id === blockId);
     const isDone = Boolean(linkedBlock?.completed);
@@ -1385,11 +1438,11 @@ export function applyExtractedAssignmentsToSchedule(params: {
       };
     } else {
       const folderCount = workingIdeas.filter(
-        (i) => i.project === course.projectFolder && i.status !== 'completed'
+        (i) => i.project === resolvedFolder && i.status !== 'completed'
       ).length;
       workingIdeas.push({
         id: ideaId,
-        project: course.projectFolder,
+        project: resolvedFolder,
         priorityRank: folderCount + 1,
         title: blockTitle,
         startingStep: cleanStartingStep,
