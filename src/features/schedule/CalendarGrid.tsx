@@ -931,6 +931,7 @@ const EventEnrichmentFields: React.FC<{
   onWhyChange?: (why: WhyCategory) => void;
   customColor?: EventColorId;
   notes?: string;
+  links?: Array<{ label: string; url: string }>;
   alertOffsetMinutes?: number;
   onColorChange: (color: EventColorId | undefined) => void;
   onNotesChange: (notes: string) => void;
@@ -941,6 +942,7 @@ const EventEnrichmentFields: React.FC<{
   onWhyChange,
   customColor,
   notes,
+  links,
   alertOffsetMinutes,
   onColorChange,
   onNotesChange,
@@ -949,7 +951,21 @@ const EventEnrichmentFields: React.FC<{
   const hasAlert = typeof alertOffsetMinutes === 'number';
   const isCustomAlert = hasAlert && !STANDARD_ALERT_VALUES.has(String(alertOffsetMinutes));
   const [customAlertOpen, setCustomAlertOpen] = useState(isCustomAlert);
-  const noteLinks = useMemo(() => extractClickableLinks(notes), [notes]);
+  const noteLinks = useMemo(() => {
+    const combined: Array<{ label: string; url: string }> = [];
+    const seen = new Set<string>();
+    for (const l of links ?? []) {
+      if (!l?.url || seen.has(l.url)) continue;
+      seen.add(l.url);
+      combined.push(l);
+    }
+    for (const l of extractClickableLinks(notes)) {
+      if (seen.has(l.url)) continue;
+      seen.add(l.url);
+      combined.push(l);
+    }
+    return combined.slice(0, 6);
+  }, [links, notes]);
 
   useEffect(() => {
     if (isCustomAlert) setCustomAlertOpen(true);
@@ -1054,7 +1070,6 @@ const EventEnrichmentFields: React.FC<{
           </span>
           <span>Notes</span>
         </span>
-        <AutoResizeDescription value={notes ?? ''} onChange={onNotesChange} />
         {noteLinks.length > 0 && (
           <div className="gcal-desc-links">
             {noteLinks.map((lnk) => (
@@ -1072,6 +1087,7 @@ const EventEnrichmentFields: React.FC<{
             ))}
           </div>
         )}
+        <AutoResizeDescription value={notes ?? ''} onChange={onNotesChange} />
       </div>
     </div>
   );
@@ -3202,6 +3218,7 @@ export const CalendarGrid: React.FC<{
                 }
                 customColor={openBlock.customColor}
                 notes={openBlock.notes}
+                links={openBlock.links}
                 alertOffsetMinutes={openBlock.alertOffsetMinutes}
                 onColorChange={(customColor) =>
                   actions.updateCalendarBlock(openBlock.id, { customColor })

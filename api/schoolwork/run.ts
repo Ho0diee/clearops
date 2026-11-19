@@ -1,6 +1,7 @@
 import {
   loadAutomationConfig,
   loadSchoolworkDebugCaptures,
+  reprocessCachedSchoolworkCaptures,
   resolveCredentials,
   runAutomatedSchoolworkPipeline,
   saveAutomationConfig,
@@ -115,6 +116,11 @@ export async function POST(request: Request): Promise<Response> {
     if (action === 'wipe-schoolwork') {
       const res = await wipeSyncedSchoolworkData();
       return Response.json(res, { status: 200, headers });
+    }
+
+    if (action === 'reprocess-cached') {
+      const res = await reprocessCachedSchoolworkCaptures();
+      return Response.json(res, { status: res.ok ? 200 : 400, headers });
     }
 
     if (action === 'log-scrape-failure') {

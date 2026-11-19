@@ -343,7 +343,16 @@ export interface ParsedHwMeta {
 }
 
 export function parseHwMetaFromBlock(block: CalendarBlock): ParsedHwMeta | null {
-  if (!block.id.startsWith('sch-hw-') || !block.notes) return null;
+  if (!block.id.startsWith('sch-hw-')) return null;
+  if (block.autoMeta?.courseId && block.autoMeta?.dueDate) {
+    return {
+      courseId: block.autoMeta.courseId,
+      dueDate: block.autoMeta.dueDate,
+      dueTiming: block.autoMeta.dueTiming || 'before-class',
+      slug: block.autoMeta.slug,
+    };
+  }
+  if (!block.notes) return null;
   const m = block.notes.match(META_TAG_REGEX);
   if (!m) return null;
   return {
@@ -352,6 +361,34 @@ export function parseHwMetaFromBlock(block: CalendarBlock): ParsedHwMeta | null 
     dueTiming: m[3].toLowerCase() as SchoolDueTiming,
     slug: m[4],
   };
+}
+
+function formatFriendlyShortDate(isoDate: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) return isoDate;
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const wd = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dt.getUTCDay()];
+  return `${wd} ${m}/${d}`;
+}
+
+function labelForSourceUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./i, '');
+    const mod = u.searchParams.get('module');
+    if (host.includes('ezaudiobookmaker.com')) {
+      return mod !== null ? `Module ${mod} Audiobook` : 'Audiobook Site';
+    }
+    if (host.includes('classroom.google.com')) return 'Google Classroom';
+    if (host.includes('docs.google.com')) {
+      if (u.pathname.includes('/presentation/')) return 'Google Slides';
+      if (u.pathname.includes('/spreadsheets/')) return 'Google Sheet';
+      return 'Google Docs';
+    }
+    return host;
+  } catch {
+    return 'Open Link';
+  }
 }
 
 function stripAutoDueSection(notes: string | undefined): string {
@@ -883,6 +920,7 @@ export function applyExtractedAssignmentsToSchedule(params: {
   const neededProjects = new Set<string>(existingProjects);
   const removedBlockIds: string[] = [];
   const inClassLinesByClassKey = new Map<string, string[]>();
+  const inClassLinksByClassKey = new Map<string, Array<{ label: string; url: string }>>();
 
   let addedCount = 0;
   let updatedCount = 0;
@@ -914,8 +952,6 @@ export function applyExtractedAssignmentsToSchedule(params: {
       !isTestOrQuiz &&
       (item.workLocation === 'in-class' || item.dueTiming === 'in-class');
 
-    const sourceLine = item.sourceUrl ? `Source: ${item.sourceUrl}` : '';
-
     // ------------------------------------------------------------------
     // CASE 1: Strictly IN-CLASS work (e.g., Lit in-class essay/activity)
     // Attach directly onto the OHCHS class entry — DO NOT create a home HW block!
@@ -931,23 +967,31 @@ export function applyExtractedAssignmentsToSchedule(params: {
 
       const key = `${item.courseId}|${item.dueDate}`;
       const list = inClassLinesByClassKey.get(key) ?? [];
-      const snippet = item.contextDetails
-        ? ` — ${item.contextDetails.slice(0, 140)}`
-        : '';
+      const cleanInClassDetails = (item.contextDetails || '')
+        .replace(/https?:\/\/[^\s)<>\]"']+/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const snippet = cleanInClassDetails ? ` — ${cleanInClassDetails.slice(0, 140)}` : '';
       const prefix = isAlreadyDone ? '• ✓ IN CLASS (Past):' : '• IN CLASS:';
-      const line = `${prefix} ${item.title}${snippet}${item.sourceUrl ? ` (${item.sourceUrl})` : ''}`;
+      const line = `${prefix} ${item.title}${snippet}`;
       if (!list.includes(line)) {
         list.push(line);
         inClassLinesByClassKey.set(key, list);
+      }
+      if (item.sourceUrl) {
+        const lk = inClassLinksByClassKey.get(key) ?? [];
+        if (!lk.some((x) => x.url === item.sourceUrl)) {
+          lk.push({ label: item.title.slice(0, 32), url: item.sourceUrl });
+          inClassLinksByClassKey.set(key, lk);
+        }
       }
 
       // Also keep a clean reference note in the course folder
       neededProjects.add(course.projectFolder);
       const inClassTitle = `[${course.shortName} · In Class] ${item.title}`;
       const inClassNotes = [
-        `In-Class Work on ${item.dueDate} · ${course.teacher}`,
-        item.contextDetails,
-        sourceLine,
+        cleanInClassDetails || item.startingStep,
+        `In-class work on ${formatFriendlyShortDate(item.dueDate)} (${course.teacher}).`,
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -991,14 +1035,37 @@ export function applyExtractedAssignmentsToSchedule(params: {
     let durationOriginNote = '';
     const resolvedEcoModules =
       item.courseId === 'eco' ? resolveEcoModuleNumbers(item) : [];
-    const audiobookLinksNote =
-      item.courseId === 'eco' && resolvedEcoModules.length > 0
-        ? buildEcoAudiobookLinksNote(resolvedEcoModules)
-        : '';
+
+    // Build structured 1-tap pill links (keeps Notes text completely free of raw URL clutter!)
+    const blockLinks: Array<{ label: string; url: string }> = [];
+    const seenLinkUrls = new Set<string>();
+    const addBlockLink = (label: string, url: string | undefined) => {
+      const clean = (url || '').trim().replace(/[.,;:!?]+$/, '');
+      if (!clean || !/^https?:\/\//i.test(clean) || seenLinkUrls.has(clean)) return;
+      seenLinkUrls.add(clean);
+      blockLinks.push({ label, url: clean });
+    };
+
+    if (item.courseId === 'eco' && resolvedEcoModules.length > 0) {
+      for (const m of resolvedEcoModules) {
+        addBlockLink(`Module ${m} Audiobook`, `${APES_AUDIOBOOK_WEBSITE_BASE}/?module=${m}`);
+      }
+    }
+    // Also lift any inline Google Docs / resource links out of teacher descriptions into clean pills
+    const embeddedUrls = `${item.contextDetails || ''} ${item.startingStep || ''}`.match(
+      /https?:\/\/[^\s)<>\]"']+/gi
+    );
+    for (const rawUrl of embeddedUrls ?? []) {
+      addBlockLink(labelForSourceUrl(rawUrl), rawUrl);
+    }
+    if (item.sourceUrl) {
+      addBlockLink(labelForSourceUrl(item.sourceUrl), item.sourceUrl);
+    }
 
     if (item.category === 'lab') {
       durationMinutes = 60;
-      durationOriginNote = 'Standardized Lab Block: 60m on assigned day (edit duration anytime)';
+      durationOriginNote =
+        'Why 60 min: Standard 1-hour lab block scheduled on the day it was assigned.';
     } else if (item.courseId === 'eco' && resolvedEcoModules.length > 0) {
       const audioCalc = computeEcoModulesDurationWithBuffer(
         resolvedEcoModules,
@@ -1011,7 +1078,7 @@ export function applyExtractedAssignmentsToSchedule(params: {
       }
     } else if (isTestOrQuiz) {
       durationMinutes = 60;
-      durationOriginNote = `Study Prep Block: 60m before ${item.category} on ${item.dueDate}`;
+      durationOriginNote = `Why 60 min: 1-hour study session scheduled before your ${formatFriendlyShortDate(item.dueDate)} ${item.category}.`;
     } else if (
       item.courseId === 'precalc' ||
       item.courseId === 'lit' ||
@@ -1020,10 +1087,10 @@ export function applyExtractedAssignmentsToSchedule(params: {
       durationMinutes = 60;
       durationOriginNote =
         item.courseId === 'precalc'
-          ? 'Math Homework Block: 60m soonest available non-overlapping slot'
+          ? 'Why 60 min: Standard 1-hour math homework block placed in your soonest open slot.'
           : item.courseId === 'lit'
-          ? 'Lit Assignment Block: 60m non-overlapping slot before class deadline'
-          : 'Physics Assignment Block: 60m soonest available non-overlapping slot';
+          ? 'Why 60 min: Standard 1-hour Lit work block scheduled before class.'
+          : 'Why 60 min: Standard 1-hour Physics block placed in your soonest open slot.';
     }
 
     // Compute Earliest Eligible Start Date:
@@ -1059,18 +1126,22 @@ export function applyExtractedAssignmentsToSchedule(params: {
       searchStartDate = findClosestPriorCourseClassDate(item.dueDate, item.courseId);
     }
 
-    const metaFooter = `[Meta: course=${item.courseId} | due=${item.dueDate} | timing=${item.dueTiming} | slug=${item.slug}]`;
+    const blockAutoMeta = {
+      courseId: item.courseId,
+      dueDate: item.dueDate,
+      dueTiming: item.dueTiming,
+      slug: item.slug,
+    };
+    const friendlyDue = formatFriendlyShortDate(item.dueDate);
     const dueLabel = isTestOrQuiz
-      ? `${item.category.toUpperCase()} on ${item.dueDate} (${item.dueTiming.replace('-', ' ')}) · ${course.teacher}`
-      : `Due ${item.dueDate} (${item.dueTiming.replace('-', ' ')}) · ${course.teacher}`;
-    const richNotes = [
-      dueLabel,
-      durationOriginNote,
-      audiobookLinksNote,
-      item.contextDetails,
-      sourceLine,
-      metaFooter,
-    ]
+      ? `${item.category.toUpperCase()} on ${friendlyDue} (${course.teacher})`
+      : `Due ${friendlyDue} ${item.dueTiming.replace('-', ' ')} (${course.teacher})`;
+    const cleanBodyText = (item.contextDetails || '')
+      .replace(/https?:\/\/[^\s)<>\]"']+/gi, '')
+      .replace(/\s+\n/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+    const richNotes = [cleanBodyText || item.startingStep, dueLabel, durationOriginNote]
       .filter(Boolean)
       .join('\n\n');
 
@@ -1082,10 +1153,14 @@ export function applyExtractedAssignmentsToSchedule(params: {
     if (existingIdx >= 0) {
       const prev = workingBlocks[existingIdx];
       const nextCompleted = prev.completed || isAlreadyDone;
+      const linksChanged = JSON.stringify(prev.links || []) !== JSON.stringify(blockLinks);
+      const metaChanged = JSON.stringify(prev.autoMeta || null) !== JSON.stringify(blockAutoMeta);
       if (
         prev.title !== blockTitle ||
         prev.notes !== richNotes ||
-        prev.completed !== nextCompleted
+        prev.completed !== nextCompleted ||
+        linksChanged ||
+        metaChanged
       ) {
         workingBlocks[existingIdx] = {
           ...prev,
@@ -1093,6 +1168,8 @@ export function applyExtractedAssignmentsToSchedule(params: {
           completed: nextCompleted,
           startingStepHint: item.startingStep,
           notes: richNotes,
+          links: blockLinks.length ? blockLinks : undefined,
+          autoMeta: blockAutoMeta,
           updatedAt: new Date().toISOString(),
         };
         updatedCount++;
@@ -1144,6 +1221,8 @@ export function applyExtractedAssignmentsToSchedule(params: {
         assignedIdeaId: ideaId,
         startingStepHint: item.startingStep,
         notes: richNotes,
+        ...(blockLinks.length ? { links: blockLinks } : {}),
+        autoMeta: blockAutoMeta,
         updatedAt: new Date().toISOString(),
       });
       addedCount++;
@@ -1202,10 +1281,17 @@ export function applyExtractedAssignmentsToSchedule(params: {
       if (!lines || lines.length === 0) continue;
 
       const nextNotes = upsertInClassSection(blk.notes, lines);
-      if (blk.notes !== nextNotes) {
+      const nextLinks = inClassLinksByClassKey.get(`${matchedCourse.id}|${blockDate}`) ?? [];
+      const mergedLinks = [...(blk.links ?? [])];
+      for (const lk of nextLinks) {
+        if (!mergedLinks.some((x) => x.url === lk.url)) mergedLinks.push(lk);
+      }
+      const linksChanged = JSON.stringify(blk.links ?? []) !== JSON.stringify(mergedLinks);
+      if (blk.notes !== nextNotes || linksChanged) {
         workingBlocks[i] = {
           ...blk,
           notes: nextNotes,
+          ...(mergedLinks.length ? { links: mergedLinks } : {}),
           updatedAt: new Date().toISOString(),
         };
         updatedCount++;

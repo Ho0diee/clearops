@@ -300,6 +300,30 @@ export const SchoolworkAutomationCard: React.FC = () => {
     }
   };
 
+  const handleReprocessCached = async () => {
+    setBusy(true);
+    try {
+      const resp = await fetch(`${apiBase}/api/schoolwork/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reprocess-cached' }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        await actions.syncNow();
+        actions.showToast(data.summary || 'Re-applied latest rules to cached captures!');
+        await loadStatus();
+        if (showInspector) await loadDebugCaptures();
+      } else {
+        actions.showToast(data.error || data.summary || 'Reprocess failed');
+      }
+    } catch {
+      actions.showToast('Could not reach Vercel schoolwork endpoint');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleWipeSyncedSchoolwork = async () => {
     const confirmed = window.confirm(
       'Wipe all auto-synced schoolwork blocks, in-class tags, and schoolwork notes? Your personal events, alerts, classes, and notes will stay untouched.'
@@ -473,6 +497,16 @@ export const SchoolworkAutomationCard: React.FC = () => {
                 onClick={handleRunRolloverNow}
               >
                 Run Rollover Check Now
+              </Button>
+
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy}
+                iconLeft={<RefreshCw size={14} />}
+                onClick={handleReprocessCached}
+              >
+                Re-apply Rules to Last Sync
               </Button>
 
               <Button

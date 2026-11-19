@@ -204,6 +204,7 @@ export function isCustomizedOhchsBlock(block: CalendarBlock, todayIso?: string):
       completedOverride ||
       block.customColor !== undefined ||
       (block.notes && block.notes.trim().length > 0) ||
+      (block.links && block.links.length > 0) ||
       typeof block.alertOffsetMinutes === 'number'
   );
 }

@@ -937,19 +937,24 @@ export function computeEcoModulesDurationWithBuffer(
     );
     rawSum += mins;
     matchedNums.push(modNum);
-    parts.push(`Mod ${modNum} (${Math.round(mins * 10) / 10}m)`);
+    parts.push(`Module ${modNum} (${Math.round(mins * 10) / 10} min)`);
   }
 
   if (matchedNums.length === 0 || rawSum <= 0) return null;
 
   const rawRounded = Math.round(rawSum * 10) / 10;
   const bufferedMinutes = Math.max(15, Math.ceil(rawSum * bufferMultiplier));
+  const bufferPct = Math.round((bufferMultiplier - 1) * 100);
+  const sumClause =
+    parts.length > 1
+      ? `${parts.join(' + ')} = ${rawRounded} min of audio`
+      : `${parts[0]} of audio`;
 
   return {
     matchedModules: matchedNums,
     rawMinutes: rawRounded,
     bufferedMinutes,
-    breakdownLabel: `Audiobook: ${parts.join(' + ')} = ${rawRounded}m + 20% buffer = ${bufferedMinutes}m`,
+    breakdownLabel: `Why ${bufferedMinutes} min: ${sumClause}, plus a ${bufferPct}% buffer for pausing and notes.`,
   };
 }
 

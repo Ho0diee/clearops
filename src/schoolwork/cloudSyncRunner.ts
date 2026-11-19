@@ -1010,6 +1010,7 @@ export async function wipeSyncedSchoolworkData(): Promise<{
         nextUserBlocks.push({
           ...blk,
           notes: cleanedNotes,
+          links: undefined,
           alertOffsetMinutes: undefined,
           updatedAt: nowIso,
         });
@@ -1069,5 +1070,59 @@ export async function wipeSyncedSchoolworkData(): Promise<{
     ok: true,
     ...res,
     summary,
+  };
+}
+
+/**
+ * Re-runs the latest AI prompts, note formatting, duration rules, and scheduler directly on the
+ * already-cached raw Classroom & Slide captures saved from the last Cloud PC sync — ZERO need
+ * to open the Cloud PC or wait 6 hours after updating any rules on Vercel!
+ */
+export async function reprocessCachedSchoolworkCaptures(): Promise<{
+  ok: boolean;
+  reprocessedCourses: string[];
+  addedCount: number;
+  updatedCount: number;
+  summary: string;
+}> {
+  const captures = await loadSchoolworkDebugCaptures();
+  const order: SchoolCourseId[] = ['eco', 'lit', 'precalc', 'physics'];
+  const validCourses = order.filter((cid) => {
+    const cap = captures.byCourse[cid];
+    return Boolean(cap && cap.ok && cap.rawText && cap.rawText.trim().length > 20);
+  });
+
+  if (validCourses.length === 0) {
+    return {
+      ok: false,
+      reprocessedCourses: [],
+      addedCount: 0,
+      updatedCount: 0,
+      summary: 'No cached captures available yet — wait for the next sync or run sync once.',
+    };
+  }
+
+  let totalAdded = 0;
+  let totalUpdated = 0;
+  for (const cid of validCourses) {
+    const cap = captures.byCourse[cid]!;
+    const res = await runAutomatedSchoolworkPipeline({
+      manualCourseId: cid,
+      manualRawSlideText: cap.rawText,
+      manualSlideTitle: cap.slideTitle,
+      manualSourceUrl: cap.sourceUrl,
+      manualScrapeMeta: cap.scrapeMeta,
+      forceExtract: true,
+    });
+    totalAdded += res.addedCount;
+    totalUpdated += res.updatedCount;
+  }
+
+  return {
+    ok: true,
+    reprocessedCourses: validCourses,
+    addedCount: totalAdded,
+    updatedCount: totalUpdated,
+    summary: `Re-applied latest rules to ${validCourses.map((c) => c.toUpperCase()).join(', ')} (+${totalAdded} new, ${totalUpdated} updated) without touching the Cloud PC.`,
   };
 }

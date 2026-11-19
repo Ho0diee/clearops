@@ -54,6 +54,15 @@ export interface CalendarBlock {
   spilloverCount?: number;
   /** Event description / freeform details */
   notes?: string;
+  /** Structured clickable links rendered as 1-tap pills (keeps Notes clean without raw URLs) */
+  links?: Array<{ label: string; url: string }>;
+  /** Internal schoolwork automation metadata (keeps Notes free of `[Meta: ...]` footers) */
+  autoMeta?: {
+    courseId: 'eco' | 'lit' | 'precalc' | 'physics';
+    dueDate: string;
+    dueTiming: 'before-class' | 'in-class' | 'end-of-day';
+    slug: string;
+  };
   updatedAt?: string;
 }
 
