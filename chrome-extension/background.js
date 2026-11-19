@@ -267,41 +267,53 @@ function buildClassroomViewUrl(classId, accountSelector, view) {
 }
 
 /**
- * Opens a brand-new tab directly at `url` with `active: true` so Google Classroom's Wiz SPA
- * actually hydrates (hidden `active: false` tabs freeze on "Skip to main content..."),
- * waits until Chrome finishes loading AND any instant redirect settles.
+ * Opens a brand-new tab directly at `url` inside the focused normal Chrome window with `active: true`
+ * so Google Classroom's Wiz SPA hydrates cleanly, waits until Chrome finishes loading AND any instant
+ * redirect settles.
  */
+async function waitForTabComplete(tabId, timeoutMs = 24000) {
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+      resolve();
+    };
+    const onUpdated = (updatedId, changeInfo, tabInfo) => {
+      if (updatedId !== tabId) return;
+      if (changeInfo.status === 'complete' && /^https?:\/\//i.test(tabInfo?.url || '')) {
+        finish();
+      }
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs
+      .get(tabId)
+      .then((t) => {
+        if (t?.status === 'complete' && /^https?:\/\//i.test(t.url || '')) finish();
+      })
+      .catch(finish);
+  });
+}
+
 async function openFreshTabAtUrl(url, timeoutMs = 24000) {
   let tab = null;
   try {
-    tab = await chrome.tabs.create({ url, active: true });
+    const win = await chrome.windows
+      .getLastFocused({ windowTypes: ['normal'] })
+      .catch(() => null);
+    if (win?.id) {
+      await chrome.windows.update(win.id, { focused: true }).catch(() => {});
+    }
+    const createOpts = { url, active: true };
+    if (win?.id) createOpts.windowId = win.id;
+    tab = await chrome.tabs.create(createOpts);
     if (!tab?.id) return { ok: false, tabId: null, finalUrl: url };
     const tabId = tab.id;
 
-    await new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        clearTimeout(timer);
-        resolve();
-      };
-      const onUpdated = (updatedId, changeInfo, tabInfo) => {
-        if (updatedId !== tabId) return;
-        if (changeInfo.status === 'complete' && /^https?:\/\//i.test(tabInfo?.url || '')) {
-          finish();
-        }
-      };
-      const timer = setTimeout(finish, timeoutMs);
-      chrome.tabs.onUpdated.addListener(onUpdated);
-      chrome.tabs
-        .get(tabId)
-        .then((t) => {
-          if (t?.status === 'complete' && /^https?:\/\//i.test(t.url || '')) finish();
-        })
-        .catch(finish);
-    });
+    await waitForTabComplete(tabId, timeoutMs);
 
     // Give Google account redirects a moment to settle if still bouncing
     await sleep(1200);
@@ -321,6 +333,24 @@ async function openFreshTabAtUrl(url, timeoutMs = 24000) {
     }
     return { ok: false, tabId: null, finalUrl: url };
   }
+}
+
+/**
+ * Checks if the user already has this exact Classroom view open in a live tab so we can
+ * scrape it immediately without fighting cold hydration (and never close the user's tab!).
+ */
+async function findAlreadyOpenClassroomTab(expectedClassId, viewKind) {
+  if (!expectedClassId) return null;
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://classroom.google.com/*' });
+    for (const t of tabs) {
+      const u = t.url || '';
+      if (!t.id || !u.includes(expectedClassId)) continue;
+      if (viewKind === 'w' && /\/w\/[^/]+/i.test(u)) return t;
+      if (viewKind === 'c' && /\/c\/[^/]+\/?$/i.test(u.split('?')[0].split('#')[0])) return t;
+    }
+  } catch {}
+  return null;
 }
 
 async function getCurrentActiveTabId() {
@@ -521,20 +551,35 @@ async function detectSchoolClassroomSlot(targetClassIds) {
  */
 async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, maxExpandRows) {
   let tabId = null;
+  let ownsTab = true;
   try {
-    const opened = await openFreshTabAtUrl(url, 24000);
-    tabId = opened.tabId;
+    const existingTab = await findAlreadyOpenClassroomTab(expectedClassId, viewKind);
+    let currentUrl = url;
+    if (existingTab?.id) {
+      tabId = existingTab.id;
+      ownsTab = false;
+      currentUrl = existingTab.url || url;
+      if (existingTab.windowId) {
+        await chrome.windows.update(existingTab.windowId, { focused: true }).catch(() => {});
+      }
+      await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+      await sleep(600);
+    } else {
+      const opened = await openFreshTabAtUrl(url, 24000);
+      tabId = opened.tabId;
+      currentUrl = opened.finalUrl || url;
+    }
+
     if (!tabId) {
       return {
         ok: false,
         finalUrl: url,
-        error: 'Could not open background tab',
+        error: 'Could not open Classroom tab',
         detailLinks: [],
         expandedCount: 0,
       };
     }
 
-    const currentUrl = opened.finalUrl || url;
     if (
       currentUrl.includes('accounts.google.com') ||
       currentUrl.includes('ServiceLogin')
@@ -549,15 +594,27 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
       };
     }
 
-    const runExtract = () =>
+    const runExtract = (waitMs) =>
       chrome.scripting.executeScript({
         target: { tabId },
-        args: [expectedClassId || '', viewKind, maxExpandRows],
-        func: async (classId, view, maxExpand) => {
+        args: [expectedClassId || '', viewKind, maxExpandRows, waitMs, !ownsTab],
+        func: async (classId, view, maxExpand, maxWaitMs, reusedTab) => {
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-          // Classroom Classwork uses <main> without role="main"; Stream uses <main role="main">
-          const getMain = () =>
-            document.querySelector('main, [role="main"]') || document.body;
+          // Pick whichever <main> / [role="main"] actually holds the longest visible text; fallback to body
+          const getMain = () => {
+            const candidates = Array.from(document.querySelectorAll('main, [role="main"]'));
+            let best = null;
+            let bestLen = -1;
+            for (const el of candidates) {
+              const len = (el.innerText || '').trim().length;
+              if (len > bestLen) {
+                bestLen = len;
+                best = el;
+              }
+            }
+            if (best && bestLen > 40) return best;
+            return best || document.body;
+          };
 
           const noiseLineRegex =
             /^(More options|Options|Add class comment|Send|Post|Skip to main content|Google apps|Main menu|Copy link|Report abuse|View instructions|View material)$/i;
@@ -569,18 +626,16 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
               .map((l) => l.trim())
               .filter((l) => l && !noiseLineRegex.test(l));
 
-          // Wait up to 20s for real Classroom content inside <main> (or detect wrong-account dialog in body!)
+          // Wait up to maxWaitMs for real Classroom content inside <main> (or detect wrong-account dialog in body!)
           const start = Date.now();
-          while (Date.now() - start < 20000) {
+          while (Date.now() - start < maxWaitMs) {
             const href = window.location.href;
             if (classId && !href.includes(classId) && Date.now() - start > 3000) break;
 
             const mainEl = getMain();
             const mainTxt = (mainEl?.innerText || '').trim();
             const bodyTxt = (document.body?.innerText || '').trim();
-            const rowCount = mainEl
-              ? mainEl.querySelectorAll('li[data-stream-item-id]').length
-              : 0;
+            const rowCount = document.querySelectorAll('li[data-stream-item-id]').length;
 
             // Classroom renders "Class not found" inside a dialog outside <main> — check full bodyTxt!
             if (
@@ -595,14 +650,14 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
 
             const hasMarkers =
               /(Due\s|Posted\s|Edited\s|No due date|Turned in|Assigned|Missing|Graded|View instructions|Upcoming|Announce something)/i.test(
-                mainTxt
+                mainTxt || bodyTxt
               );
-            if ((rowCount >= 1 && mainTxt.length > 80) || (hasMarkers && mainTxt.length > 180)) {
+            if ((rowCount >= 1 && (mainTxt.length > 80 || bodyTxt.length > 150)) || (hasMarkers && (mainTxt.length > 180 || bodyTxt.length > 260))) {
               break;
             }
             await wait(300);
           }
-          await wait(1100);
+          await wait(1000);
 
           const finalHref = window.location.href;
           const mainRoot = getMain();
@@ -622,10 +677,8 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
             };
           }
 
-          // Strict selector: ONLY the top-level <li data-stream-item-id> assignment rows (1 per assignment!)
-          const classworkRows = mainRoot
-            ? Array.from(mainRoot.querySelectorAll('li[data-stream-item-id]'))
-            : [];
+          // Strict selector across whole document (in case <main> isn't the wrapper): 1 <li> per assignment!
+          const classworkRows = Array.from(document.querySelectorAll('li[data-stream-item-id]'));
 
           if (
             classworkRows.length === 0 &&
@@ -667,11 +720,10 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
           };
 
           // CRITICAL: Classroom Classwork is a SINGLE-OPEN ACCORDION — clicking row i+1 collapses row i!
-          // So we expand row i, wait for aria-expanded="true", and IMMEDIATELY capture its full expanded text + /details URL!
           let expandedCount = 0;
           const capturedItems = [];
 
-          if (view === 'w' && mainRoot && classworkRows.length > 0) {
+          if (view === 'w' && classworkRows.length > 0) {
             for (let idx = 0; idx < Math.min(classworkRows.length, maxExpand); idx++) {
               const row = classworkRows[idx];
               try {
@@ -707,7 +759,6 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
                   }
                 }
 
-                // Expand any "Read more" inside this row
                 const moreBtns = Array.from(row.querySelectorAll('button, [role="button"]')).filter(
                   (el) => /^(read more|show more|view more)$/i.test((el.textContent || '').trim())
                 );
@@ -719,7 +770,7 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
                 }
 
                 const rowLinks = collectLinksFrom(row);
-                const rowLines = cleanTextLines(row.innerText || '');
+                const rowLines = cleanTextLines(row.innerText || row.textContent || '');
                 if (rowLines.length > 0) {
                   const block = [
                     `--- CLASSWORK ITEM ${idx + 1} ---`,
@@ -732,8 +783,7 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
             }
           }
 
-          // For Stream (or fallback if no li[data-stream-item-id] matched), expand "Show more" & capture main
-          const scanRoot = mainRoot || document.body;
+          const scanRoot = mainRoot && (mainRoot.innerText || '').trim().length > 40 ? mainRoot : document.body;
           if (view !== 'w' || capturedItems.length === 0) {
             const moreBtns = Array.from(scanRoot.querySelectorAll('button, [role="button"]'))
               .filter((el) => /^(read more|show more|view more)$/i.test((el.textContent || '').trim()))
@@ -764,12 +814,26 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
           }
 
           if (finalText.length <= 40) {
+            const diag = [
+              `reused=${reusedTab}`,
+              `vis=${document.visibilityState}`,
+              `focus=${document.hasFocus()}`,
+              `vp=${window.innerWidth}x${window.innerHeight}`,
+              `ready=${document.readyState}`,
+              `mains=${document.querySelectorAll('main, [role="main"]').length}`,
+              `rows=${classworkRows.length}`,
+              `li=${document.querySelectorAll('li').length}`,
+              `iframes=${document.querySelectorAll('iframe').length}`,
+              `txtLen=${(document.body?.textContent || '').length}`,
+              `htmlLen=${(document.documentElement?.innerHTML || '').length}`,
+            ].join(',');
             return {
               ok: false,
+              needsReloadRetry: !reusedTab && classworkRows.length === 0 && bodyPreText.length < 150,
               wrongAccountOrMissing: true,
               finalUrl: finalHref,
               title: document.title || 'Google Classroom',
-              error: `Empty content (${finalText.length} chars) on ${finalHref} (body: "${bodyPreText.replace(/\s+/g, ' ').slice(0, 160)}")`,
+              error: `Empty (${finalText.length}c) [${diag}] on ${finalHref} (body: "${bodyPreText.replace(/\s+/g, ' ').slice(0, 140)}")`,
               text: finalText,
               detailLinks,
               expandedCount,
@@ -791,14 +855,26 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
 
     let results;
     try {
-      results = await runExtract();
+      results = await runExtract(ownsTab ? 14000 : 8000);
     } catch {
       await sleep(1800);
-      results = await runExtract();
+      results = await runExtract(14000);
+    }
+
+    let res = results?.[0]?.result;
+    // If a freshly opened tab stalled on Classroom's 79-char blank shell, reload it once and wait 18s!
+    if (ownsTab && res && !res.ok && res.needsReloadRetry) {
+      await chrome.tabs.reload(tabId).catch(() => {});
+      await waitForTabComplete(tabId, 20000);
+      await sleep(1500);
+      try {
+        const retryResults = await runExtract(18000);
+        res = retryResults?.[0]?.result || res;
+      } catch {}
     }
 
     return (
-      results?.[0]?.result || {
+      res || {
         ok: false,
         finalUrl: currentUrl,
         error: `Empty script result on ${currentUrl}`,
@@ -815,7 +891,7 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
       expandedCount: 0,
     };
   } finally {
-    if (tabId) {
+    if (tabId && ownsTab) {
       await chrome.tabs.remove(tabId).catch(() => {});
     }
   }
