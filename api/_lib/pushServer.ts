@@ -1,6 +1,9 @@
-import { BlobNotFoundError, get, put } from '@vercel/blob';
 import { send as sendQueueMessage } from '@vercel/queue';
 import * as webpush from 'web-push';
+import {
+  readPrivateJsonStore,
+  writePrivateJsonStore,
+} from '../../src/schoolwork/kvStore.js';
 import type { CalendarBlock } from '../../src/types/schema.js';
 import type { UniversalSyncPayload } from '../../src/store/universalMerge.js';
 
@@ -79,25 +82,12 @@ export function buildPushCorsHeaders(request: Request): Record<string, string> {
 }
 
 async function readPrivateJson<T>(pathname: string): Promise<T | null> {
-  try {
-    const res = await get(pathname, { access: 'private', useCache: false });
-    if (!res || res.statusCode !== 200 || !res.stream) return null;
-    const text = await new Response(res.stream).text();
-    if (!text.trim()) return null;
-    return JSON.parse(text) as T;
-  } catch (err) {
-    if (err instanceof BlobNotFoundError) return null;
-    throw err;
-  }
+  const res = await readPrivateJsonStore<T>(pathname);
+  return res.data;
 }
 
 async function writePrivateJson<T>(pathname: string, data: T): Promise<void> {
-  await put(pathname, JSON.stringify(data), {
-    access: 'private',
-    addRandomSuffix: false,
-    allowOverwrite: true,
-    contentType: 'application/json',
-  });
+  await writePrivateJsonStore(pathname, data);
 }
 
 export async function getOrCreateVapidKeys(): Promise<VapidKeyStore> {

@@ -1,4 +1,8 @@
-import { BlobNotFoundError, BlobPreconditionFailedError, get, put } from '@vercel/blob';
+import {
+  BlobPreconditionFailedError,
+  readPrivateJsonStore,
+  writePrivateJsonStore,
+} from '../src/schoolwork/kvStore.js';
 import {
   mergeUniversalPayload,
   type UniversalSyncPayload,
@@ -39,20 +43,9 @@ async function readCurrentWorkspace(
   pathname: string
 ): Promise<{ payload: UniversalSyncPayload | null; etag: string | null }> {
   try {
-    const res = await get(pathname, { access: 'private', useCache: false });
-    if (!res || res.statusCode !== 200 || !res.stream) {
-      return { payload: null, etag: res?.blob?.etag ?? null };
-    }
-    const text = await new Response(res.stream).text();
-    if (!text.trim()) {
-      return { payload: null, etag: res.blob.etag };
-    }
-    const parsed = JSON.parse(text) as UniversalSyncPayload;
-    return { payload: parsed, etag: res.blob.etag };
+    const res = await readPrivateJsonStore<UniversalSyncPayload>(pathname);
+    return { payload: res.data, etag: res.etag };
   } catch (err) {
-    if (err instanceof BlobNotFoundError) {
-      return { payload: null, etag: null };
-    }
     console.error('[api/sync] readCurrentWorkspace failed:', err);
     throw err;
   }
@@ -83,12 +76,8 @@ async function handleUpsert(request: Request): Promise<Response> {
     const merged = mergeUniversalPayload(current.payload, incoming);
 
     try {
-      const saved = await put(pathname, JSON.stringify(merged), {
-        access: 'private',
-        addRandomSuffix: false,
-        allowOverwrite: true,
-        contentType: 'application/json',
-        ...(current.etag ? { ifMatch: current.etag } : {}),
+      const saved = await writePrivateJsonStore(pathname, merged, {
+        ifMatch: current.etag,
       });
 
       if (pathname === 'intuition/universal-workspace-v1.json' && Array.isArray(merged.userBlocks)) {
@@ -113,12 +102,7 @@ async function handleUpsert(request: Request): Promise<Response> {
         // Concurrent update from another device — re-read latest and merge atomically
         const latest = await readCurrentWorkspace(pathname);
         const remerged = mergeUniversalPayload(latest.payload, incoming);
-        const saved = await put(pathname, JSON.stringify(remerged), {
-          access: 'private',
-          addRandomSuffix: false,
-          allowOverwrite: true,
-          contentType: 'application/json',
-        });
+        const saved = await writePrivateJsonStore(pathname, remerged);
         if (pathname === 'intuition/universal-workspace-v1.json' && Array.isArray(remerged.userBlocks)) {
           try {
             await enqueueUpcomingBlockAlerts(remerged.userBlocks, 7);

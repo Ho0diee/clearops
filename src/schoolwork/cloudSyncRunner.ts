@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
-import { BlobNotFoundError, BlobPreconditionFailedError, get, put } from '@vercel/blob';
 import { GoogleGenAI, Type } from '@google/genai';
+import {
+  BlobPreconditionFailedError,
+  readPrivateJsonStore,
+  writePrivateJsonStore,
+} from './kvStore.js';
 import {
   buildFullOhchsSchedule,
   buildOhchsBlocksForEntry,
@@ -57,16 +61,13 @@ const DEFAULT_CONFIG: SchoolworkAutomationConfig = {
 
 export async function loadAutomationConfig(): Promise<SchoolworkAutomationConfig> {
   try {
-    const res = await get(AUTOMATION_CONFIG_BLOB_PATH, {
-      access: 'private',
-      useCache: false,
-    });
-    if (!res || res.statusCode !== 200 || !res.stream) {
+    const res = await readPrivateJsonStore<Partial<SchoolworkAutomationConfig>>(
+      AUTOMATION_CONFIG_BLOB_PATH
+    );
+    if (!res.data) {
       return structuredClone(DEFAULT_CONFIG);
     }
-    const text = await new Response(res.stream).text();
-    if (!text.trim()) return structuredClone(DEFAULT_CONFIG);
-    const parsed = JSON.parse(text) as Partial<SchoolworkAutomationConfig>;
+    const parsed = res.data;
     return {
       ...structuredClone(DEFAULT_CONFIG),
       ...parsed,
@@ -78,10 +79,7 @@ export async function loadAutomationConfig(): Promise<SchoolworkAutomationConfig
         ...(parsed.lastHashByCourse ?? {}),
       },
     };
-  } catch (err) {
-    if (err instanceof BlobNotFoundError) {
-      return structuredClone(DEFAULT_CONFIG);
-    }
+  } catch {
     return structuredClone(DEFAULT_CONFIG);
   }
 }
@@ -89,12 +87,7 @@ export async function loadAutomationConfig(): Promise<SchoolworkAutomationConfig
 export async function saveAutomationConfig(
   cfg: SchoolworkAutomationConfig
 ): Promise<void> {
-  await put(AUTOMATION_CONFIG_BLOB_PATH, JSON.stringify(cfg, null, 2), {
-    access: 'private',
-    addRandomSuffix: false,
-    allowOverwrite: true,
-    contentType: 'application/json',
-  });
+  await writePrivateJsonStore(AUTOMATION_CONFIG_BLOB_PATH, cfg, { pretty: true });
 }
 
 export function resolveCredentials(cfg: SchoolworkAutomationConfig) {
@@ -495,18 +488,8 @@ async function readWorkspaceBlob(): Promise<{
   payload: UniversalSyncPayload | null;
   etag: string | null;
 }> {
-  try {
-    const res = await get(WORKSPACE_BLOB_PATH, { access: 'private', useCache: false });
-    if (!res || res.statusCode !== 200 || !res.stream) {
-      return { payload: null, etag: res?.blob?.etag ?? null };
-    }
-    const text = await new Response(res.stream).text();
-    if (!text.trim()) return { payload: null, etag: res.blob.etag };
-    return { payload: JSON.parse(text) as UniversalSyncPayload, etag: res.blob.etag };
-  } catch (err) {
-    if (err instanceof BlobNotFoundError) return { payload: null, etag: null };
-    throw err;
-  }
+  const res = await readPrivateJsonStore<UniversalSyncPayload>(WORKSPACE_BLOB_PATH);
+  return { payload: res.data, etag: res.etag };
 }
 
 function hydrateFullBlocksFromPayload(
@@ -743,12 +726,8 @@ export async function runAutomatedSchoolworkPipeline(options?: {
 
     const merged = mergeUniversalPayload(current.payload, updatedPayload);
 
-    await put(WORKSPACE_BLOB_PATH, JSON.stringify(merged), {
-      access: 'private',
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: 'application/json',
-      ...(useIfMatch && current.etag ? { ifMatch: current.etag } : {}),
+    await writePrivateJsonStore(WORKSPACE_BLOB_PATH, merged, {
+      ifMatch: useIfMatch ? current.etag : null,
     });
 
     return { addedCount, updatedCount, rolloverChanged };
@@ -859,12 +838,8 @@ export async function wipeSyncedSchoolworkData(): Promise<{
     };
 
     const merged = mergeUniversalPayload(current.payload, updatedPayload);
-    await put(WORKSPACE_BLOB_PATH, JSON.stringify(merged), {
-      access: 'private',
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: 'application/json',
-      ...(useIfMatch && current.etag ? { ifMatch: current.etag } : {}),
+    await writePrivateJsonStore(WORKSPACE_BLOB_PATH, merged, {
+      ifMatch: useIfMatch ? current.etag : null,
     });
 
     return { wipedBlocks, wipedIdeas, cleanedClasses };

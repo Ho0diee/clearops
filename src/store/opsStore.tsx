@@ -665,7 +665,7 @@ export const OpsStoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (document.visibilityState === 'visible') {
         void performCloudSync('pull');
       }
-    }, 8000);
+    }, 60_000);
 
     const onFocusOrOnline = () => {
       void performCloudSync(didBootSyncRef.current ? 'pull' : 'boot');

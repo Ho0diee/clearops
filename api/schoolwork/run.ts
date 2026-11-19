@@ -5,6 +5,7 @@ import {
   saveAutomationConfig,
   wipeSyncedSchoolworkData,
 } from '../../src/schoolwork/cloudSyncRunner.js';
+import { getActiveStorageBackend } from '../../src/schoolwork/kvStore.js';
 import type { SchoolCourseId } from '../../src/schoolwork/standardizedEngine.js';
 
 function corsHeaders(request: Request): Record<string, string> {
@@ -29,6 +30,7 @@ export async function GET(request: Request): Promise<Response> {
     return Response.json(
       {
         ok: true,
+        storageBackend: getActiveStorageBackend(),
         hasGeminiKey: Boolean(creds.geminiApiKey),
         hasGoogleClientCreds: Boolean(creds.googleClientId && creds.googleClientSecret),
         hasGoogleRefreshToken: Boolean(creds.googleRefreshToken),

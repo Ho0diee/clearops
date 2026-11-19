@@ -1,4 +1,4 @@
-import { BlobNotFoundError, get } from '@vercel/blob';
+import { readPrivateJsonStore } from '../../src/schoolwork/kvStore.js';
 import type { UniversalSyncPayload } from '../../src/store/universalMerge.js';
 import {
   buildPushCorsHeaders,
@@ -91,23 +91,14 @@ export async function POST(request: Request): Promise<Response> {
     // Immediately enqueue upcoming alerts from the synced workspace for this newly active phone
     let enqueued = 0;
     try {
-      const res = await get('intuition/universal-workspace-v1.json', {
-        access: 'private',
-        useCache: false,
-      });
-      if (res && res.statusCode === 200 && res.stream) {
-        const text = await new Response(res.stream).text();
-        if (text.trim()) {
-          const workspace = JSON.parse(text) as UniversalSyncPayload;
-          if (Array.isArray(workspace.userBlocks)) {
-            enqueued = await enqueueUpcomingBlockAlerts(workspace.userBlocks, 7);
-          }
-        }
+      const res = await readPrivateJsonStore<UniversalSyncPayload>(
+        'intuition/universal-workspace-v1.json'
+      );
+      if (res.data && Array.isArray(res.data.userBlocks)) {
+        enqueued = await enqueueUpcomingBlockAlerts(res.data.userBlocks, 7);
       }
     } catch (err) {
-      if (!(err instanceof BlobNotFoundError)) {
-        console.warn('[api/push/subscribe] initial alert enqueue skipped:', err);
-      }
+      console.warn('[api/push/subscribe] initial alert enqueue skipped:', err);
     }
 
     return Response.json(
