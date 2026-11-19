@@ -93,20 +93,24 @@ export const SCHOOL_COURSES: Record<SchoolCourseId, CourseScheduleSpec> = {
 };
 
 const AUTO_INCLASS_SECTION_HEADER = 'In class:';
-const AUTO_DUE_SECTION_HEADER = 'Deadlines:';
 const LEGACY_INCLASS_SECTION_HEADER = '--- In-Class Work ---';
 const LEGACY_DUE_SECTION_HEADER = '--- Homework & Deadlines ---';
+const LEGACY_DEADLINES_HEADER = 'Deadlines:';
+const DIRECT_DUE_LINE_REGEX = /^(?:•\s*)?(?:Due:|Test:|✓\s)/;
 const META_TAG_REGEX = /\[Meta:\s*course=(eco|lit|precalc|physics)\s*\|\s*due=(\d{4}-\d{2}-\d{2})\s*\|\s*timing=(before-class|in-class|end-of-day)\s*\|\s*slug=([a-z0-9-]+)\]/i;
 export const APES_AUDIOBOOK_WEBSITE_BASE = 'https://ezaudiobookmaker.com';
 
 export function hasAutoSchoolworkSection(notes: string | undefined): boolean {
   if (!notes) return false;
-  return (
-    notes.includes(AUTO_DUE_SECTION_HEADER) ||
+  if (
     notes.includes(AUTO_INCLASS_SECTION_HEADER) ||
+    notes.includes(LEGACY_INCLASS_SECTION_HEADER) ||
     notes.includes(LEGACY_DUE_SECTION_HEADER) ||
-    notes.includes(LEGACY_INCLASS_SECTION_HEADER)
-  );
+    notes.includes(LEGACY_DEADLINES_HEADER)
+  ) {
+    return true;
+  }
+  return notes.split('\n').some((line) => DIRECT_DUE_LINE_REGEX.test(line.trim()));
 }
 
 function truncateClean(text: string, maxLen: number): string {
@@ -155,15 +159,28 @@ function cleanNoteBody(rawDetails: string | undefined, fallbackStep: string | un
   const detailClean = stripNoise(rawDetails || '');
   const stepClean = stripNoise(fallbackStep || '');
 
-  // Prefer detailClean if it adds real info beyond just echoing the title
+  // Never echo the title back as its own description (e.g. "Timed Analysis Essay 1 — Timed Analysis Essay 1")
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (detailClean && norm(detailClean) !== norm(title) && detailClean.length >= 8) {
+  const titleNorm = norm(title);
+  const isJustTitle = (candidate: string) => {
+    const cn = norm(candidate);
+    if (!cn) return true;
+    if (cn === titleNorm) return true;
+    // Also catch "Timed Analysis Essay 1 posted for Q2" where stripping the title leaves almost nothing
+    if (titleNorm.length >= 6 && cn.startsWith(titleNorm)) {
+      const rest = cn.slice(titleNorm.length).replace(/^(posted|assigned|due|inclass|q[1-4]|for|as|an|assignment)+/g, '');
+      if (rest.length < 6) return true;
+    }
+    return false;
+  };
+
+  if (detailClean && !isJustTitle(detailClean) && detailClean.length >= 8) {
     return detailClean;
   }
-  if (stepClean && norm(stepClean) !== norm(title)) {
+  if (stepClean && !isJustTitle(stepClean) && stepClean.length >= 8) {
     return stepClean;
   }
-  return detailClean || '';
+  return '';
 }
 
 export function resolveEcoModuleNumbers(item: {
@@ -471,9 +488,37 @@ function findHeaderIndex(notes: string, headers: string[]): number {
   return best;
 }
 
+function findAutoDueStartIndex(notes: string): number {
+  const legacyIdx = findHeaderIndex(notes, [LEGACY_DEADLINES_HEADER, LEGACY_DUE_SECTION_HEADER]);
+  if (legacyIdx >= 0) return legacyIdx;
+
+  // Find trailing direct due/test/check block ("Due: ...", "Test: ...", "✓ ...") outside "In class:"
+  const inClassIdx = findHeaderIndex(notes, [
+    AUTO_INCLASS_SECTION_HEADER,
+    LEGACY_INCLASS_SECTION_HEADER,
+  ]);
+  const lines = notes.split('\n');
+  let offset = 0;
+  let inClassSection = false;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (inClassIdx >= 0 && offset === inClassIdx) {
+      inClassSection = true;
+    } else if (inClassSection && trimmed === '') {
+      inClassSection = false;
+    }
+    if (!inClassSection && DIRECT_DUE_LINE_REGEX.test(trimmed)) {
+      return offset;
+    }
+    offset += raw.length + 1;
+  }
+  return -1;
+}
+
 function stripAutoDueSection(notes: string | undefined): string {
   if (!notes) return '';
-  const idx = findHeaderIndex(notes, [AUTO_DUE_SECTION_HEADER, LEGACY_DUE_SECTION_HEADER]);
+  const idx = findAutoDueStartIndex(notes);
   if (idx === -1) return notes.trim();
   return notes.slice(0, idx).trim();
 }
@@ -493,9 +538,7 @@ export function stripAllAutoSchoolworkSections(notes: string | undefined): strin
 
 function upsertInClassSection(notes: string | undefined, lines: string[]): string | undefined {
   const withoutDue = stripAutoDueSection(notes);
-  const dueIdx = notes
-    ? findHeaderIndex(notes, [AUTO_DUE_SECTION_HEADER, LEGACY_DUE_SECTION_HEADER])
-    : -1;
+  const dueIdx = notes ? findAutoDueStartIndex(notes) : -1;
   const dueTail = dueIdx >= 0 && notes ? notes.slice(dueIdx).trim() : '';
 
   const inClassIdx = findHeaderIndex(withoutDue, [
@@ -637,11 +680,7 @@ export function reconcileSchoolworkLifecycle(params: {
 
     if (!dueItems || dueItems.length === 0) {
       // If previously had an auto-due section, clean it up cleanly
-      if (
-        blk.notes &&
-        (blk.notes.includes(AUTO_DUE_SECTION_HEADER) ||
-          blk.notes.includes(LEGACY_DUE_SECTION_HEADER))
-      ) {
+      if (blk.notes && findAutoDueStartIndex(blk.notes) >= 0) {
         workingBlocks[i] = {
           ...blk,
           notes: baseUserNotes || undefined,
@@ -662,15 +701,12 @@ export function reconcileSchoolworkLifecycle(params: {
       const isExam = /\b(test|exam|quiz)\b/i.test(strippedCourse);
       const cleanName = strippedCourse.replace(/^Study:\s*/i, '').trim();
       if (entry.block.completed) {
-        return `• ✓ ${cleanName}`;
+        return `✓ ${cleanName}`;
       }
-      return isExam ? `• Test: ${cleanName}` : `• Due: ${cleanName}`;
+      return isExam ? `Test: ${cleanName}` : `Due: ${cleanName}`;
     });
 
-    const nextNotes = [
-      baseUserNotes,
-      `${AUTO_DUE_SECTION_HEADER}\n${bulletLines.join('\n')}`,
-    ]
+    const nextNotes = [baseUserNotes, bulletLines.join('\n')]
       .filter(Boolean)
       .join('\n\n');
 

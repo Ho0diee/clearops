@@ -58,7 +58,7 @@ export const OHCHS_BELL_SCHEDULES: Record<OhchsDayCode, PeriodTemplate[]> = {
       startTime: '12:34',
       endTime: '13:52',
       title: 'Senior Privileges',
-      detail: 'Period 04 · Admin · A/S Roster: Boys Varsity Soccer (Coach Card, Gym)',
+      detail: 'Period 04 · Admin',
     },
   ],
 
@@ -89,7 +89,7 @@ export const OHCHS_BELL_SCHEDULES: Record<OhchsDayCode, PeriodTemplate[]> = {
       startTime: '10:50',
       endTime: '12:35',
       title: 'AP Literature & Comp · A222',
-      detail: 'Period 07 · Mr. Lauby · Room A222 · A Lunch · A/S Roster: Boys Varsity Soccer',
+      detail: 'Period 07 · Mr. Lauby · Room A222 · A Lunch',
     },
   ],
 
