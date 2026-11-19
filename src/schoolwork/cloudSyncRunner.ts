@@ -24,6 +24,7 @@ import {
   addDays,
   applyExtractedAssignmentsToSchedule,
   getEasternNow,
+  hasAutoSchoolworkSection,
   hasCourseClassOnDate,
   reconcileSchoolworkLifecycle,
   SCHOOL_COURSES,
@@ -430,7 +431,7 @@ STRICT EXTRACTION RULES:
 4. Set "isCompleted" = true if the Classroom page explicitly shows "Turned in" or "Graded", OR if dueDate < ${todayIso}. Otherwise false.
 5. Set "workLocation" = "in-class" ONLY when the work is done strictly during class (e.g. "(in-class)", "Timed Analysis Essay", "work this together in class", and NOT a test/quiz you must study for). For tests and quizzes (category = "test" or "quiz"), ALWAYS set workLocation = "homework" so a 60m Study block + night-before alert are created!
 6. Set "sourceUrl" to the exact "Detail URL: https://..." or "=== ASSIGNMENT DETAIL PAGE: https://... ===" URL for that specific assignment if present in the content; otherwise use "${sourceUrl || ''}".
-7. Write a crisp actionable "startingStep" and include the teacher's key instructions/details verbatim in "contextDetails". Only populate "moduleNumbers" for AP Environmental Science (eco) textbook modules; leave moduleNumbers = [] for all other courses.
+7. Keep "title" short and clean (drop verbose parentheticals like "(Labeled as ...)" or "(in-class)"). Write "contextDetails" as 1-2 short, direct, to-the-point sentences with the exact problem numbers, pages, or key instructions — NEVER paste raw URLs, NEVER repeat the title or due date, and NEVER write filler like "assignment posted by...". Only populate "moduleNumbers" for AP Environmental Science (eco) textbook modules; leave moduleNumbers = [] for all other courses.
 
 SOURCE: ${slideTitle}
 CONTENT:
@@ -1014,8 +1015,7 @@ export async function wipeSyncedSchoolworkData(): Promise<{
       if (
         blk.id.startsWith('ohchs-') &&
         blk.notes &&
-        (blk.notes.includes('--- Homework & Deadlines ---') ||
-          blk.notes.includes('--- In-Class Work ---'))
+        hasAutoSchoolworkSection(blk.notes)
       ) {
         const cleanedNotes = stripAllAutoSchoolworkSections(blk.notes);
         cleanedClasses += 1;

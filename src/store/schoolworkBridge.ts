@@ -3,6 +3,7 @@ import type { OpsState } from '../types/schema';
 import type { SchoolDelayRecord, SyncTombstones } from './universalMerge';
 import {
   getEasternNow,
+  hasAutoSchoolworkSection,
   reconcileSchoolworkLifecycle,
 } from '../schoolwork/standardizedEngine';
 
@@ -140,7 +141,7 @@ export function useSchoolworkExtractorBridge(
       const hasAnySchoolHw = cur.blocks.some(
         (b) =>
           b.id.startsWith('sch-hw-') ||
-          (b.id.startsWith('ohchs-') && b.notes?.includes('--- Homework & Deadlines ---'))
+          (b.id.startsWith('ohchs-') && hasAutoSchoolworkSection(b.notes))
       );
       if (!hasAnySchoolHw) return;
 

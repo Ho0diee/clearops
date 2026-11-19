@@ -92,10 +92,79 @@ export const SCHOOL_COURSES: Record<SchoolCourseId, CourseScheduleSpec> = {
   },
 };
 
-const AUTO_INCLASS_SECTION_HEADER = '--- In-Class Work ---';
-const AUTO_DUE_SECTION_HEADER = '--- Homework & Deadlines ---';
+const AUTO_INCLASS_SECTION_HEADER = 'In class:';
+const AUTO_DUE_SECTION_HEADER = 'Deadlines:';
+const LEGACY_INCLASS_SECTION_HEADER = '--- In-Class Work ---';
+const LEGACY_DUE_SECTION_HEADER = '--- Homework & Deadlines ---';
 const META_TAG_REGEX = /\[Meta:\s*course=(eco|lit|precalc|physics)\s*\|\s*due=(\d{4}-\d{2}-\d{2})\s*\|\s*timing=(before-class|in-class|end-of-day)\s*\|\s*slug=([a-z0-9-]+)\]/i;
 export const APES_AUDIOBOOK_WEBSITE_BASE = 'https://ezaudiobookmaker.com';
+
+export function hasAutoSchoolworkSection(notes: string | undefined): boolean {
+  if (!notes) return false;
+  return (
+    notes.includes(AUTO_DUE_SECTION_HEADER) ||
+    notes.includes(AUTO_INCLASS_SECTION_HEADER) ||
+    notes.includes(LEGACY_DUE_SECTION_HEADER) ||
+    notes.includes(LEGACY_INCLASS_SECTION_HEADER)
+  );
+}
+
+function truncateClean(text: string, maxLen: number): string {
+  const s = text.replace(/\s+/g, ' ').trim();
+  if (s.length <= maxLen) return s;
+  const cut = s.slice(0, maxLen - 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  const base = lastSpace > maxLen * 0.55 ? cut.slice(0, lastSpace) : cut;
+  return `${base.replace(/[,;:.\-–—]+$/, '')}…`;
+}
+
+function cleanAssignmentTitle(rawTitle: string, courseId: SchoolCourseId): string {
+  let t = rawTitle.trim();
+  // Strip verbose parenthetical notes like "(Labeled as Mid Unit Review on document)", "(Did Part 1 on 11/5...)", "(in-class)"
+  t = t
+    .replace(/\s*\(\s*in[\s-]?class\s*\)/gi, '')
+    .replace(/\s*\(\s*labeled\s+as[^)]*\)/gi, '')
+    .replace(/\s*\(\s*did\s+part[^)]*\)/gi, '')
+    .replace(/\s*\(\s*ap\s+topic[^)]*\)/gi, '')
+    .replace(/\s*\(\s*ap\s+\d+\.\d+\s*\)/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  // Shorten verbose Eco module titles like "Read Modules 15 & 16 and Take Notes" -> "Modules 15 & 16"
+  if (courseId === 'eco') {
+    const modShort = t.match(/^read\s+(modules?\s+\d+(?:\s*(?:&|-|and)\s*\d+)?)\s*(?:and\s+take\s+notes|reading\s+and\s+notes|notes)?$/i);
+    if (modShort) {
+      t = modShort[1].replace(/^module/i, 'Module');
+    }
+  }
+  return t || rawTitle.trim();
+}
+
+function cleanNoteBody(rawDetails: string | undefined, fallbackStep: string | undefined, title: string): string {
+  const stripNoise = (s: string) =>
+    s
+      .replace(/https?:\/\/[^\s)<>\]"']+/gi, '')
+      .replace(/\bDue\s+(?:Tomorrow|Today|Yesterday)\s*\(\d{4}-\d{2}-\d{2}\)\.?/gi, '')
+      .replace(/\bDue\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)?\s*\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\.?/gi, '')
+      .replace(/\bassignment\s+posted\s+by\s+[A-Z][a-z]+\s+[A-Z][a-z]+\.?/gi, '')
+      .replace(/\bassigned\s+in\s+Q[1-4]\.?/gi, '')
+      .replace(/\s+\n/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/^[\s.,;:–—-]+|[\s,;]+$/g, '')
+      .trim();
+
+  const detailClean = stripNoise(rawDetails || '');
+  const stepClean = stripNoise(fallbackStep || '');
+
+  // Prefer detailClean if it adds real info beyond just echoing the title
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (detailClean && norm(detailClean) !== norm(title) && detailClean.length >= 8) {
+    return detailClean;
+  }
+  if (stepClean && norm(stepClean) !== norm(title)) {
+    return stepClean;
+  }
+  return detailClean || '';
+}
 
 export function resolveEcoModuleNumbers(item: {
   moduleNumbers?: number[];
@@ -391,9 +460,20 @@ function labelForSourceUrl(url: string): string {
   }
 }
 
+function findHeaderIndex(notes: string, headers: string[]): number {
+  let best = -1;
+  for (const h of headers) {
+    const idx = notes.indexOf(h);
+    if (idx >= 0 && (best === -1 || idx < best)) {
+      best = idx;
+    }
+  }
+  return best;
+}
+
 function stripAutoDueSection(notes: string | undefined): string {
   if (!notes) return '';
-  const idx = notes.indexOf(AUTO_DUE_SECTION_HEADER);
+  const idx = findHeaderIndex(notes, [AUTO_DUE_SECTION_HEADER, LEGACY_DUE_SECTION_HEADER]);
   if (idx === -1) return notes.trim();
   return notes.slice(0, idx).trim();
 }
@@ -401,7 +481,10 @@ function stripAutoDueSection(notes: string | undefined): string {
 export function stripAllAutoSchoolworkSections(notes: string | undefined): string | undefined {
   if (!notes) return undefined;
   let cleaned = stripAutoDueSection(notes);
-  const inClassIdx = cleaned.indexOf(AUTO_INCLASS_SECTION_HEADER);
+  const inClassIdx = findHeaderIndex(cleaned, [
+    AUTO_INCLASS_SECTION_HEADER,
+    LEGACY_INCLASS_SECTION_HEADER,
+  ]);
   if (inClassIdx >= 0) {
     cleaned = cleaned.slice(0, inClassIdx).trim();
   }
@@ -410,10 +493,15 @@ export function stripAllAutoSchoolworkSections(notes: string | undefined): strin
 
 function upsertInClassSection(notes: string | undefined, lines: string[]): string | undefined {
   const withoutDue = stripAutoDueSection(notes);
-  const dueIdx = notes ? notes.indexOf(AUTO_DUE_SECTION_HEADER) : -1;
+  const dueIdx = notes
+    ? findHeaderIndex(notes, [AUTO_DUE_SECTION_HEADER, LEGACY_DUE_SECTION_HEADER])
+    : -1;
   const dueTail = dueIdx >= 0 && notes ? notes.slice(dueIdx).trim() : '';
 
-  const inClassIdx = withoutDue.indexOf(AUTO_INCLASS_SECTION_HEADER);
+  const inClassIdx = findHeaderIndex(withoutDue, [
+    AUTO_INCLASS_SECTION_HEADER,
+    LEGACY_INCLASS_SECTION_HEADER,
+  ]);
   const userBase = inClassIdx >= 0 ? withoutDue.slice(0, inClassIdx).trim() : withoutDue.trim();
 
   const inClassBlock =
@@ -549,7 +637,11 @@ export function reconcileSchoolworkLifecycle(params: {
 
     if (!dueItems || dueItems.length === 0) {
       // If previously had an auto-due section, clean it up cleanly
-      if (blk.notes && blk.notes.includes(AUTO_DUE_SECTION_HEADER)) {
+      if (
+        blk.notes &&
+        (blk.notes.includes(AUTO_DUE_SECTION_HEADER) ||
+          blk.notes.includes(LEGACY_DUE_SECTION_HEADER))
+      ) {
         workingBlocks[i] = {
           ...blk,
           notes: baseUserNotes || undefined,
@@ -563,12 +655,16 @@ export function reconcileSchoolworkLifecycle(params: {
 
     const anyUnfinished = dueItems.some((entry) => !entry.block.completed);
     const bulletLines = dueItems.map((entry) => {
-      const cleanTitle = entry.block.title.replace(/^\[(Eco|Lit|Pre-Calc|Physics)\]\s*/i, '');
-      const isExam = /\b(test|exam|quiz)\b/i.test(cleanTitle);
+      const strippedCourse = entry.block.title.replace(
+        /^\[(Eco|Lit|Pre-Calc|Physics)\]\s*/i,
+        ''
+      );
+      const isExam = /\b(test|exam|quiz)\b/i.test(strippedCourse);
+      const cleanName = strippedCourse.replace(/^Study:\s*/i, '').trim();
       if (entry.block.completed) {
-        return `• ✓ DONE: ${cleanTitle}`;
+        return `• ✓ ${cleanName}`;
       }
-      return isExam ? `• TEST/QUIZ TODAY: ${cleanTitle}` : `• DUE TODAY: ${cleanTitle}`;
+      return isExam ? `• Test: ${cleanName}` : `• Due: ${cleanName}`;
     });
 
     const nextNotes = [
@@ -967,13 +1063,14 @@ export function applyExtractedAssignmentsToSchedule(params: {
 
       const key = `${item.courseId}|${item.dueDate}`;
       const list = inClassLinesByClassKey.get(key) ?? [];
-      const cleanInClassDetails = (item.contextDetails || '')
-        .replace(/https?:\/\/[^\s)<>\]"']+/gi, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      const snippet = cleanInClassDetails ? ` — ${cleanInClassDetails.slice(0, 140)}` : '';
-      const prefix = isAlreadyDone ? '• ✓ IN CLASS (Past):' : '• IN CLASS:';
-      const line = `${prefix} ${item.title}${snippet}`;
+      const shortTitle = cleanAssignmentTitle(item.title, item.courseId);
+      const cleanInClassDetails = cleanNoteBody(item.contextDetails, '', shortTitle);
+      const snippet = cleanInClassDetails
+        ? ` — ${truncateClean(cleanInClassDetails, 130)}`
+        : '';
+      const line = isAlreadyDone
+        ? `• ✓ ${shortTitle}${snippet}`
+        : `• ${shortTitle}${snippet}`;
       if (!list.includes(line)) {
         list.push(line);
         inClassLinesByClassKey.set(key, list);
@@ -981,17 +1078,17 @@ export function applyExtractedAssignmentsToSchedule(params: {
       if (item.sourceUrl) {
         const lk = inClassLinksByClassKey.get(key) ?? [];
         if (!lk.some((x) => x.url === item.sourceUrl)) {
-          lk.push({ label: item.title.slice(0, 32), url: item.sourceUrl });
+          lk.push({ label: truncateClean(shortTitle, 34), url: item.sourceUrl });
           inClassLinksByClassKey.set(key, lk);
         }
       }
 
       // Also keep a clean reference note in the course folder
       neededProjects.add(course.projectFolder);
-      const inClassTitle = `[${course.shortName} · In Class] ${item.title}`;
+      const inClassTitle = `[${course.shortName}] ${shortTitle} (In class)`;
       const inClassNotes = [
-        cleanInClassDetails || item.startingStep,
-        `In-class work on ${formatFriendlyShortDate(item.dueDate)} (${course.teacher}).`,
+        cleanInClassDetails || shortTitle,
+        `In class ${formatFriendlyShortDate(item.dueDate)} · ${course.teacher}`,
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -1062,10 +1159,10 @@ export function applyExtractedAssignmentsToSchedule(params: {
       addBlockLink(labelForSourceUrl(item.sourceUrl), item.sourceUrl);
     }
 
+    // Only include a duration explanation when it's a calculated Eco Audiobook length
+    // (skip obvious boilerplate like "Standard 1-hour math block" on every 60m event!)
     if (item.category === 'lab') {
       durationMinutes = 60;
-      durationOriginNote =
-        'Why 60 min: Standard 1-hour lab block scheduled on the day it was assigned.';
     } else if (item.courseId === 'eco' && resolvedEcoModules.length > 0) {
       const audioCalc = computeEcoModulesDurationWithBuffer(
         resolvedEcoModules,
@@ -1078,19 +1175,12 @@ export function applyExtractedAssignmentsToSchedule(params: {
       }
     } else if (isTestOrQuiz) {
       durationMinutes = 60;
-      durationOriginNote = `Why 60 min: 1-hour study session scheduled before your ${formatFriendlyShortDate(item.dueDate)} ${item.category}.`;
     } else if (
       item.courseId === 'precalc' ||
       item.courseId === 'lit' ||
       item.courseId === 'physics'
     ) {
       durationMinutes = 60;
-      durationOriginNote =
-        item.courseId === 'precalc'
-          ? 'Why 60 min: Standard 1-hour math homework block placed in your soonest open slot.'
-          : item.courseId === 'lit'
-          ? 'Why 60 min: Standard 1-hour Lit work block scheduled before class.'
-          : 'Why 60 min: Standard 1-hour Physics block placed in your soonest open slot.';
     }
 
     // Compute Earliest Eligible Start Date:
@@ -1132,42 +1222,56 @@ export function applyExtractedAssignmentsToSchedule(params: {
       dueTiming: item.dueTiming,
       slug: item.slug,
     };
+    const shortTitle = cleanAssignmentTitle(item.title, item.courseId);
     const friendlyDue = formatFriendlyShortDate(item.dueDate);
     const dueLabel = isTestOrQuiz
-      ? `${item.category.toUpperCase()} on ${friendlyDue} (${course.teacher})`
-      : `Due ${friendlyDue} ${item.dueTiming.replace('-', ' ')} (${course.teacher})`;
-    const cleanBodyText = (item.contextDetails || '')
-      .replace(/https?:\/\/[^\s)<>\]"']+/gi, '')
-      .replace(/\s+\n/g, '\n')
-      .replace(/[ \t]{2,}/g, ' ')
-      .trim();
-    const richNotes = [cleanBodyText || item.startingStep, dueLabel, durationOriginNote]
-      .filter(Boolean)
-      .join('\n\n');
+      ? `Test ${friendlyDue} · ${course.teacher}`
+      : `Due ${friendlyDue} · ${course.teacher}`;
+    const cleanBodyText = cleanNoteBody(item.contextDetails, item.startingStep, shortTitle);
 
-    const titlePrefix = isTestOrQuiz && !/^study\b/i.test(item.title) ? 'Study: ' : '';
-    const blockTitle = `[${course.shortName}] ${titlePrefix}${item.title}`;
+    const buildNotesForDuration = (actualBlockMins?: number) => {
+      let durNote = durationOriginNote;
+      // Keep the note's minute count 100% consistent with the block's scheduled length
+      if (
+        durNote &&
+        actualBlockMins &&
+        actualBlockMins !== durationMinutes &&
+        item.courseId === 'eco'
+      ) {
+        durNote = `${actualBlockMins} min = live audiobook sheet length + 20% buffer for pausing & notes`;
+      }
+      return [cleanBodyText, dueLabel, durNote].filter(Boolean).join('\n\n');
+    };
+
+    const titlePrefix = isTestOrQuiz && !/^study\b/i.test(shortTitle) ? 'Study: ' : '';
+    const blockTitle = `[${course.shortName}] ${titlePrefix}${shortTitle}`;
+    const cleanStartingStep = cleanNoteBody(item.startingStep, '', shortTitle) || shortTitle;
 
     // Upsert Block (preserving user manual edits to date/startTime/endTime/completed!)
     const existingIdx = workingBlocks.findIndex((b) => b.id === blockId);
+    let finalBlockNotes = buildNotesForDuration();
     if (existingIdx >= 0) {
       const prev = workingBlocks[existingIdx];
+      const prevDur = Math.max(15, toMins(prev.endTime) - toMins(prev.startTime));
+      finalBlockNotes = buildNotesForDuration(prevDur);
       const nextCompleted = prev.completed || isAlreadyDone;
       const linksChanged = JSON.stringify(prev.links || []) !== JSON.stringify(blockLinks);
       const metaChanged = JSON.stringify(prev.autoMeta || null) !== JSON.stringify(blockAutoMeta);
+      const hintChanged = prev.startingStepHint !== undefined;
       if (
         prev.title !== blockTitle ||
-        prev.notes !== richNotes ||
+        prev.notes !== finalBlockNotes ||
         prev.completed !== nextCompleted ||
         linksChanged ||
-        metaChanged
+        metaChanged ||
+        hintChanged
       ) {
         workingBlocks[existingIdx] = {
           ...prev,
           title: blockTitle,
           completed: nextCompleted,
-          startingStepHint: item.startingStep,
-          notes: richNotes,
+          startingStepHint: undefined,
+          notes: finalBlockNotes,
           links: blockLinks.length ? blockLinks : undefined,
           autoMeta: blockAutoMeta,
           updatedAt: new Date().toISOString(),
@@ -1219,8 +1323,7 @@ export function applyExtractedAssignmentsToSchedule(params: {
         customColor: course.color,
         ...(promptAtStart ? { alertOffsetMinutes: 0 } : {}),
         assignedIdeaId: ideaId,
-        startingStepHint: item.startingStep,
-        notes: richNotes,
+        notes: finalBlockNotes,
         ...(blockLinks.length ? { links: blockLinks } : {}),
         autoMeta: blockAutoMeta,
         updatedAt: new Date().toISOString(),
@@ -1238,8 +1341,8 @@ export function applyExtractedAssignmentsToSchedule(params: {
       workingIdeas[existingIdeaIdx] = {
         ...workingIdeas[existingIdeaIdx],
         title: blockTitle,
-        startingStep: item.startingStep,
-        notes: richNotes.replace(META_TAG_REGEX, '').trim(),
+        startingStep: cleanStartingStep,
+        notes: finalBlockNotes,
         estimatedMinutes: durationMinutes,
         status: isDone ? 'completed' : workingIdeas[existingIdeaIdx].status,
         updatedAt: new Date().toISOString(),
@@ -1253,8 +1356,8 @@ export function applyExtractedAssignmentsToSchedule(params: {
         project: course.projectFolder,
         priorityRank: folderCount + 1,
         title: blockTitle,
-        startingStep: item.startingStep,
-        notes: richNotes.replace(META_TAG_REGEX, '').trim(),
+        startingStep: cleanStartingStep,
+        notes: finalBlockNotes,
         isBottleneck: item.category === 'lab' || isTestOrQuiz,
         status: isDone ? 'completed' : 'active',
         estimatedMinutes: durationMinutes,
