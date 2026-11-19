@@ -5862,3 +5862,52 @@ html.is-schedule-locked #root {
 .gcal-ev.is-small-expandable:active .gcal-resize-handle.is-bottom::after {
   opacity: 0.9;
 }
+
+/* Tight rails: hug the label cards so overlaps keep nearly full width */
+.gcal-rail-hit {
+  width: 9px;
+}
+
+.gcal-rail-hit.is-week {
+  width: 8px;
+}
+
+.gcal-rail-line {
+  left: 3px;
+  width: 3px;
+  opacity: 0.95;
+}
+
+.gcal-rail-hit.is-week .gcal-rail-line {
+  left: 3px;
+  width: 2px;
+}
+
+.gcal-rail-dot {
+  box-shadow: 0 0 0 1.5px var(--bg-surface);
+}
+
+.gcal-rail-dot.is-start {
+  top: -1px;
+  width: 7px;
+  height: 7px;
+}
+
+.gcal-rail-dot.is-end {
+  width: 7px;
+  height: 2.5px;
+}
+
+.gcal-rail-hit.is-week .gcal-rail-dot.is-start {
+  width: 5px;
+  height: 5px;
+}
+
+.gcal-rail-hit.is-week .gcal-rail-dot.is-end {
+  width: 5px;
+  height: 2px;
+}
+
+.gcal-rail-connector {
+  height: 1.5px;
+}

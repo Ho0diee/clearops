@@ -180,6 +180,8 @@ function layoutColumn(blocks: CalendarBlock[]): Positioned[] {
 /** Placement for one event in a day column (label card geometry + optional duration rail). */
 interface SmartPlaced {
   block: CalendarBlock;
+  /** Display-only color so overlapping events never share a color (data is untouched). */
+  displayColor?: EventColorId;
   railed: boolean;
   hasRail: boolean;
   top: number;
@@ -196,8 +198,85 @@ interface SmartPlaced {
 
 const RAIL_LABEL_CAP_MIN = 60;
 
-function railGeometry(isWeek: boolean): { railW: number; pitch: number; lead: number } {
-  return isWeek ? { railW: 3, pitch: 5, lead: 1 } : { railW: 4, pitch: 8, lead: 2 };
+const COLOR_FAMILY_BY_ID: Record<EventColorId, string> = {
+  crimson: 'red',
+  coral: 'orange',
+  amber: 'gold',
+  emerald: 'green',
+  teal: 'teal',
+  sky: 'blue',
+  cobalt: 'blue',
+  violet: 'purple',
+  pink: 'pink',
+  slate: 'gray',
+};
+
+/** Distinct, high-contrast fallback order used when overlapping events would otherwise match. */
+const DISTINCT_PALETTE: EventColorId[] = [
+  'violet',
+  'emerald',
+  'coral',
+  'pink',
+  'teal',
+  'amber',
+  'cobalt',
+  'crimson',
+  'slate',
+];
+
+function colorFamilyOf(b: CalendarBlock): string {
+  if (b.customColor) return COLOR_FAMILY_BY_ID[b.customColor] ?? b.customColor;
+  if (b.kind === 'baseline') {
+    switch (b.whyCategory) {
+      case 'School':
+        return 'blue';
+      case 'Health':
+        return 'green';
+      case 'Family':
+        return 'red';
+      default:
+        return 'purple';
+    }
+  }
+  if (b.kind === 'empty-zone') return isOpenZone(b) ? 'zone-open' : 'green';
+  if (b.kind === 'goal-session') return 'orange';
+  return 'blue';
+}
+
+/**
+ * Gives every event in an overlap group its own color family. Events with a color the user picked
+ * keep it first; others that would clash get the next unused high-contrast color (display only).
+ */
+function assignDistinctColors(group: CalendarBlock[]): Map<string, EventColorId> {
+  const overrides = new Map<string, EventColorId>();
+  if (group.length < 2) return overrides;
+  const used = new Set<string>();
+  const ordered = [...group].sort((a, b) => {
+    const ac = a.customColor ? 0 : 1;
+    const bc = b.customColor ? 0 : 1;
+    if (ac !== bc) return ac - bc;
+    return toMin(a.startTime) - toMin(b.startTime);
+  });
+  for (const b of ordered) {
+    const fam = colorFamilyOf(b);
+    if (fam === 'zone-open' || !used.has(fam)) {
+      used.add(fam);
+      continue;
+    }
+    const pick = DISTINCT_PALETTE.find((id) => !used.has(COLOR_FAMILY_BY_ID[id]));
+    if (pick) {
+      overrides.set(b.id, pick);
+      used.add(COLOR_FAMILY_BY_ID[pick]);
+    }
+  }
+  return overrides;
+}
+
+function railGeometry(isWeek: boolean): { railW: number; pitch: number; lead: number; gap: number } {
+  // Tight rails: the line hugs the card so overlaps keep almost the full width of a lone event
+  return isWeek
+    ? { railW: 2, pitch: 3, lead: 1, gap: 1 }
+    : { railW: 3, pitch: 5, lead: 1, gap: 2 };
 }
 
 /**
@@ -218,7 +297,7 @@ function layoutColumnSmart(
   const minFullPx = isWeek ? 18 : 22;
   const minLabelPx = isWeek ? 30 : 30;
   const capLabelPx = (RAIL_LABEL_CAP_MIN / 60) * hourHeight - 2;
-  const { pitch, lead } = railGeometry(isWeek);
+  const { pitch, lead, gap } = railGeometry(isWeek);
 
   const items = blocks
     .map((b) => {
@@ -278,6 +357,7 @@ function layoutColumnSmart(
     // 2) Day view short overlaps → classic side-by-side columns
     if (cluster.length > 1 && !isWeek && !hasLong && !collidesWithPrevLabel) {
       const laid = layoutColumn(cluster.map((it) => it.block));
+      const clusterColors = assignDistinctColors(cluster.map((it) => it.block));
       let maxBottom = cursorPx;
       laid.forEach(({ block, col, cols }) => {
         const s = toMin(block.startTime);
@@ -292,6 +372,7 @@ function layoutColumnSmart(
         maxBottom = Math.max(maxBottom, top + height);
         out.push({
           block,
+          displayColor: clusterColors.get(block.id),
           railed: false,
           hasRail: false,
           top,
@@ -312,6 +393,7 @@ function layoutColumnSmart(
 
     // 3) Rail mode: stacked label cards (≤ ~1h tall) + duration rails only where needed
     type RailItem = (typeof cluster)[number];
+    const railColors = assignDistinctColors(cluster.map((it) => it.block));
     const isLongItem = (it: RailItem) => it.e - it.s > RAIL_LABEL_CAP_MIN + 10;
     const labelHeightOf = (it: RailItem) => {
       const durPx = ((it.e - it.s) / 60) * hourHeight;
@@ -385,7 +467,7 @@ function layoutColumnSmart(
         laneOf.set(p.it, lane);
       });
     const indentPx = laneEnds.length
-      ? laneEnds.length * pitch + lead + (isWeek ? 1 : 3)
+      ? laneEnds.length * pitch + lead + gap
       : isWeek
       ? 1
       : 2;
@@ -394,6 +476,7 @@ function layoutColumnSmart(
       const durPx = ((p.it.e - p.it.s) / 60) * hourHeight;
       out.push({
         block: p.it.block,
+        displayColor: railColors.get(p.it.block.id),
         railed: true,
         hasRail: p.needsRail,
         top: p.top,
@@ -1042,7 +1125,9 @@ const CalendarPane = memo<CalendarPaneProps>(
                     );
 
                 const laneX = rail.lead + placed.lane * rail.pitch;
-                const colorCls = eventClass(effectiveBlock);
+                const colorCls = placed.displayColor
+                  ? `gcal-ev-color-${placed.displayColor}`
+                  : eventClass(effectiveBlock);
                 const railStateCls = `${effectiveBlock.completed ? 'is-done' : ''} ${
                   isBeingDragged || isVoiceMoveSource ? 'is-drag-origin' : ''
                 }`;
@@ -1056,7 +1141,7 @@ const CalendarPane = memo<CalendarPaneProps>(
                         style={{
                           top: placed.railTop,
                           height: placed.railHeight,
-                          left: laneX - (isWeek ? 3 : 4),
+                          left: laneX - 3,
                         }}
                         aria-hidden="true"
                         onPointerDown={
@@ -1115,12 +1200,12 @@ const CalendarPane = memo<CalendarPaneProps>(
                       top,
                       height,
                       left: isRailed
-                        ? `calc(${placed.indentPx}px + (100% - ${placed.indentPx + (isWeek ? 1 : 3)}px) * ${
+                        ? `calc(${placed.indentPx}px + (100% - ${placed.indentPx + (isWeek ? 1 : 2)}px) * ${
                             col / cols
                           })`
                         : `calc(${(col / cols) * 100}% + 1px)`,
                       width: isRailed
-                        ? `calc((100% - ${placed.indentPx + (isWeek ? 1 : 3)}px) / ${cols} - ${
+                        ? `calc((100% - ${placed.indentPx + (isWeek ? 1 : 2)}px) / ${cols} - ${
                             cols > 1 ? 3 : 0
                           }px)`
                         : `calc(${100 / cols}% - ${isWeek ? 2 : 4}px)`,
