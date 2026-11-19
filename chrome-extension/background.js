@@ -12,8 +12,8 @@ const DEFAULTS = {
 };
 
 const AUTO_SYNC_ALARM = 'intuition-auto-sync';
-const MAX_EXPAND_ROWS_PER_CLASS = 20;
-const MAX_DETAIL_PAGES_PER_COURSE = 6;
+const MAX_EXPAND_ROWS_PER_CLASS = 18;
+const MAX_DETAIL_PAGES_PER_COURSE = 3;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -361,10 +361,11 @@ async function detectSchoolClassroomSlot(targetClassIds) {
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
           const start = Date.now();
           while (Date.now() - start < 15000) {
-            const links = document.querySelectorAll('a[href*="/c/"]').length;
-            const mainEl = document.querySelector('[role="main"]') || document.body;
+            const cards = document.querySelectorAll('[data-course-id]').length;
+            const mainEl = document.querySelector('main, [role="main"]') || document.body;
+            const mainLinks = mainEl ? mainEl.querySelectorAll('a[href*="/c/"]').length : 0;
             const mainTxt = (mainEl?.innerText || '').trim();
-            if (links > 0) break;
+            if (cards > 0 || mainLinks > 0) break;
             if (
               Date.now() - start > 5000 &&
               /create or join your first class|don'?t see your existing classes|add a class to get started|no classes/i.test(
@@ -375,7 +376,7 @@ async function detectSchoolClassroomSlot(targetClassIds) {
             }
             await wait(350);
           }
-          await wait(1000);
+          await wait(1200);
 
           // Extract signed-in email from Google account button aria-label or title
           let email = null;
@@ -394,20 +395,35 @@ async function detectSchoolClassroomSlot(targetClassIds) {
           const dataCourseIds = Array.from(document.querySelectorAll('[data-course-id]'))
             .map((el) => el.getAttribute('data-course-id') || '')
             .filter(Boolean);
+          const encodedCourseIds = [];
+          for (const rawId of dataCourseIds) {
+            encodedCourseIds.push(rawId);
+            try {
+              encodedCourseIds.push(btoa(rawId).replace(/=+$/, ''));
+            } catch {}
+          }
           const uniqueClassIds = Array.from(
             new Set([
               ...hrefs
                 .map((h) => h.match(/\/c\/([A-Za-z0-9_-]+)/)?.[1])
                 .filter(Boolean),
-              ...dataCourseIds,
+              ...encodedCourseIds,
             ])
           );
-          const matchedClassIds = idsToFind.filter((id) => uniqueClassIds.includes(id));
+          const matchedClassIds = idsToFind.filter((id) =>
+            uniqueClassIds.some((u) => u === id || u.replace(/=+$/, '') === id.replace(/=+$/, ''))
+          );
+          const visibleCardCount = Math.max(
+            dataCourseIds.length,
+            Array.from(
+              new Set(hrefs.map((h) => h.match(/\/c\/([A-Za-z0-9_-]+)/)?.[1]).filter(Boolean))
+            ).length
+          );
 
           return {
             finalUrl: window.location.href,
             email,
-            classCount: uniqueClassIds.length,
+            classCount: visibleCardCount,
             matchedClassIds,
             sampleText: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 180),
           };
@@ -519,12 +535,21 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
         args: [expectedClassId || '', viewKind, maxExpandRows],
         func: async (classId, view, maxExpand) => {
           const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+          // Classroom Classwork uses <main> without role="main"; Stream uses <main role="main">
           const getMain = () =>
-            document.querySelector('[role="main"]') ||
-            document.querySelector('main') ||
-            document.body;
+            document.querySelector('main, [role="main"]') || document.body;
 
-          // Wait up to 20s for real Classroom content inside [role="main"]
+          const noiseLineRegex =
+            /^(More options|Options|Add class comment|Send|Post|Skip to main content|Google apps|Main menu|Copy link|Report abuse|View instructions|View material)$/i;
+
+          const cleanTextLines = (raw) =>
+            String(raw || '')
+              .replace(/\r/g, '')
+              .split('\n')
+              .map((l) => l.trim())
+              .filter((l) => l && !noiseLineRegex.test(l));
+
+          // Wait up to 20s for real Classroom content inside <main> (or detect wrong-account dialog in body!)
           const start = Date.now();
           while (Date.now() - start < 20000) {
             const href = window.location.href;
@@ -532,33 +557,38 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
 
             const mainEl = getMain();
             const mainTxt = (mainEl?.innerText || '').trim();
-            const itemCount = mainEl
-              ? mainEl.querySelectorAll('[data-stream-item-id], [data-item-id], ol li, [role="listitem"]').length
+            const bodyTxt = (document.body?.innerText || '').trim();
+            const rowCount = mainEl
+              ? mainEl.querySelectorAll('li[data-stream-item-id]').length
               : 0;
 
+            // Classroom renders "Class not found" inside a dialog outside <main> — check full bodyTxt!
             if (
-              /class not found|don'?t have access|sign in to continue|create or join/i.test(mainTxt) &&
-              itemCount === 0 &&
-              Date.now() - start > 3000
+              rowCount === 0 &&
+              Date.now() - start > 2500 &&
+              /class not found|look for it in|you don'?t have access|sign in to continue|choose an account|create or join your first class/i.test(
+                bodyTxt
+              )
             ) {
               break;
             }
 
             const hasMarkers =
-              /(Due\s|Posted\s|Edited\s|No due date|Turned in|Assigned|Missing|Graded|View instructions|Material|Assignment|Announce something)/i.test(
+              /(Due\s|Posted\s|Edited\s|No due date|Turned in|Assigned|Missing|Graded|View instructions|Upcoming|Announce something)/i.test(
                 mainTxt
               );
-            if ((itemCount >= 2 && mainTxt.length > 140) || (hasMarkers && mainTxt.length > 220)) {
+            if ((rowCount >= 1 && mainTxt.length > 80) || (hasMarkers && mainTxt.length > 180)) {
               break;
             }
-            await wait(350);
+            await wait(300);
           }
-          await wait(1400);
+          await wait(1100);
 
           const finalHref = window.location.href;
           const mainRoot = getMain();
-          const preText = (mainRoot?.innerText || document.body?.innerText || '').trim();
-          const snippet = preText.replace(/\s+/g, ' ').slice(0, 180);
+          const mainPreText = (mainRoot?.innerText || '').trim();
+          const bodyPreText = (document.body?.innerText || '').trim();
+          const snippet = (mainPreText || bodyPreText).replace(/\s+/g, ' ').slice(0, 200);
 
           if (classId && !finalHref.includes(classId)) {
             return {
@@ -572,15 +602,16 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
             };
           }
 
-          const rawItems = mainRoot
-            ? Array.from(mainRoot.querySelectorAll('li[data-stream-item-id], [data-stream-item-id]'))
+          // Strict selector: ONLY the top-level <li data-stream-item-id> assignment rows (1 per assignment!)
+          const classworkRows = mainRoot
+            ? Array.from(mainRoot.querySelectorAll('li[data-stream-item-id]'))
             : [];
 
           if (
-            rawItems.length === 0 &&
-            preText.length < 1600 &&
+            classworkRows.length === 0 &&
+            bodyPreText.length < 2200 &&
             /class not found|look for it in|you don'?t have access|sign in to continue|choose an account|create or join/i.test(
-              preText
+              bodyPreText
             )
           ) {
             return {
@@ -594,45 +625,97 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
             };
           }
 
-          // Expand up to `maxExpand` Classwork rows IN-PLACE so full descriptions & due dates render
-          let expandedCount = 0;
-          if (view === 'w' && mainRoot) {
-            const candidateRows =
-              rawItems.length > 0
-                ? rawItems
-                : Array.from(mainRoot.querySelectorAll('ol > li, [role="listitem"]')).filter(
-                    (li) => (li.innerText || '').trim().length > 12
-                  );
+          const detailLinks = [];
+          const seenLinks = new Set();
+          const detailRegex =
+            /^https:\/\/classroom\.google\.com\/(?:u\/\d+\/)?c\/[A-Za-z0-9_-]+\/(?:a|sa|m|p)\/[A-Za-z0-9_-]+\/details/i;
 
-            const clickedEls = new Set();
-            for (const row of candidateRows.slice(0, maxExpand)) {
+          const collectLinksFrom = (rootEl) => {
+            const foundHere = [];
+            if (!rootEl) return foundHere;
+            for (const a of Array.from(rootEl.querySelectorAll('a[href]'))) {
+              const cleanHref = (a.href || '').split('?')[0].split('#')[0];
+              if (detailRegex.test(cleanHref)) {
+                foundHere.push(cleanHref);
+                if (!seenLinks.has(cleanHref)) {
+                  seenLinks.add(cleanHref);
+                  detailLinks.push(cleanHref);
+                }
+              }
+            }
+            return foundHere;
+          };
+
+          // CRITICAL: Classroom Classwork is a SINGLE-OPEN ACCORDION — clicking row i+1 collapses row i!
+          // So we expand row i, wait for aria-expanded="true", and IMMEDIATELY capture its full expanded text + /details URL!
+          let expandedCount = 0;
+          const capturedItems = [];
+
+          if (view === 'w' && mainRoot && classworkRows.length > 0) {
+            for (let idx = 0; idx < Math.min(classworkRows.length, maxExpand); idx++) {
+              const row = classworkRows[idx];
               try {
                 row.scrollIntoView({ block: 'center', behavior: 'instant' });
-                await wait(80);
+                await wait(60);
 
                 const toggle =
-                  row.querySelector('[aria-expanded="false"]:not([aria-label*="More options"]):not([aria-label*="Topic"])') ||
-                  row.querySelector('[role="button"]:not([aria-label*="More options"]):not([aria-label*="options"]):not(a)') ||
-                  row.querySelector('[tabindex="0"]:not(a):not([aria-label*="More options"])');
+                  row.querySelector('div[jsname="rQC7Ie"]') ||
+                  row.querySelector('[aria-expanded]:not([aria-label*="More options"])') ||
+                  row.querySelector('.xVnXCf');
 
-                if (toggle && !clickedEls.has(toggle)) {
-                  if (toggle.getAttribute('aria-expanded') === 'true') continue;
-                  clickedEls.add(toggle);
-                  toggle.click();
-                  expandedCount += 1;
-                  await wait(220);
+                if (toggle) {
+                  const wasExpanded = toggle.getAttribute('aria-expanded') === 'true';
+                  if (!wasExpanded) {
+                    toggle.click();
+                    const tStart = Date.now();
+                    while (Date.now() - tStart < 900) {
+                      const expandedNow =
+                        toggle.getAttribute('aria-expanded') === 'true' ||
+                        row.querySelector('[aria-expanded="true"]') ||
+                        row.querySelector('a[href*="/details"]');
+                      if (expandedNow) break;
+                      await wait(80);
+                    }
+                    await wait(160);
+                  }
+                  const isNowExpanded =
+                    toggle.getAttribute('aria-expanded') === 'true' ||
+                    Boolean(row.querySelector('[aria-expanded="true"]')) ||
+                    Boolean(row.querySelector('a[href*="/details"]'));
+                  if (isNowExpanded) {
+                    expandedCount += 1;
+                  }
+                }
+
+                // Expand any "Read more" inside this row
+                const moreBtns = Array.from(row.querySelectorAll('button, [role="button"]')).filter(
+                  (el) => /^(read more|show more|view more)$/i.test((el.textContent || '').trim())
+                );
+                for (const b of moreBtns) {
+                  try {
+                    b.click();
+                    await wait(120);
+                  } catch {}
+                }
+
+                const rowLinks = collectLinksFrom(row);
+                const rowLines = cleanTextLines(row.innerText || '');
+                if (rowLines.length > 0) {
+                  const block = [
+                    `--- CLASSWORK ITEM ${idx + 1} ---`,
+                    ...rowLines,
+                    ...(rowLinks[0] ? [`Detail URL: ${rowLinks[0]}`] : []),
+                  ].join('\n');
+                  capturedItems.push(block);
                 }
               } catch {}
             }
-
-            if (expandedCount > 0) {
-              await wait(1200);
-            }
           }
 
-          // Click any "Read more" / "Show more" toggles
-          if (mainRoot) {
-            const moreBtns = Array.from(mainRoot.querySelectorAll('button, [role="button"]'))
+          // For Stream (or fallback if no li[data-stream-item-id] matched), expand "Show more" & capture main
+          const scanRoot = mainRoot || document.body;
+          if (view !== 'w' || capturedItems.length === 0) {
+            const moreBtns = Array.from(scanRoot.querySelectorAll('button, [role="button"]'))
               .filter((el) => /^(read more|show more|view more)$/i.test((el.textContent || '').trim()))
               .slice(0, 10);
             for (const btn of moreBtns) {
@@ -641,46 +724,47 @@ async function scrapeClassroomViewInFreshTab(url, expectedClassId, viewKind, max
                 await wait(140);
               } catch {}
             }
-            if (moreBtns.length > 0) await wait(600);
+            if (moreBtns.length > 0) await wait(500);
           }
 
-          // Collect ALL unique /details links
-          const detailLinks = [];
-          const seenLinks = new Set();
-          const detailRegex =
-            /^https:\/\/classroom\.google\.com\/(?:u\/\d+\/)?c\/[A-Za-z0-9_-]+\/(?:a|sa|m|p)\/[A-Za-z0-9_-]+\/details/i;
+          collectLinksFrom(scanRoot);
 
-          const scanRoot = mainRoot || document.body;
-          for (const a of Array.from(scanRoot.querySelectorAll('a[href]'))) {
-            const cleanHref = (a.href || '').split('?')[0].split('#')[0];
-            if (detailRegex.test(cleanHref) && !seenLinks.has(cleanHref)) {
-              seenLinks.add(cleanHref);
-              detailLinks.push(cleanHref);
-            }
+          let finalText = '';
+          if (capturedItems.length > 0) {
+            const heading = (document.title || '').replace(/\s*-\s*Classroom$/i, '').trim();
+            finalText = [
+              heading ? `Course Page: ${heading}` : '',
+              ...capturedItems,
+            ]
+              .filter(Boolean)
+              .join('\n\n')
+              .slice(0, 52000);
+          } else {
+            finalText = cleanTextLines(scanRoot.innerText || '').join('\n').slice(0, 48000);
           }
 
-          const cleanedLines = (scanRoot.innerText || '')
-            .replace(/\r/g, '')
-            .split('\n')
-            .map((l) => l.trim())
-            .filter(
-              (l) =>
-                l &&
-                !/^(More options|Options|Add class comment|Send|Post|Skip to main content|Google apps|Main menu|Copy link|Report abuse)$/i.test(
-                  l
-                )
-            );
-
-          const finalText = cleanedLines.join('\n').slice(0, 48000);
+          if (finalText.length <= 40) {
+            return {
+              ok: false,
+              wrongAccountOrMissing: true,
+              finalUrl: finalHref,
+              title: document.title || 'Google Classroom',
+              error: `Empty content (${finalText.length} chars) on ${finalHref} (body: "${bodyPreText.replace(/\s+/g, ' ').slice(0, 160)}")`,
+              text: finalText,
+              detailLinks,
+              expandedCount,
+              rowCount: classworkRows.length,
+            };
+          }
 
           return {
-            ok: finalText.length > 40,
+            ok: true,
             finalUrl: finalHref,
             title: document.title || 'Google Classroom',
             text: finalText,
             detailLinks,
             expandedCount,
-            rowCount: rawItems.length,
+            rowCount: classworkRows.length,
           };
         },
       });
@@ -733,17 +817,15 @@ async function scrapeClassroomDetailInFreshTab(detailUrl) {
       func: async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const getMain = () =>
-          document.querySelector('[role="main"]') ||
-          document.querySelector('main') ||
-          document.body;
+          document.querySelector('main, [role="main"]') || document.body;
 
         const start = Date.now();
-        while (Date.now() - start < 8000) {
+        while (Date.now() - start < 9000) {
           const txt = (getMain()?.innerText || '').trim();
-          if (txt.length > 100 && window.location.href.includes('/details')) break;
+          if (txt.length > 80 && window.location.href.includes('/details')) break;
           await wait(250);
         }
-        await wait(900);
+        await wait(800);
 
         const mainRoot = getMain();
         const expanders = Array.from(mainRoot.querySelectorAll('button, [role="button"]'))
@@ -759,7 +841,16 @@ async function scrapeClassroomDetailInFreshTab(detailUrl) {
         }
         if (expanders.length > 0) await wait(400);
 
-        const text = (mainRoot.innerText || '')
+        // Also capture [role="complementary"] ("Your work" status: Assigned / Turned in / Missing / Graded)
+        const asideEl = document.querySelector('[role="complementary"], aside');
+        const combinedRaw = [
+          mainRoot.innerText || '',
+          asideEl ? `--- Student Work Status ---\n${asideEl.innerText || ''}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+
+        const text = combinedRaw
           .replace(/\r/g, '')
           .split('\n')
           .map((l) => l.trim())
