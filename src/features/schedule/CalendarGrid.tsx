@@ -10,12 +10,19 @@ import React, {
 import { createPortal } from 'react-dom';
 import {
   Activity,
+  AlignLeft,
   ArrowRight,
   Bell,
+  CalendarDays,
   Check,
   ChevronLeft,
   ChevronRight,
+  ChevronsUpDown,
+  Clock,
+  Compass,
   ExternalLink,
+  Hourglass,
+  Palette,
   Sparkles,
   Trash2,
   X,
@@ -260,40 +267,104 @@ function resolveWhyDefaultHex(why?: WhyCategory): string {
   }
 }
 
+const FormRow: React.FC<{
+  icon?: React.ReactNode;
+  label: string;
+  children: React.ReactNode;
+}> = ({ icon, label, children }) => (
+  <div className="gcal-form-row">
+    <span className="gcal-form-label">
+      <span className="gcal-form-icon" aria-hidden="true">
+        {icon}
+      </span>
+      <span>{label}</span>
+    </span>
+    <div className="gcal-form-control">{children}</div>
+  </div>
+);
+
+function formatDayPillLabel(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+/**
+ * Cross-browser picker: shows a styled value pill and lays the native <select> invisibly on top,
+ * so tapping still opens the OS picker but no browser-drawn arrows or misaligned text ever show.
+ */
+const PickerSelect: React.FC<{
+  value: string;
+  ariaLabel: string;
+  options: { value: string; label: string }[];
+  onChange: (next: string) => void;
+  active?: boolean;
+  dotHex?: string;
+}> = ({ value, ariaLabel, options, onChange, active, dotHex }) => {
+  const selected = options.find((o) => o.value === value);
+  return (
+    <label className={`gcal-picker ${active ? 'is-on' : ''} ${dotHex ? 'has-dot' : ''}`.trim()}>
+      {dotHex && (
+        <span className="gcal-picker-dot" style={{ backgroundColor: dotHex }} aria-hidden="true" />
+      )}
+      <span className="gcal-picker-text">{selected?.label ?? value}</span>
+      <ChevronsUpDown size={13} className="gcal-picker-chevron" aria-hidden="true" />
+      <select
+        className="gcal-picker-native"
+        aria-label={ariaLabel}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+};
+
 const MoveDayControl: React.FC<{
   date: string;
   ariaLabel: string;
   onChangeDate: (nextDate: string) => void;
 }> = ({ date, ariaLabel, onChangeDate }) => (
-  <div className="gcal-day-row">
-    <button
-      type="button"
-      className="gcal-day-step-btn"
-      aria-label="Move to previous day"
-      title="Previous day"
-      onClick={() => onChangeDate(addDaysISO(date, -1))}
-    >
-      <ChevronLeft size={16} />
-    </button>
-    <input
-      type="date"
-      className="ui-input gcal-day-input"
-      aria-label={ariaLabel}
-      value={date}
-      onChange={(e) => {
-        if (e.target.value) onChangeDate(e.target.value);
-      }}
-    />
-    <button
-      type="button"
-      className="gcal-day-step-btn"
-      aria-label="Move to next day"
-      title="Next day"
-      onClick={() => onChangeDate(addDaysISO(date, 1))}
-    >
-      <ChevronRight size={16} />
-    </button>
-  </div>
+  <FormRow icon={<CalendarDays size={16} />} label="Date">
+    <div className="gcal-day-stepper">
+      <button
+        type="button"
+        className="gcal-day-step-btn"
+        aria-label="Move to previous day"
+        title="Previous day"
+        onClick={() => onChangeDate(addDaysISO(date, -1))}
+      >
+        <ChevronLeft size={17} />
+      </button>
+      <label className="gcal-day-pill">
+        <span>{formatDayPillLabel(date)}</span>
+        <input
+          type="date"
+          className="gcal-day-native"
+          aria-label={ariaLabel}
+          value={date}
+          onChange={(e) => {
+            if (e.target.value) onChangeDate(e.target.value);
+          }}
+        />
+      </label>
+      <button
+        type="button"
+        className="gcal-day-step-btn"
+        aria-label="Move to next day"
+        title="Next day"
+        onClick={() => onChangeDate(addDaysISO(date, 1))}
+      >
+        <ChevronRight size={17} />
+      </button>
+    </div>
+  </FormRow>
 );
 
 const TimeAndLengthRow: React.FC<{
@@ -308,55 +379,46 @@ const TimeAndLengthRow: React.FC<{
   const isPreset = DURATION_DROPDOWN_OPTIONS.some((o) => o.mins === curDur);
 
   return (
-    <div className="gcal-time-dropdown-grid">
-      <label className="gcal-mini-field">
-        <span className="gcal-mini-label">Starts</span>
+    <>
+      <FormRow icon={<Clock size={16} />} label="Starts">
         <input
           type="time"
-          className="ui-input gcal-compact-input"
+          className="gcal-value-input"
           aria-label="Event start time"
           value={startTime === '24:00' ? '23:59' : startTime}
           onChange={(e) => {
             if (e.target.value) onChangeStart(e.target.value);
           }}
         />
-      </label>
-
-      <label className="gcal-mini-field">
-        <span className="gcal-mini-label">Ends</span>
+      </FormRow>
+      <FormRow label="Ends">
         <input
           type="time"
-          className="ui-input gcal-compact-input"
+          className="gcal-value-input"
           aria-label="Event end time"
           value={endTime === '24:00' ? '23:59' : endTime}
           onChange={(e) => {
             if (e.target.value) onChangeEnd(e.target.value);
           }}
         />
-      </label>
-
-      <label className="gcal-mini-field">
-        <span className="gcal-mini-label">Length</span>
-        <select
-          className="ui-select gcal-compact-select"
-          aria-label="Event duration"
+      </FormRow>
+      <FormRow icon={<Hourglass size={15} />} label="Length">
+        <PickerSelect
+          ariaLabel="Event duration"
           value={String(curDur)}
-          onChange={(e) => {
-            const mins = Number(e.target.value);
+          options={[
+            ...(!isPreset ? [{ value: String(curDur), label: formatDurationLabel(curDur) }] : []),
+            ...DURATION_DROPDOWN_OPTIONS.map((opt) => ({ value: String(opt.mins), label: opt.label })),
+          ]}
+          onChange={(v) => {
+            const mins = Number(v);
             if (Number.isFinite(mins) && mins > 0) {
               onChangeEnd(fromMin(Math.min(24 * 60, sMin + mins)));
             }
           }}
-        >
-          {!isPreset && <option value={String(curDur)}>{formatDurationLabel(curDur)}</option>}
-          {DURATION_DROPDOWN_OPTIONS.map((opt) => (
-            <option key={opt.mins} value={String(opt.mins)}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      </label>
-    </div>
+        />
+      </FormRow>
+    </>
   );
 };
 
@@ -370,7 +432,7 @@ const AutoResizeDescription: React.FC<{
     const el = ref.current;
     if (!el) return;
     el.style.height = 'auto';
-    const nextH = Math.min(340, Math.max(88, el.scrollHeight + 4));
+    const nextH = Math.min(340, Math.max(72, el.scrollHeight + 2));
     el.style.height = `${nextH}px`;
   }, [value]);
 
@@ -379,7 +441,7 @@ const AutoResizeDescription: React.FC<{
       ref={ref}
       className="ui-textarea gcal-desc-input"
       rows={3}
-      placeholder="Add description, links, or notes…"
+      placeholder="Add notes, links, or details…"
       aria-label="Event description"
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -468,19 +530,14 @@ const EventEnrichmentFields: React.FC<{
 
   return (
     <div className="gcal-enrichment-group">
-      {/* Compact Dropdowns Row: Alert + Color (+ Why when baseline event) */}
-      <div className={`gcal-options-grid ${showWhySelect ? 'has-three' : ''}`.trim()}>
-        <label className="gcal-mini-field">
-          <span className="gcal-mini-label">
-            <Bell size={11} />
-            <span>Alert</span>
-          </span>
-          <select
-            className={`ui-select gcal-compact-select ${hasAlert ? 'is-active-value' : ''}`.trim()}
-            aria-label="Event alert"
+      <div className="gcal-form-group">
+        <FormRow icon={<Bell size={16} />} label="Alert">
+          <PickerSelect
+            ariaLabel="Event alert"
             value={alertSelectValue}
-            onChange={(e) => {
-              const v = e.target.value;
+            active={hasAlert}
+            options={ALERT_DROPDOWN_OPTIONS}
+            onChange={(v) => {
               if (v === 'off') {
                 setCustomAlertOpen(false);
                 onAlertChange(undefined);
@@ -495,107 +552,80 @@ const EventEnrichmentFields: React.FC<{
               setCustomAlertOpen(false);
               onAlertChange(Number(v));
             }}
-          >
-            {ALERT_DROPDOWN_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          />
+        </FormRow>
 
-        <label className="gcal-mini-field">
-          <span className="gcal-mini-label">Color</span>
-          <div className="gcal-color-select-wrap">
-            <span
-              className="gcal-select-color-dot"
-              style={{ backgroundColor: activeColorHex }}
-              aria-hidden="true"
-            />
-            <select
-              className="ui-select gcal-compact-select has-leading-dot"
-              aria-label="Event color"
-              value={customColor ?? 'auto'}
+        {hasAlert && (customAlertOpen || isCustomAlert) && (
+          <FormRow label="Minutes before">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={10080}
+              className="gcal-value-input is-number"
+              aria-label="Minutes before event for alert"
+              value={alertOffsetMinutes}
               onChange={(e) => {
-                const v = e.target.value;
-                onColorChange(v === 'auto' ? undefined : (v as EventColorId));
+                const raw = e.target.value;
+                if (raw === '') {
+                  onAlertChange(0);
+                  return;
+                }
+                const parsed = Math.max(0, Math.min(10080, Math.round(Number(raw) || 0)));
+                onAlertChange(parsed);
               }}
-            >
-              <option value="auto">By Why</option>
-              {EVENT_COLOR_OPTIONS.map((opt) => (
-                <option key={opt.id} value={opt.id}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </label>
+            />
+          </FormRow>
+        )}
+
+        <FormRow icon={<Palette size={16} />} label="Color">
+          <PickerSelect
+            ariaLabel="Event color"
+            value={customColor ?? 'auto'}
+            dotHex={activeColorHex}
+            options={[
+              { value: 'auto', label: 'Match Why' },
+              ...EVENT_COLOR_OPTIONS.map((opt) => ({ value: opt.id, label: opt.label })),
+            ]}
+            onChange={(v) => onColorChange(v === 'auto' ? undefined : (v as EventColorId))}
+          />
+        </FormRow>
 
         {showWhySelect && onWhyChange && (
-          <label className="gcal-mini-field">
-            <span className="gcal-mini-label">Why</span>
-            <select
-              className="ui-select gcal-compact-select"
-              aria-label="Event Why category"
+          <FormRow icon={<Compass size={16} />} label="Why">
+            <PickerSelect
+              ariaLabel="Event Why category"
               value={whyCategory || 'Organization'}
-              onChange={(e) => onWhyChange(e.target.value as WhyCategory)}
-            >
-              {WHY_CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
-          </label>
+              options={WHY_CATEGORIES.map((cat) => ({ value: cat, label: cat }))}
+              onChange={(v) => onWhyChange(v as WhyCategory)}
+            />
+          </FormRow>
         )}
       </div>
 
-      {/* Only show custom lead-time input when Custom alert is picked */}
-      {hasAlert && (customAlertOpen || isCustomAlert) && (
-        <div className="gcal-alert-custom-row">
-          <span className="gcal-sheet-meta">Alert</span>
-          <input
-            type="number"
-            inputMode="numeric"
-            min={0}
-            max={10080}
-            className="ui-input gcal-alert-mins-input"
-            aria-label="Minutes before event for alert"
-            value={alertOffsetMinutes}
-            onChange={(e) => {
-              const raw = e.target.value;
-              if (raw === '') {
-                onAlertChange(0);
-                return;
-              }
-              const parsed = Math.max(0, Math.min(10080, Math.round(Number(raw) || 0)));
-              onAlertChange(parsed);
-            }}
-          />
-          <span className="gcal-sheet-meta">min before start</span>
-        </div>
-      )}
-
       {hasAlert && isIosDevice() && !isStandalonePwa() && (
         <div className="gcal-push-hint">
-          Tip: Add Intuition to Home Screen via Safari Share to get alerts when closed.
+          Tip: Add Intuition to your Home Screen (Safari → Share) to get alerts while the app is closed.
         </div>
       )}
 
-      {/* Roomy, Crystal-Clear, Auto-Expanding Description */}
-      <div className="gcal-field-block">
-        <span className="gcal-mini-label">Description</span>
+      <div className="gcal-form-group is-desc">
+        <span className="gcal-form-label">
+          <span className="gcal-form-icon" aria-hidden="true">
+            <AlignLeft size={16} />
+          </span>
+          <span>Notes</span>
+        </span>
         <AutoResizeDescription value={notes ?? ''} onChange={onNotesChange} />
         {noteLinks.length > 0 && (
-          <div className="ops-row-wrap" style={{ marginTop: 4 }}>
+          <div className="gcal-desc-links">
             {noteLinks.map((lnk) => (
               <a
                 key={lnk.url}
                 href={lnk.url}
                 target="_blank"
                 rel="noreferrer"
-                className="ui-btn ui-btn-secondary ui-btn-sm"
-                style={{ textDecoration: 'none' }}
+                className="gcal-desc-link"
                 onClick={(e) => e.stopPropagation()}
               >
                 <span>{lnk.label}</span>
@@ -2634,32 +2664,36 @@ export const CalendarGrid: React.FC<{
                 }
               />
 
-              <div className="ops-stack-sm" style={{ marginTop: 10 }}>
-                {openBlock.whyCategory && (
-                  <div className="ops-stack-xs">
-                    <div>
-                      <Badge tone="why">Why: {openBlock.whyCategory}</Badge>
-                    </div>
-                    <span className="gcal-sheet-meta">
-                      {state.whyStatements[openBlock.whyCategory]}
-                    </span>
+              {(() => {
+                const whyText = openBlock.whyCategory
+                  ? (state.whyStatements[openBlock.whyCategory] || '').trim()
+                  : '';
+                const showWhy = whyText.length > 3;
+                const showHint = Boolean(openBlock.startingStepHint);
+                const showZone = isOpenZone(openBlock);
+                if (!showWhy && !showHint && !showZone) return null;
+                return (
+                  <div className="gcal-sheet-info">
+                    {showHint && (
+                      <span className="gcal-info-chip">
+                        {openBlock.id.startsWith('ohchs-')
+                          ? openBlock.startingStepHint
+                          : `Starting step: ${openBlock.startingStepHint}`}
+                      </span>
+                    )}
+                    {showWhy && (
+                      <span className="gcal-info-why">
+                        <strong>Why {openBlock.whyCategory}:</strong> {whyText}
+                      </span>
+                    )}
+                    {showZone && (
+                      <span className="gcal-info-why">
+                        Open focus slot · ready for your next active idea.
+                      </span>
+                    )}
                   </div>
-                )}
-                {openBlock.startingStepHint && (
-                  <div>
-                    <Badge tone={openBlock.id.startsWith('ohchs-') ? 'why' : 'zone'}>
-                      {openBlock.id.startsWith('ohchs-')
-                        ? openBlock.startingStepHint
-                        : `Starting step: ${openBlock.startingStepHint}`}
-                    </Badge>
-                  </div>
-                )}
-                {isOpenZone(openBlock) && (
-                  <span className="gcal-sheet-meta">
-                    Open focus slot · ready for your next active idea.
-                  </span>
-                )}
-              </div>
+                );
+              })()}
 
               <div className="gcal-sheet-actions">
                 {openBlock.kind === 'empty-zone' && !isOpenZone(openBlock) && (

@@ -5161,3 +5161,570 @@ html.is-schedule-locked #root {
   font-size: 11.5px;
   line-height: 1.35;
 }
+
+
+/* ==========================================================================
+   Event Editor — Calm iOS-Style Grouped List (replaces cramped field grids)
+   ========================================================================== */
+
+.gcal-sheet {
+  background: #F6F5F1;
+}
+
+@media (max-width: 899px) {
+  .gcal-sheet {
+    padding: 16px 16px 18px;
+  }
+}
+
+.gcal-sheet .gcal-create-title-input {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  padding: 6px 0 8px;
+  border-bottom-color: transparent;
+}
+
+.gcal-sheet .gcal-create-title-input:focus {
+  border-bottom-color: var(--accent-primary);
+}
+
+/* Grouped cards */
+.gcal-sheet-stack,
+.gcal-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  background: var(--bg-surface);
+  border: 1px solid rgba(20, 20, 19, 0.07);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(20, 20, 19, 0.03);
+  overflow: hidden;
+}
+
+.gcal-sheet-stack {
+  margin-top: 14px !important;
+}
+
+.gcal-enrichment-group {
+  margin-top: 14px;
+  padding-top: 0;
+  border-top: none;
+  gap: 14px;
+}
+
+/* Rows */
+.gcal-form-row,
+.gcal-sheet-stack > .gcal-mini-field {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 52px;
+  padding: 7px 12px 7px 14px;
+}
+
+.gcal-form-row + .gcal-form-row::before,
+.gcal-sheet-stack > .gcal-mini-field + .gcal-mini-field::before,
+.gcal-form-row + .gcal-mini-field::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 46px;
+  right: 0;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.gcal-form-label,
+.gcal-sheet-stack > .gcal-mini-field > .gcal-mini-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 15.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
+}
+
+.gcal-sheet-stack > .gcal-mini-field > .gcal-mini-label {
+  padding-left: 32px;
+}
+
+.gcal-form-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.gcal-form-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+/* Value inputs (time / number) — soft pill values like iOS Calendar */
+.gcal-value-input,
+.gcal-sheet-stack > .gcal-mini-field > .gcal-compact-input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 124px !important;
+  min-width: 0 !important;
+  height: 36px !important;
+  padding: 0 12px !important;
+  border: none !important;
+  border-radius: 9px !important;
+  background: #EFEEE8 !important;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 16px !important;
+  font-weight: 500;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: none !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.gcal-value-input.is-number {
+  width: 84px !important;
+}
+
+.gcal-value-input:focus,
+.gcal-sheet-stack > .gcal-mini-field > .gcal-compact-input:focus {
+  outline: none;
+  background: var(--accent-primary-soft) !important;
+  color: var(--accent-primary);
+}
+
+.gcal-value-input::-webkit-date-and-time-value {
+  text-align: center;
+}
+
+/* Selects */
+.gcal-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.gcal-value-select {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 0;
+  max-width: 190px;
+  height: 36px;
+  padding: 0 30px 0 12px;
+  border: none;
+  border-radius: 9px;
+  background: #EFEEE8;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.gcal-value-select:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-primary-border);
+}
+
+.gcal-value-select.is-on {
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.gcal-select-wrap.has-dot .gcal-value-select {
+  padding-left: 30px;
+}
+
+.gcal-select-chevron {
+  position: absolute;
+  right: 10px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.gcal-value-select.is-on + .gcal-select-chevron {
+  color: var(--accent-primary);
+}
+
+.gcal-select-wrap .gcal-select-color-dot {
+  position: absolute;
+  left: 11px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+  z-index: 1;
+}
+
+/* Date stepper */
+.gcal-day-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gcal-sheet .gcal-day-step-btn {
+  width: 34px;
+  height: 36px;
+  flex: 0 0 34px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--accent-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.gcal-sheet .gcal-day-step-btn:active {
+  background: var(--accent-primary-soft);
+  transform: scale(0.94);
+}
+
+.gcal-day-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 9px;
+  background: #EFEEE8;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.gcal-day-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Notes card */
+.gcal-form-group.is-desc {
+  padding: 12px 14px 12px;
+  gap: 6px;
+}
+
+.gcal-form-group.is-desc:focus-within {
+  border-color: var(--accent-primary-border);
+}
+
+.gcal-form-group.is-desc .gcal-desc-input {
+  min-height: 72px;
+  max-height: 340px;
+  padding: 2px 0 0 32px !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0;
+  font-size: 16px !important;
+  line-height: 1.5;
+}
+
+.gcal-desc-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 32px;
+}
+
+.gcal-desc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.gcal-push-hint {
+  margin-top: -6px;
+}
+
+/* Context info under the form */
+.gcal-sheet-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 0 4px;
+}
+
+.gcal-info-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #ECEAE2;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.gcal-info-why {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.gcal-info-why strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Footer actions */
+.gcal-sheet .gcal-sheet-actions {
+  margin-top: 16px;
+}
+
+.gcal-sheet .gcal-sheet-actions .ui-btn {
+  min-height: 44px;
+  border-radius: 12px;
+}
+
+.gcal-sheet .gcal-sheet-actions .ui-btn-ghost {
+  color: var(--danger-text);
+  background: var(--bg-surface);
+  border: 1px solid rgba(20, 20, 19, 0.07);
+}
+
+/* Create-sheet type switch as a segmented control */
+.gcal-sheet .gcal-type-pills {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: #E9E7E0;
+}
+
+.gcal-sheet .gcal-type-pills .gcal-pill-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 34px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 9px;
+  font-size: 13.5px;
+}
+
+.gcal-sheet .gcal-type-pills .gcal-pill-chip.is-active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(20, 20, 19, 0.12);
+}
+
+@media (max-width: 380px) {
+  .gcal-form-row {
+    gap: 8px;
+    padding-left: 12px;
+  }
+
+  .gcal-form-label {
+    gap: 8px;
+    font-size: 15px;
+  }
+
+  .gcal-value-input {
+    width: 112px !important;
+  }
+
+  .gcal-value-select {
+    max-width: 160px;
+  }
+
+  .gcal-day-pill {
+    min-width: 100px;
+    padding: 0 8px;
+  }
+}
+
+/* ==========================================================================
+   Live Alert Notification Card — roomier, clearer hierarchy
+   ========================================================================== */
+
+.ops-live-alert-stack {
+  gap: 12px;
+}
+
+.ops-live-alert-card {
+  border-radius: 20px;
+  border: 1px solid rgba(20, 20, 19, 0.08);
+  box-shadow: 0 18px 44px rgba(20, 20, 19, 0.2), 0 2px 8px rgba(20, 20, 19, 0.06);
+}
+
+.ops-live-alert-bar {
+  width: 5px;
+}
+
+.ops-live-alert-body {
+  padding: 14px 16px 14px;
+  gap: 8px;
+}
+
+.ops-live-alert-top {
+  gap: 10px;
+}
+
+.ops-live-alert-badge {
+  padding: 4px 10px;
+  font-size: 12px;
+  gap: 6px;
+}
+
+.ops-live-alert-time {
+  font-size: 13px;
+}
+
+.ops-live-alert-close {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+.ops-live-alert-title {
+  font-size: 18px;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.ops-live-alert-desc {
+  font-size: 14px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ops-live-alert-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ops-live-alert-btn {
+  height: 40px;
+  padding: 0 10px;
+  border-radius: 12px;
+  font-size: 14px;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+
+/* Cross-browser picker pill (native <select> laid invisibly on top) */
+.gcal-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 200px;
+  height: 36px;
+  padding: 0 10px 0 12px;
+  border-radius: 9px;
+  background: #EFEEE8;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.gcal-picker.is-on {
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.gcal-picker:focus-within {
+  box-shadow: 0 0 0 2px var(--accent-primary-border);
+}
+
+.gcal-picker-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.gcal-picker-text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gcal-picker-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.gcal-picker.is-on .gcal-picker-chevron {
+  color: var(--accent-primary);
+}
+
+.gcal-picker-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+@media (max-width: 380px) {
+  .gcal-picker {
+    max-width: 165px;
+  }
+}
