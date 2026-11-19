@@ -119,7 +119,9 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     if (action === 'reprocess-cached') {
-      const res = await reprocessCachedSchoolworkCaptures();
+      const res = await reprocessCachedSchoolworkCaptures({
+        reextractWithAi: Boolean(body.reextractWithAi),
+      });
       return Response.json(res, { status: res.ok ? 200 : 400, headers });
     }
 

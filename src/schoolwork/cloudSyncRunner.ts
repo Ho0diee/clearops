@@ -64,6 +64,7 @@ export interface CourseDebugCapture {
 
 export interface SchoolworkDebugStore {
   updatedAt: string;
+  lastAudiobookCsv?: string;
   byCourse: Partial<Record<SchoolCourseId, CourseDebugCapture>>;
 }
 
@@ -74,6 +75,7 @@ export async function loadSchoolworkDebugCaptures(): Promise<SchoolworkDebugStor
     );
     return {
       updatedAt: res.data?.updatedAt || new Date().toISOString(),
+      lastAudiobookCsv: res.data?.lastAudiobookCsv,
       byCourse: res.data?.byCourse ?? {},
     };
   } catch {
@@ -85,12 +87,14 @@ export async function loadSchoolworkDebugCaptures(): Promise<SchoolworkDebugStor
 }
 
 export async function saveCourseDebugCapture(
-  capture: CourseDebugCapture
+  capture: CourseDebugCapture,
+  audiobookCsv?: string
 ): Promise<void> {
   try {
     const current = await loadSchoolworkDebugCaptures();
     const next: SchoolworkDebugStore = {
       updatedAt: new Date().toISOString(),
+      lastAudiobookCsv: audiobookCsv?.trim() ? audiobookCsv : current.lastAudiobookCsv,
       byCourse: {
         ...current.byCourse,
         [capture.courseId]: {
@@ -433,14 +437,12 @@ CONTENT:
 ${rawSlideText.slice(0, 160000)}`;
 
   const modelsToTry: Array<{ model: string; timeoutMs: number; disableThinking?: boolean }> = [
-    { model: 'gemini-2.5-flash', timeoutMs: 16_000, disableThinking: true },
     { model: 'gemini-3.5-flash-lite', timeoutMs: 14_000 },
-    { model: 'gemini-2.5-flash-lite', timeoutMs: 12_000 },
-    { model: 'gemini-flash-latest', timeoutMs: 14_000 },
+    { model: 'gemini-3.1-flash-lite', timeoutMs: 14_000 },
+    { model: 'gemini-2.5-flash', timeoutMs: 16_000, disableThinking: true },
     { model: 'gemini-3.6-flash', timeoutMs: 14_000 },
     { model: 'gemini-3.8-flash', timeoutMs: 14_000 },
     { model: 'gemini-3.5-flash', timeoutMs: 14_000 },
-    { model: 'gemini-pro-latest', timeoutMs: 18_000 },
   ];
 
   let parsed: {
@@ -655,6 +657,8 @@ export async function runAutomatedSchoolworkPipeline(options?: {
   manualSourceUrl?: string;
   manualAudiobookCsv?: string;
   manualScrapeMeta?: CourseScrapeMeta;
+  /** Pre-extracted assignments to apply directly without burning Gemini API calls */
+  preExtractedAssignments?: StandardizedExtractedAssignment[];
   forceExtract?: boolean;
 }): Promise<{
   ok: boolean;
@@ -684,7 +688,12 @@ export async function runAutomatedSchoolworkPipeline(options?: {
     assignments: StandardizedExtractedAssignment[];
   }> = [];
 
-  if (options?.manualRawSlideText && options.manualCourseId) {
+  if (options?.preExtractedAssignments && options.preExtractedAssignments.length > 0) {
+    extractedAll.push(...options.preExtractedAssignments);
+    summaries.push(
+      `Re-applied formatting & schedule rules to ${options.preExtractedAssignments.length} cached assignment(s).`
+    );
+  } else if (options?.manualRawSlideText && options.manualCourseId) {
     if (!creds.geminiApiKey) {
       throw new Error('Missing GEMINI_API_KEY in Vercel environment or automation config.');
     }
@@ -940,21 +949,24 @@ export async function runAutomatedSchoolworkPipeline(options?: {
   await saveAutomationConfig(cfg);
 
   for (const cap of pendingCaptures) {
-    await saveCourseDebugCapture({
-      courseId: cap.courseId,
-      capturedAt: cfg.lastRunAt,
-      ok: true,
-      slideTitle: cap.slideTitle,
-      sourceUrl: cap.sourceUrl,
-      rawCharCount: cap.rawText.length,
-      rawText: cap.rawText,
-      scrapeMeta: cap.scrapeMeta,
-      aiModelUsed: cap.aiModelUsed,
-      aiSummary: cap.aiSummary,
-      extractedAssignments: cap.assignments,
-      addedCount: writeRes.addedCount,
-      updatedCount: writeRes.updatedCount,
-    });
+    await saveCourseDebugCapture(
+      {
+        courseId: cap.courseId,
+        capturedAt: cfg.lastRunAt,
+        ok: true,
+        slideTitle: cap.slideTitle,
+        sourceUrl: cap.sourceUrl,
+        rawCharCount: cap.rawText.length,
+        rawText: cap.rawText,
+        scrapeMeta: cap.scrapeMeta,
+        aiModelUsed: cap.aiModelUsed,
+        aiSummary: cap.aiSummary,
+        extractedAssignments: cap.assignments,
+        addedCount: writeRes.addedCount,
+        updatedCount: writeRes.updatedCount,
+      },
+      options?.manualAudiobookCsv
+    );
   }
 
   return {
@@ -1078,7 +1090,9 @@ export async function wipeSyncedSchoolworkData(): Promise<{
  * already-cached raw Classroom & Slide captures saved from the last Cloud PC sync — ZERO need
  * to open the Cloud PC or wait 6 hours after updating any rules on Vercel!
  */
-export async function reprocessCachedSchoolworkCaptures(): Promise<{
+export async function reprocessCachedSchoolworkCaptures(options?: {
+  reextractWithAi?: boolean;
+}): Promise<{
   ok: boolean;
   reprocessedCourses: string[];
   addedCount: number;
@@ -1089,7 +1103,7 @@ export async function reprocessCachedSchoolworkCaptures(): Promise<{
   const order: SchoolCourseId[] = ['eco', 'lit', 'precalc', 'physics'];
   const validCourses = order.filter((cid) => {
     const cap = captures.byCourse[cid];
-    return Boolean(cap && cap.ok && cap.rawText && cap.rawText.trim().length > 20);
+    return Boolean(cap && cap.ok && (cap.extractedAssignments?.length || cap.rawText?.trim()));
   });
 
   if (validCourses.length === 0) {
@@ -1102,15 +1116,36 @@ export async function reprocessCachedSchoolworkCaptures(): Promise<{
     };
   }
 
+  // Fast instant mode (default): re-apply latest formatting, links, durations & scheduling to cached AI extractions (0 Gemini quota!)
+  if (!options?.reextractWithAi) {
+    const cachedAssignments = validCourses.flatMap(
+      (cid) => captures.byCourse[cid]?.extractedAssignments ?? []
+    );
+    const res = await runAutomatedSchoolworkPipeline({
+      preExtractedAssignments: cachedAssignments,
+      manualAudiobookCsv: captures.lastAudiobookCsv,
+      forceExtract: true,
+    });
+    return {
+      ok: true,
+      reprocessedCourses: validCourses,
+      addedCount: res.addedCount,
+      updatedCount: res.updatedCount,
+      summary: `Re-applied latest notes, links & scheduling rules to ${validCourses.map((c) => c.toUpperCase()).join(', ')} (+${res.addedCount} new, ${res.updatedCount} updated) without touching the Cloud PC.`,
+    };
+  }
+
   let totalAdded = 0;
   let totalUpdated = 0;
   for (const cid of validCourses) {
     const cap = captures.byCourse[cid]!;
+    if (!cap.rawText?.trim()) continue;
     const res = await runAutomatedSchoolworkPipeline({
       manualCourseId: cid,
       manualRawSlideText: cap.rawText,
       manualSlideTitle: cap.slideTitle,
       manualSourceUrl: cap.sourceUrl,
+      manualAudiobookCsv: cid === 'eco' ? captures.lastAudiobookCsv : undefined,
       manualScrapeMeta: cap.scrapeMeta,
       forceExtract: true,
     });
@@ -1123,6 +1158,6 @@ export async function reprocessCachedSchoolworkCaptures(): Promise<{
     reprocessedCourses: validCourses,
     addedCount: totalAdded,
     updatedCount: totalUpdated,
-    summary: `Re-applied latest rules to ${validCourses.map((c) => c.toUpperCase()).join(', ')} (+${totalAdded} new, ${totalUpdated} updated) without touching the Cloud PC.`,
+    summary: `Re-extracted with AI & updated ${validCourses.map((c) => c.toUpperCase()).join(', ')} (+${totalAdded} new, ${totalUpdated} updated) without touching the Cloud PC.`,
   };
 }
